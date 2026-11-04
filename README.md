@@ -31,6 +31,9 @@ Node.js 版本由 `.nvmrc` 和 `package.json` 约束。Electron 内置的 Node.j
 ## 工程结构
 
 ```text
+resources/
+  backend/
+    darwin-arm64/callum          计划随客户端分发的 macOS arm64 Go 服务程序
 src/
   main/
     index.ts                    应用入口和启动失败处理
@@ -79,6 +82,8 @@ docs/
 | `npm run test:e2e`     | 构建并在真实 Electron 中验证桌面行为    |
 
 生产构建输出到 `out/main`、`out/preload`、`out/renderer`。`npm run build` 不生成安装包；安装格式、签名和分发方式在发布需求确定后配置。
+
+Go 程序存放在 `resources/backend/darwin-arm64/callum`。它已作为独立程序资源放入仓库，尚未配置安装包的资源复制。后续打包时需将目标平台程序明确复制到应用资源目录、放在 ASAR 外并保留执行权限；目录位置本身不保证程序进入安装包。具体映射见 [后台程序资源约定](resources/backend/README.md)。
 
 Electron 测试直接使用项目中的 Electron，不需要另外下载 Playwright 浏览器。测试会创建独立临时用户目录，并在退出后清理；截图和失败产物保存在忽略的 `.artifacts/` 下。
 
