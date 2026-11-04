@@ -19,6 +19,8 @@ export interface AppInfo {
 /** preload 暴露的能力清单，每个方法对应固定的用途。 */
 export interface DesktopApi {
   getAppInfo(): Promise<AppInfo>
+  copyCode(text: string): Promise<ChatResult<boolean>>
+  openWebLink(url: string): Promise<ChatResult<boolean>>
   getModelCatalog(): Promise<ChatResult<ModelCatalog>>
   saveModelProvider(input: ProviderInput): Promise<ChatResult<string>>
   deleteModelProvider(providerId: string): Promise<ChatResult<string>>

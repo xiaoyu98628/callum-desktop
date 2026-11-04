@@ -1,5 +1,7 @@
 export const IPC_CHANNELS = {
   getAppInfo: 'callum:app:get-info',
+  copyCode: 'callum:message:copy-code',
+  openWebLink: 'callum:message:open-web-link',
   getModelCatalog: 'callum:models:catalog',
   saveModelProvider: 'callum:models:save-provider',
   deleteModelProvider: 'callum:models:delete-provider',

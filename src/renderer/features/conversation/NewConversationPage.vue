@@ -5,6 +5,7 @@ import { MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
 import ModelSelector from './ModelSelector.vue'
+import MarkdownMessage from './MarkdownMessage.vue'
 defineEmits<{ configureModels: [] }>()
 
 const {
@@ -168,16 +169,24 @@ onScopeDispose(() => {
             <p class="mb-2 text-xs font-medium text-muted-foreground">
               {{ item.role === 'user' ? '你' : 'Callum' }}
             </p>
-            <div
-              v-for="(block, index) in item.content"
-              :key="index"
-              class="whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]"
-            >
-              <template v-if="block.type === 'text'">{{ block.text }}</template>
-              <p v-else class="text-muted-foreground">
-                [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
-              </p>
-            </div>
+            <MarkdownMessage
+              v-if="item.role === 'assistant'"
+              :content="item.content"
+              :streaming="activeRun?.id === item.runId"
+              @rendered="scrollToBottom"
+            />
+            <template v-else>
+              <div
+                v-for="(block, index) in item.content"
+                :key="index"
+                class="whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]"
+              >
+                <template v-if="block.type === 'text'">{{ block.text }}</template>
+                <p v-else class="text-muted-foreground">
+                  [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
+                </p>
+              </div>
+            </template>
             <span
               v-if="
                 item.role === 'assistant' && !item.content.length && activeRun?.id === item.runId

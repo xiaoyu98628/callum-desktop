@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import type { ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { array, record, string } from '../../src/shared/chat.ts'
+import { MARKDOWN_START, MARKDOWN_END, MARKDOWN_UNSAFE } from './markdown-fixture.ts'
 
 /** 响应形状取自 Go 仓库 internal/app/agent_test.go；只验证客户端对受控端点的行为。 */
 export async function startModelServer(fixturePath: string, expectedApiKey?: string) {
@@ -12,6 +13,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     expectedAuthorization: boolean
   }[] = []
   let cancelled = 0
+  const markdownContinuations = new Set<() => void>()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
@@ -66,6 +68,27 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         finish(response)
         return
       }
+      if (text.startsWith('Markdown 流式')) {
+        emit(response, { content: MARKDOWN_START })
+        const continueResponse = (): void => {
+          emit(response, { content: MARKDOWN_END })
+          finish(response)
+          markdownContinuations.delete(continueResponse)
+        }
+        markdownContinuations.add(continueResponse)
+        response.once('close', () => markdownContinuations.delete(continueResponse))
+        return
+      }
+      if (text === 'Markdown 安全') {
+        emit(response, { content: MARKDOWN_UNSAFE })
+        finish(response)
+        return
+      }
+      if (text === 'Markdown 长内容') {
+        emit(response, { content: '完整长内容-' + 'x'.repeat(256 * 1024) })
+        finish(response)
+        return
+      }
       if (text.includes('审批')) {
         emit(response, { content: '准备检查文件。' })
         emit(response, {
@@ -114,6 +137,9 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    finishMarkdown() {
+      for (const continuation of [...markdownContinuations]) continuation()
+    },
     get cancelled() {
       return cancelled
     },

@@ -12,6 +12,8 @@
     "src/main/security/renderer-policy.ts",
     "src/main/backend/**/*.ts",
     "src/main/ipc/chat-event-delivery.ts",
+    "src/renderer/features/conversation/markdown/render.ts",
+    "src/renderer/features/conversation/markdown/contract.ts",
     "src/renderer/env.d.ts"
   ]
 }

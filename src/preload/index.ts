@@ -25,6 +25,12 @@ const desktopApi: DesktopApi = {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.getAppInfo)
     return parseAppInfo(result)
   },
+  async copyCode(text) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.copyCode, text), boolean)
+  },
+  async openWebLink(url) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.openWebLink, url), boolean)
+  },
   async getModelCatalog() {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.getModelCatalog), parseCatalog)
   },

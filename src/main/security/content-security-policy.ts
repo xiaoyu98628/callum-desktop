@@ -1,6 +1,7 @@
 export const PRODUCTION_CSP = [
   "default-src 'none'",
   "script-src 'self'",
+  "worker-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -14,6 +15,7 @@ export const PRODUCTION_CSP = [
 export const DEVELOPMENT_CSP = [
   "default-src 'self'",
   "script-src 'self'",
+  "worker-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",

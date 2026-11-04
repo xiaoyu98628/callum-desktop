@@ -5,11 +5,13 @@ import AppShell from '@/components/layout/AppShell.vue'
 import { provideAppearance } from '@/features/appearance/useAppearance'
 import NewConversationPage from '@/features/conversation/NewConversationPage.vue'
 import { provideConversations } from '@/features/conversation/useConversations'
+import { provideMarkdownRenderer } from '@/features/conversation/markdown/useMarkdownRenderer'
 import SettingsPage from '@/features/settings/SettingsPage.vue'
 import { getDesktopApi } from '@/lib/desktop'
 import type { AppPage, SettingsSection } from './navigation'
 
 provideAppearance()
+provideMarkdownRenderer()
 const conversations = provideConversations()
 
 const activePage = ref<AppPage>('conversation')

@@ -9,6 +9,7 @@ import type { ElectronApplication } from '@playwright/test'
 import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
+import { MARKDOWN_CODE } from '../helpers/markdown-fixture'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -79,6 +80,8 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   expect(bridge.hasNode).toBe(false)
   expect(bridge.methods).toEqual([
     'getAppInfo',
+    'copyCode',
+    'openWebLink',
     'getModelCatalog',
     'saveModelProvider',
     'deleteModelProvider',
@@ -206,6 +209,7 @@ test('发布环境保持隔离、沙箱、CSP 和新窗口限制', async ({ desk
     return response.headers.get('content-security-policy')
   })
   expect(policy).toContain("connect-src 'none'")
+  expect(policy).toContain("worker-src 'self'")
   expect(policy).not.toContain('unsafe-eval')
   await page.evaluate(() => {
     window.open('https://example.com')
@@ -854,5 +858,201 @@ test.describe('模型配置与对话联动', () => {
       await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true)
     await page.screenshot({ path: '.artifacts/screenshots/model-settings-dark.png' })
+  })
+})
+
+test.describe('Markdown 回答展示', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('流式 Markdown、高亮、复制、链接与深色小窗口布局', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    // 只替换本次 Electron 进程的系统调用，验证真实 IPC，不写用户剪贴板或打开外部浏览器。
+    await desktop.evaluate(({ clipboard, shell }) => {
+      const state: { copies: string[]; links: string[]; copyFails: boolean; linkFails: boolean } = {
+        copies: [],
+        links: [],
+        copyFails: false,
+        linkFails: false,
+      }
+      Reflect.set(globalThis, 'callumMarkdownTest', state)
+      clipboard.writeText = async (text) => {
+        if (state.copyFails) throw new Error('受控复制失败')
+        state.copies.push(text)
+      }
+      shell.openExternal = async (url) => {
+        if (state.linkFails) throw new Error('受控打开失败')
+        state.links.push(url)
+      }
+    })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 流式\n# 用户消息保留原文')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answer.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
+    await expect(answer.locator('strong')).toHaveText('粗体')
+    await expect(answer.locator('blockquote')).toContainText('引用内容')
+    await expect(answer.locator('li')).toHaveCount(2)
+    await expect(answer.locator('code .hljs-keyword').first()).toHaveText('const')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
+    await expect(
+      page.getByRole('article', { name: '你的消息', exact: true }).locator('h1'),
+    ).toHaveCount(0)
+    modelEndpoint.finishMarkdown()
+    await expect(answer.getByText('回答已经完成。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
+    await expect(answer.getByRole('table')).toBeVisible()
+    await expect(answer.locator('pre')).toHaveCount(2)
+    const copy = answer.getByRole('button', { name: '复制代码', exact: true }).first()
+    await copy.click()
+    await expect(answer.getByRole('button', { name: '代码已复制', exact: true })).toBeVisible()
+    expect(
+      await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies),
+    ).toEqual([MARKDOWN_CODE])
+    await answer.getByRole('link', { name: '项目文档', exact: true }).click()
+    expect(
+      await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').links),
+    ).toEqual(['https://example.com/docs?source=callum'])
+    expect(page.url()).toBe('callum://app/')
+    await page.screenshot({ path: '.artifacts/screenshots/markdown-light.png' })
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'callumMarkdownTest').copyFails = true
+      Reflect.get(globalThis, 'callumMarkdownTest').linkFails = true
+    })
+    await answer.getByRole('button', { name: '复制代码', exact: true }).last().click()
+    await expect(answer.getByRole('alert')).toHaveText('代码复制失败，请重试。')
+    await answer.getByRole('link', { name: '项目文档', exact: true }).click()
+    await expect(answer.getByRole('alert')).toHaveText('网页链接无法打开，请检查地址后重试。')
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'callumMarkdownTest').copyFails = false
+      Reflect.get(globalThis, 'callumMarkdownTest').linkFails = false
+    })
+    const sidebar = page.getByRole('region', { name: '对话', exact: true })
+    const conversation = sidebar.getByRole('button').first()
+    const title = await conversation.getAttribute('title')
+    if (!title) throw new Error('会话标题不存在')
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await sidebar.getByRole('button', { name: title, exact: true }).click()
+    await expect(answer.getByRole('table')).toBeVisible()
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+    await page.screenshot({ path: '.artifacts/screenshots/markdown-dark-compact.png' })
+    expect(errors).toEqual([])
+  })
+
+  test('模型中的 HTML 与危险链接不执行，图片不加载，IPC 拒绝系统协议', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const requests: string[] = []
+    page.on('request', (request) => {
+      if (request.url().startsWith('https://example.invalid/')) requests.push(request.url())
+    })
+    await desktop.evaluate(({ shell }) => {
+      shell.openExternal = async () => {
+        throw new Error('非法链接不应触及系统调用')
+      }
+    })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 安全')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answer.getByRole('heading', { name: '安全展示', exact: true })).toBeVisible()
+    await expect(
+      answer.locator('script, img, iframe, svg, style, form, [onclick], [onerror]'),
+    ).toHaveCount(0)
+    await expect(answer.getByRole('link', { name: '网页', exact: true })).toBeVisible()
+    expect(
+      await answer
+        .locator('a')
+        .evaluateAll((elements) =>
+          elements.every((element) => /^https?:\/\//.test(element.getAttribute('href') ?? '')),
+        ),
+    ).toBe(true)
+    expect(await page.evaluate(() => Reflect.get(window, 'markdownExecuted'))).toBeUndefined()
+    const results = await page.evaluate(async () =>
+      Promise.all(
+        [
+          'javascript:alert(1)',
+          'file:///tmp/file',
+          'callum://app/',
+          'mailto:test@example.com',
+          'https://user:pass@example.com',
+        ].map((url) => window.callum.openWebLink(url)),
+      ),
+    )
+    expect(results.every((result) => !result.ok)).toBe(true)
+    const invalidCopy: unknown = await page.evaluate(() =>
+      Reflect.apply(window.callum.copyCode, undefined, [{ command: 'unexpected' }]),
+    )
+    expect(invalidCopy).toEqual({ ok: false, error: '代码复制失败，请重试。' })
+    expect(requests).toEqual([])
+    expect(page.url()).toBe('callum://app/')
+  })
+
+  test('长内容完整回退为文本，取消及切换页面后不遗留旧排版', async ({ desktop, modelEndpoint }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 流式')
+    await input.press('Enter')
+    let answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answer.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
+    modelEndpoint?.finishMarkdown()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(
+      page.getByRole('heading', { name: 'Markdown 示例', exact: true }),
+    ).not.toBeVisible()
+    await input.fill('Markdown 长内容')
+    await input.press('Enter')
+    answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answer.getByText('内容较长，已按文本显示。', { exact: true })).toBeVisible()
+    expect(await answer.locator('p').filter({ hasText: '完整长内容-' }).innerText()).toHaveLength(
+      '完整长内容-'.length + 256 * 1024,
+    )
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+  })
+
+  test('排版 Worker 无响应时有界终止并完整回退文本', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    await page.evaluate(() => {
+      const OriginalWorker = window.Worker
+      class SilentWorker extends OriginalWorker {
+        postMessage(): void {
+          /* 故意不转发请求，用于验证真实的 Worker 超时与释放。 */
+        }
+        terminate(): void {
+          Reflect.set(window, 'markdownWorkerTerminated', true)
+          super.terminate()
+        }
+      }
+      Reflect.set(window, 'Worker', SilentWorker)
+    })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 安全')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(
+      answer.getByText('消息排版暂不可用，已按文本显示。', { exact: true }),
+    ).toBeVisible()
+    await expect(answer).toContainText('# 安全展示')
+    await expect(answer.locator('h1, script, img, iframe')).toHaveCount(0)
+    expect(await page.evaluate(() => Reflect.get(window, 'markdownWorkerTerminated'))).toBe(true)
+    await expect(input).toBeEnabled()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '设置', level: 1, exact: true })).toBeVisible()
   })
 })
