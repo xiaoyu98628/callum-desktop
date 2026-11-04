@@ -10,6 +10,7 @@ import {
 import type { AppInfo } from '@shared/desktop-api'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
+import { useConversations } from '@/features/conversation/useConversations'
 
 defineProps<{
   collapsed: boolean
@@ -18,9 +19,18 @@ defineProps<{
   loading: boolean
 }>()
 
-defineEmits<{ navigate: [page: AppPage] }>()
+const emit = defineEmits<{ navigate: [page: AppPage] }>()
 
 const platformNames = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' } as const
+const { state, newConversation, openConversation, refreshOverview } = useConversations()
+function startConversation(): void {
+  newConversation()
+  emit('navigate', 'conversation')
+}
+function selectConversation(conversationId: string): void {
+  void openConversation(conversationId)
+  emit('navigate', 'conversation')
+}
 </script>
 
 <template>
@@ -47,9 +57,9 @@ const platformNames = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' } as c
         variant="outline"
         class="w-full shrink-0 gap-3 rounded-xl bg-card font-medium"
         :class="collapsed ? 'px-0' : 'justify-start px-3'"
-        :aria-current="activePage === 'conversation' ? 'page' : undefined"
+        :aria-current="activePage === 'conversation' && !state.selectedId ? 'page' : undefined"
         :title="collapsed ? '新对话' : undefined"
-        @click="$emit('navigate', 'conversation')"
+        @click="startConversation"
       >
         <SquarePenIcon class="size-4 shrink-0" aria-hidden="true" />
         <span :class="collapsed ? 'sr-only' : ''">新对话</span>
@@ -103,11 +113,51 @@ const platformNames = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' } as c
             </h2>
           </div>
           <p
+            v-if="state.loadingList && !state.conversations.length"
+            class="px-3 text-xs text-muted-foreground"
+            :class="collapsed ? 'sr-only' : ''"
+          >
+            正在加载对话…
+          </p>
+          <p
+            v-else-if="!state.conversations.length && !state.serviceError"
             class="px-3 text-xs leading-6 text-muted-foreground/80"
             :class="collapsed ? 'sr-only' : ''"
           >
             暂无对话
           </p>
+          <div v-if="state.conversations.length" class="space-y-1">
+            <Button
+              v-for="conversation in state.conversations"
+              :key="conversation.id"
+              :variant="
+                activePage === 'conversation' && state.selectedId === conversation.id
+                  ? 'secondary'
+                  : 'ghost'
+              "
+              class="w-full min-w-0 justify-start gap-2 text-xs"
+              :class="collapsed ? 'justify-center px-0' : 'px-3'"
+              :aria-current="
+                activePage === 'conversation' && state.selectedId === conversation.id
+                  ? 'page'
+                  : undefined
+              "
+              :title="conversation.title"
+              @click="selectConversation(conversation.id)"
+            >
+              <MessageSquareIcon class="size-3.5 shrink-0" aria-hidden="true" />
+              <span :class="collapsed ? 'sr-only' : 'truncate'">{{ conversation.title }}</span>
+            </Button>
+          </div>
+          <Button
+            v-if="state.hasMore && !collapsed"
+            variant="ghost"
+            size="sm"
+            class="mt-2 w-full text-xs text-muted-foreground"
+            :disabled="state.loadingList"
+            @click="refreshOverview(true)"
+            >加载更多对话</Button
+          >
         </section>
       </div>
     </nav>

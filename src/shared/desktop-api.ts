@@ -1,3 +1,14 @@
+import type {
+  ChatEvent,
+  ChatMessage,
+  ChatOverview,
+  ChatResult,
+  ConversationDetail,
+  SendMessageInput,
+  SendMessageResult,
+} from './chat'
+import type { ModelCatalog, ModelInput, ProviderInput } from './models'
+
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
   name: string
@@ -8,6 +19,26 @@ export interface AppInfo {
 /** preload 暴露的能力清单，每个方法对应固定的用途。 */
 export interface DesktopApi {
   getAppInfo(): Promise<AppInfo>
+  getModelCatalog(): Promise<ChatResult<ModelCatalog>>
+  saveModelProvider(input: ProviderInput): Promise<ChatResult<string>>
+  deleteModelProvider(providerId: string): Promise<ChatResult<string>>
+  saveModel(input: ModelInput): Promise<ChatResult<string>>
+  setModelEnabled(modelId: string, enabled: boolean): Promise<ChatResult<string>>
+  deleteModel(modelId: string): Promise<ChatResult<string>>
+  getChatOverview(offset: number): Promise<ChatResult<ChatOverview>>
+  getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
+  getEarlierMessages(
+    conversationId: string,
+    beforeSequence: number,
+  ): Promise<ChatResult<ChatMessage[]>>
+  sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
+  cancelRun(runId: string): Promise<ChatResult<boolean>>
+  decideApproval(
+    approvalId: string,
+    decision: 'approved' | 'rejected',
+  ): Promise<ChatResult<boolean>>
+  /** 每个窗口一个订阅，由根组件持有；返回可重复调用的取消订阅函数。 */
+  onChatEvent(listener: (event: ChatEvent) => void): () => void
 }
 
 /** 通信边界使用运行时校验，不能仅信任静态类型。 */

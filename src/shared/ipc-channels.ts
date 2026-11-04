@@ -1,3 +1,18 @@
 export const IPC_CHANNELS = {
   getAppInfo: 'callum:app:get-info',
+  getModelCatalog: 'callum:models:catalog',
+  saveModelProvider: 'callum:models:save-provider',
+  deleteModelProvider: 'callum:models:delete-provider',
+  saveModel: 'callum:models:save',
+  setModelEnabled: 'callum:models:set-enabled',
+  deleteModel: 'callum:models:delete',
+  getChatOverview: 'callum:chat:overview',
+  getConversation: 'callum:chat:conversation',
+  getEarlierMessages: 'callum:chat:earlier',
+  sendMessage: 'callum:chat:send',
+  cancelRun: 'callum:chat:cancel',
+  decideApproval: 'callum:chat:decide-approval',
+  chatEvent: 'callum:chat:event',
+  chatListen: 'callum:chat:listen',
+  chatAcknowledge: 'callum:chat:acknowledge',
 } as const

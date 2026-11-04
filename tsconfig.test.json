@@ -10,6 +10,8 @@
     "tests/**/*.ts",
     "src/shared/**/*.ts",
     "src/main/security/renderer-policy.ts",
+    "src/main/backend/**/*.ts",
+    "src/main/ipc/chat-event-delivery.ts",
     "src/renderer/env.d.ts"
   ]
 }

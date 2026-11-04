@@ -5,6 +5,7 @@ import type { AppInfo } from '@shared/desktop-api'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import AppSidebar from './AppSidebar.vue'
+import { useConversations } from '@/features/conversation/useConversations'
 
 defineProps<{
   activePage: AppPage
@@ -19,6 +20,7 @@ defineEmits<{
 }>()
 
 const collapsed = ref(false)
+const { title } = useConversations()
 </script>
 
 <template>
@@ -41,8 +43,8 @@ const collapsed = ref(false)
       <span class="h-4 border-l" aria-hidden="true"></span>
       <span class="text-xs font-medium text-muted-foreground">Callum</span>
       <span class="text-muted-foreground/40" aria-hidden="true">/</span>
-      <span class="text-xs font-medium">{{
-        activePage === 'conversation' ? '新对话' : '设置'
+      <span class="min-w-0 truncate text-xs font-medium">{{
+        activePage === 'conversation' ? title : '设置'
       }}</span>
       <span class="ml-auto text-[11px] tracking-wide text-muted-foreground">桌面客户端</span>
     </header>

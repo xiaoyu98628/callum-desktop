@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { app, session } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { registerAppHandlers } from './ipc/register-app-handlers'
+import { registerChatHandlers } from './ipc/register-chat-handlers'
+import { ChatService } from './backend/chat-service'
+import { resolveBackendDataDirectory } from './backend/data-directory'
 import {
   registerApplicationProtocol,
   registerApplicationScheme,
@@ -16,8 +19,9 @@ export async function startApplication(): Promise<void> {
   app.setName('Callum')
   registerApplicationScheme()
 
+  const isolatedUserDataDirectory = process.env.CALLUM_USER_DATA_DIR || undefined
   const dataDirectory =
-    process.env.CALLUM_USER_DATA_DIR ||
+    isolatedUserDataDirectory ||
     (!app.isPackaged ? join(app.getPath('appData'), 'Callum Development') : undefined)
   if (dataDirectory) {
     if (!isAbsolute(dataDirectory)) throw new Error('CALLUM_USER_DATA_DIR 必须是绝对路径')
@@ -35,8 +39,35 @@ export async function startApplication(): Promise<void> {
   const rendererRoot = fileURLToPath(new URL('../renderer/', import.meta.url))
   const preloadPath = fileURLToPath(new URL('../preload/index.cjs', import.meta.url))
   let mainWindow: BrowserWindow | null = null
+  const service = new ChatService(
+    resolveBackendDataDirectory(
+      app.getPath('home'),
+      isolatedUserDataDirectory ? app.getPath('userData') : undefined,
+    ),
+    app.isPackaged
+      ? process.resourcesPath
+      : fileURLToPath(new URL('../../resources/', import.meta.url)),
+  )
   const disposeProtocol = registerApplicationProtocol(rendererRoot)
   const disposeHandlers = registerAppHandlers(() => mainWindow, rendererUrl)
+  const disposeChatHandlers = registerChatHandlers(() => mainWindow, rendererUrl, service)
+  let shutdownComplete = false
+  let shutdownTask: Promise<void> | null = null
+  app.on('before-quit', (event) => {
+    if (shutdownComplete) return
+    event.preventDefault()
+    shutdownTask ??= service
+      .close()
+      .catch(() => {
+        console.error(
+          JSON.stringify({ level: 'error', module: 'backend', message: '对话服务关闭失败' }),
+        )
+      })
+      .finally(() => {
+        shutdownComplete = true
+        app.quit()
+      })
+  })
 
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) =>
     callback(false),
@@ -74,6 +105,7 @@ export async function startApplication(): Promise<void> {
   })
   app.once('will-quit', () => {
     disposeHandlers()
+    disposeChatHandlers()
     disposeProtocol()
   })
 
