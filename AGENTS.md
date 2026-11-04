@@ -45,12 +45,12 @@
 
 ## 技术栈与当前范围
 
-- 本仓库用于开发 Callum 的 Electron 桌面客户端，业务代码使用 TypeScript。
+- 本仓库用于开发 Callum 的 Electron 桌面客户端，业务代码使用 TypeScript；渲染界面使用 Vue 3，UI 组件采用 shadcn-vue。
 - 开发环境固定为 Node.js `26.13.0`，由用户通过 nvm 管理，以根目录 `.nvmrc` 为准。
 - Electron 内置 Node.js 与开发环境 Node.js 分别管理，不要求版本相同；兼容性以所选 Electron 和工具链为准。
 - 初始化时优先使用 npm；已有其他包管理器锁文件时遵循现有工具，不混用锁文件。
 - 初始化时选择相互兼容的 Electron、TypeScript 和构建工具稳定版本，并维护对应锁文件，不默认使用 Alpha、Beta 或 Canary 版本。
-- 当前仓库尚未初始化应用代码和 `package.json`。界面框架、客户端业务范围、后端接入方式、本地存储和发布平台尚未确定，不把建议、后端规划或其他仓库能力描述为当前已实现功能。
+- 当前仓库尚未初始化应用代码和 `package.json`。客户端业务范围、后端接入方式、本地存储和发布平台尚未确定，不把已选技术栈、建议、后端规划或其他仓库能力描述为当前已实现功能。
 - 不因产品名称相同而复制后端业务实现；是否引入本地服务、模型 SDK、数据库、自动更新或插件，应由明确需求决定。
 
 ## 事实与判断
@@ -171,7 +171,7 @@ git diff --check
 - 启动和构建命令、配置、默认路径、日志、存储行为、平台要求或模块结构变化时，同步检查 README 和已有专题文档。
 - 文档命令、路径、配置和示例与实现一致；未实现能力仅作为规划说明，不为每次小修改新增流程文件。
 - 审查以已确认范围为准，不把未进入范围的模型直连、持久化、工具审批、MCP、插件、上下文压缩或多 Agent 协作自动列为必须补齐的缺陷。
-- 不强制引入 Web 框架、ORM、依赖注入框架、外部队列或完整分层体系；新增能力时按实际需求确定目录、协议、数据模型及测试策略。
+- 不强制引入已选技术栈之外的界面框架、ORM、依赖注入框架、外部队列或完整分层体系；新增能力时按实际需求确定目录、协议、数据模型及测试策略。
 - 技术选择或项目阶段变化时同步维护本文件，完成变更后说明实际修改、验证结果、未完成事项和仍需用户决策的问题。
 
 ## 参考
@@ -180,3 +180,4 @@ git diff --check
 - [Electron：进程模型](https://www.electronjs.org/docs/latest/tutorial/process-model)
 - [Electron：上下文隔离](https://www.electronjs.org/docs/latest/tutorial/context-isolation)
 - [Electron：安全建议](https://www.electronjs.org/docs/latest/tutorial/security)
+- [shadcn-vue：组件设计说明](https://www.shadcn-vue.com/docs/introduction)
