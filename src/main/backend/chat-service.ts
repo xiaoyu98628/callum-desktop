@@ -20,6 +20,9 @@ import type {
   ChatMessage,
   ChatOverview,
   ChatRun,
+  ChatStep,
+  StepPage,
+  StepDetails,
   ChatUserInput,
   UserInputAnswer,
   Conversation,
@@ -38,11 +41,19 @@ import {
   conversationFromRpc,
   messageFromRpc,
   runFromRpc,
+  stepFromRpc,
   workspaceFromRpc,
   userInputFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
+import {
+  boundSteps,
+  STEP_PAGE_SIZE,
+  STEP_TEXT_LIMIT,
+  truncateStepText,
+} from '../../shared/steps.ts'
+import { StepOutput, readStepDetails } from './step-data.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -59,6 +70,10 @@ export class ChatService {
   private readonly messages = new Map<string, ChatMessage>()
   private readonly runs = new Map<string, ChatRun>()
   private readonly dirty = new Map<string, ChatMessage>()
+  private readonly steps = new Map<string, ChatStep>()
+  private readonly dirtySteps = new Map<string, ChatStep>()
+  private readonly stepOutputs = new Map<string, StepOutput>()
+  private readonly stepReads = new Map<string, Promise<StepDetails>>()
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly history: { event: ChatEvent; bytes: number }[] = []
   private historyBytes = 0
@@ -276,6 +291,7 @@ export class ChatService {
       conversation: conversationFromRpc(conversation),
       messages: array(messages ?? [], messageFromRpc),
       runs: parsedRuns,
+      steps: [...this.steps.values()].filter((step) => step.conversationId === conversationId),
       approvals: pending.flatMap((rows) =>
         array(rows ?? [], (row) => approvalFromRpc(row, conversationId)),
       ),
@@ -296,6 +312,85 @@ export class ChatService {
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     result.revision = this.revision
     return result
+  }
+  async listSteps(conversationId: string, runId: string, afterSequence: number): Promise<StepPage> {
+    const run = runFromRpc(await this.request('run.get', { id: runId }))
+    if (run.id !== runId || run.conversationId !== conversationId)
+      throw new Error('步骤执行归属不匹配')
+    const start = this.revision
+    const rows = array(
+      await this.request('step.list', {
+        run_id: runId,
+        after_sequence: afterSequence,
+        limit: STEP_PAGE_SIZE + 1,
+      }),
+      stepFromRpc,
+    )
+    if (
+      rows.some(
+        (step, index) =>
+          step.runId !== runId ||
+          step.conversationId !== conversationId ||
+          step.sequence <= (rows[index - 1]?.sequence ?? afterSequence),
+      )
+    )
+      throw new Error('步骤顺序或归属不匹配')
+    let steps = rows.map((step) => {
+      const live = this.steps.get(step.id)
+      return live && live.updatedAt >= step.updatedAt ? live : step
+    })
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'step' &&
+        change.value.runId === runId &&
+        change.value.sequence > afterSequence &&
+        (rows.length <= STEP_PAGE_SIZE || change.value.sequence <= rows.at(-1)!.sequence)
+      )
+        steps = upsert(steps, change.value)
+    }
+    steps.sort((a, b) => a.sequence - b.sequence)
+    const parents = new Set(steps.map((step) => step.parentStepId))
+    const hasMore = steps.length > STEP_PAGE_SIZE
+    steps = steps
+      .slice(0, STEP_PAGE_SIZE)
+      .map((step) => ({ ...step, commentary: step.commentary || parents.has(step.id) }))
+    return {
+      steps,
+      afterSequence,
+      nextSequence: steps.at(-1)?.sequence ?? afterSequence,
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async stepDetails(conversationId: string, runId: string, stepId: string): Promise<StepDetails> {
+    const key = `${conversationId}:${runId}:${stepId}`
+    const pending = this.stepReads.get(key)
+    if (pending) return pending
+    if (this.stepReads.size >= 16) throw new Error('步骤详情查询较多，请稍后重试。')
+    const task = (async () => {
+      const step = stepFromRpc(await this.request('step.get', { id: stepId }))
+      if (step.id !== stepId || step.runId !== runId || step.conversationId !== conversationId)
+        throw new Error('步骤归属不匹配')
+      return readStepDetails((method, params) => this.request(method, params), step)
+    })()
+    this.stepReads.set(key, task)
+    try {
+      return await task
+    } finally {
+      this.stepReads.delete(key)
+    }
+  }
+  private saveStep(step: ChatStep): void {
+    this.steps.delete(step.id)
+    this.steps.set(step.id, step)
+    const retained = new Set(boundSteps([...this.steps.values()]).map((value) => value.id))
+    for (const key of this.steps.keys())
+      if (!retained.has(key)) {
+        this.steps.delete(key)
+        this.dirtySteps.delete(key)
+        this.stepOutputs.delete(key)
+      }
   }
   async earlier(conversationId: string, beforeSequence: number): Promise<ChatMessage[]> {
     return array(
@@ -381,6 +476,57 @@ export class ChatService {
       this.messages.set(message.id, message)
       this.dirty.delete(message.id)
       this.publish({ kind: 'message', value: message })
+    } else if (method === 'step.created' || method === 'step.updated') {
+      let step = stepFromRpc(p.step)
+      if (
+        step.id !== id(p.step_id) ||
+        step.runId !== id(p.run_id) ||
+        step.conversationId !== id(p.conversation_id)
+      )
+        throw new Error('步骤归属不匹配')
+      const previous = this.steps.get(step.id)
+      if (previous)
+        step = {
+          ...step,
+          text: previous.text,
+          commentary: previous.commentary,
+          textTruncated: previous.textTruncated,
+          output: previous.output,
+          outputTruncated: previous.outputTruncated,
+          outputSequence: previous.outputSequence,
+        }
+      this.saveStep(step)
+      this.dirtySteps.delete(step.id)
+      this.publish({ kind: 'step', value: step })
+      if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
+        const parent = this.steps.get(step.parentStepId)
+        if (parent && !parent.commentary) {
+          const commentary = { ...parent, commentary: true }
+          this.saveStep(commentary)
+          this.dirtySteps.delete(parent.id)
+          this.publish({ kind: 'step', value: commentary })
+        }
+      }
+      if (!['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(step.status))
+        this.stepOutputs.delete(step.id)
+    } else if (method === 'tool.output') {
+      const stepId = id(p.step_id),
+        previous = this.steps.get(stepId)
+      // 已被缓存淘汰的输出不重建无归属步骤；持久化结果仍可按需查询。
+      if (previous) {
+        if (
+          previous.conversationId !== id(p.conversation_id) ||
+          previous.runId !== id(p.run_id) ||
+          previous.type !== 'tool_call'
+        )
+          throw new Error('工具输出归属不匹配')
+        const decoder = this.stepOutputs.get(stepId) ?? new StepOutput()
+        this.stepOutputs.set(stepId, decoder)
+        const step = decoder.append(previous, p.output)
+        this.saveStep(step)
+        this.dirtySteps.set(step.id, step)
+        this.flushTimer ??= setTimeout(() => this.flush(), 16)
+      }
     } else if (method === 'message.delta') {
       const messageId = id(p.message_id),
         previous = this.messages.get(messageId)
@@ -388,6 +534,25 @@ export class ChatService {
       const message = appendDelta(previous, p)
       this.messages.set(message.id, message)
       this.dirty.set(message.id, message)
+      if (p.step_id !== undefined) {
+        const step = this.steps.get(id(p.step_id))
+        if (step) {
+          if (
+            step.conversationId !== message.conversationId ||
+            step.runId !== message.runId ||
+            step.type !== 'model_call'
+          )
+            throw new Error('模型步骤归属不匹配')
+          const text = step.text + string(record(p.delta).text)
+          const updated = {
+            ...step,
+            text: truncateStepText(text, STEP_TEXT_LIMIT),
+            textTruncated: step.textTruncated || text.length > STEP_TEXT_LIMIT,
+          }
+          this.saveStep(updated)
+          this.dirtySteps.set(step.id, updated)
+        }
+      }
       this.flushTimer ??= setTimeout(() => this.flush(), 16)
     } else if (method.startsWith('run.') && p.run !== undefined) {
       const run = runFromRpc(p.run)
@@ -440,6 +605,8 @@ export class ChatService {
     this.flushTimer = undefined
     for (const message of this.dirty.values()) this.publish({ kind: 'message', value: message })
     this.dirty.clear()
+    for (const step of this.dirtySteps.values()) this.publish({ kind: 'step', value: step })
+    this.dirtySteps.clear()
   }
   private publish(change: ChatChange): void {
     const event = { revision: ++this.revision, change }
@@ -473,6 +640,7 @@ export class ChatService {
     }
     if (change.value.conversationId !== detail.conversation.id) return
     if (change.kind === 'message') detail.messages = upsert(detail.messages, change.value)
+    if (change.kind === 'step') detail.steps = boundSteps(upsert(detail.steps, change.value))
     if (change.kind === 'run') {
       detail.runs = upsert(detail.runs, change.value)
       if (!change.persisted) detail.warning = '本次执行状态未能完整保存，请重新打开应用后核对历史。'
@@ -503,6 +671,9 @@ export class ChatService {
       this.dirty.clear()
       this.messages.clear()
       this.runs.clear()
+      this.steps.clear()
+      this.dirtySteps.clear()
+      this.stepOutputs.clear()
       this.persistenceFailures.clear()
       this.history.length = 0
       this.listeners.clear()

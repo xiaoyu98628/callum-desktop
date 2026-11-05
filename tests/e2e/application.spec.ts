@@ -38,10 +38,12 @@ const test = base.extend<{
   profile: string
   withModel: boolean
   withEndpoint: boolean
+  approvalPolicy: 'on-request' | 'always'
   modelEndpoint: Awaited<ReturnType<typeof startModelServer>> | null
 }>({
   withModel: [false, { option: true }],
   withEndpoint: [false, { option: true }],
+  approvalPolicy: ['on-request', { option: true }],
   profile: async ({ playwright }, use) => {
     void playwright
     const profile = await mkdtemp(join(tmpdir(), 'callum-desktop-e2e-'))
@@ -51,7 +53,7 @@ const test = base.extend<{
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   },
-  modelEndpoint: async ({ withModel, withEndpoint, profile }, use) => {
+  modelEndpoint: async ({ withModel, withEndpoint, profile, approvalPolicy }, use) => {
     if (!withModel && !withEndpoint) {
       await use(null)
       return
@@ -60,7 +62,7 @@ const test = base.extend<{
     await writeFile(file, 'controlled-file', { mode: 0o600 })
     const endpoint = await startModelServer(file, 'fixture-ui-key')
     try {
-      if (withModel) await seedModel(profile, endpoint.baseUrl)
+      if (withModel) await seedModel(profile, endpoint.baseUrl, approvalPolicy)
       await use(endpoint)
     } finally {
       await endpoint.close()
@@ -119,6 +121,8 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'renameConversation',
     'deleteConversation',
     'getEarlierMessages',
+    'listRunSteps',
+    'getStepDetails',
     'sendMessage',
     'cancelRun',
     'submitUserInput',
@@ -185,7 +189,7 @@ test('外观支持持久化及跟随系统，侧栏可收起', async ({ desktop 
 test('工作内容为空时不创建记录，设置支持键盘操作和小窗口布局', async ({ desktop }) => {
   const page = await desktop.firstWindow()
   const workspace = page.getByRole('region', { name: '项目', exact: true })
-  const conversations = page.getByRole('region', { name: '对话', exact: true })
+  const conversations = page.getByRole('region', { name: '最近', exact: true })
   await expect(workspace.getByText('暂无项目', { exact: true })).toBeVisible()
   await expect(conversations.getByText('暂无对话', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '添加项目' })).toBeEnabled()
@@ -291,7 +295,7 @@ test.describe('真实 Go 对话交互', () => {
     })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const status = page.getByRole('group', { name: '执行状态', exact: true })
-    const sidebar = page.getByRole('region', { name: '对话', exact: true })
+    const sidebar = page.getByRole('region', { name: '最近', exact: true })
     const timers = () => page.evaluate(() => Reflect.get(window, 'runStatusTimers').size)
     await expect(input).toBeEnabled()
     await input.fill('Markdown 流式')
@@ -436,7 +440,7 @@ test.describe('真实 Go 对话交互', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('输入默认单行，自动向上增高并在删除、发送、恢复草稿及窗口缩放时适配', async ({
+  test('输入默认两行，自动向上增高并在删除、发送、恢复草稿及窗口缩放时适配', async ({
     desktop,
   }) => {
     const page = await desktop.firstWindow()
@@ -453,8 +457,8 @@ test.describe('真实 Go 对话交互', () => {
           rect = form.getBoundingClientRect()
         return {
           inputHeight: textarea.getBoundingClientRect().height,
-          singleLineHeight:
-            parseFloat(style.lineHeight) +
+          minimumHeight:
+            2 * parseFloat(style.lineHeight) +
             parseFloat(style.paddingTop) +
             parseFloat(style.paddingBottom),
           maxHeight: parseFloat(style.maxHeight),
@@ -466,10 +470,10 @@ test.describe('真实 Go 对话交互', () => {
           overflowY: style.overflowY,
         }
       })
-    await expect(input).toHaveAttribute('rows', '1')
+    await expect(input).toHaveAttribute('rows', '2')
     const initial = await geometry()
-    expect(initial.inputHeight).toBeCloseTo(initial.singleLineHeight, 0)
-    expect(initial.formHeight).toBeLessThanOrEqual(72)
+    expect(initial.inputHeight).toBeCloseTo(initial.minimumHeight, 0)
+    expect(initial.formHeight).toBeLessThanOrEqual(104)
     const inputBox = await input.boundingBox(),
       pickerBox = await page.getByRole('combobox', { name: '模型', exact: true }).boundingBox(),
       sendBox = await page.getByRole('button', { name: '发送消息', exact: true }).boundingBox()
@@ -478,7 +482,7 @@ test.describe('真实 Go 对话交互', () => {
     expect(sendBox.y).toBeGreaterThanOrEqual(inputBox.y + inputBox.height)
     expect(pickerBox.y + pickerBox.height).toBeLessThanOrEqual(initial.bottom)
     expect(sendBox.y + sendBox.height).toBeLessThanOrEqual(initial.bottom)
-    await page.screenshot({ path: '.artifacts/screenshots/composer-single-line.png' })
+    await page.screenshot({ path: '.artifacts/screenshots/composer-two-lines.png' })
     const wrappedText = '内容超过一行时自动向上增高。'.repeat(9)
     await input.fill(wrappedText)
     await expect
@@ -491,6 +495,9 @@ test.describe('真实 Go 对话交互', () => {
     await expect.poll(async () => (await geometry()).inputHeight).toBe(initial.inputHeight)
     await input.press('Shift+Enter')
     await expect(input).toHaveValue('短消息\n')
+    await expect.poll(async () => (await geometry()).inputHeight).toBe(initial.inputHeight)
+    await input.press('Shift+Enter')
+    await expect(input).toHaveValue('短消息\n\n')
     await expect
       .poll(async () => (await geometry()).inputHeight)
       .toBeGreaterThan(initial.inputHeight)
@@ -524,14 +531,14 @@ test.describe('真实 Go 对话交互', () => {
     await expect(input).toHaveValue('')
     await expect.poll(async () => (await geometry()).inputHeight).toBe(initial.inputHeight)
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '你好', exact: true })
       .click()
     await expect(input).toHaveValue(wrappedText)
     await expect.poll(async () => (await geometry()).inputHeight).toBe(wideHeight)
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '你好', exact: true })
       .click()
     await expect(input).toHaveValue(wrappedText)
@@ -598,7 +605,7 @@ test.describe('真实 Go 对话交互', () => {
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '你好', exact: true })
       .click()
     await expect(page.getByText('仅属于等待甲的内容', { exact: true })).toBeVisible()
@@ -608,7 +615,7 @@ test.describe('真实 Go 对话交互', () => {
     await expect(page.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
     await expect(page.getByText('仅属于等待甲的内容', { exact: true })).not.toBeVisible()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '你好', exact: true })
       .click()
     await page.getByRole('button', { name: '停止生成' }).click()
@@ -617,7 +624,7 @@ test.describe('真实 Go 对话交互', () => {
     await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
     await page.reload()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '你好', exact: true })
       .click()
     await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
@@ -631,196 +638,257 @@ test.describe('真实 Go 对话交互', () => {
     await page.screenshot({ path: '.artifacts/screenshots/conversation-connected.png' })
   })
 
-  test('审批位于底部输入区，展示固定操作，批准后用完整回答替换中间文本', async ({
-    desktop,
-    modelEndpoint,
-    profile,
-  }) => {
+  test('默认读取文件、列目录和搜索不审批，权限管理按需打开并恢复焦点', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('需要审批')
-    await input.press('Enter')
-    await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
-    const panel = page.getByRole('region', { name: '工具审批', exact: true })
-    await expect(input).toBeVisible()
-    await expect(input).toBeDisabled()
-    await expect(panel).toBeFocused()
-    await panel.press('Enter')
-    await panel.press('Escape')
-    await expect(panel).toBeVisible()
-    await panel.getByRole('button', { name: '收起工具审批', exact: true }).click()
-    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).not.toBeVisible()
-    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
-    await panel.getByRole('button', { name: '展开工具审批', exact: true }).click()
-    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeVisible()
-    expect(
-      await panel.evaluate((element) => {
-        const section = element.closest('section[aria-label="对话内容"]')
-        const scroller =
-          section?.querySelector('[aria-label="消息记录"]')?.parentElement?.parentElement
-        return !!scroller && !scroller.contains(element)
-      }),
-    ).toBe(true)
-    await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
-    await page.screenshot({
-      path: '.artifacts/screenshots/approval-composer-light.png',
-      animations: 'disabled',
-    })
-    await panel.getByText('查看详情', { exact: true }).click()
-    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText(
-      '等待审批',
-    )
-    await expect(page.locator('pre')).toContainText(join(profile, 'fixture.txt'))
-    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
-    await page.reload()
-    await page
-      .getByRole('region', { name: '对话', exact: true })
-      .getByRole('button', { name: '需要审批', exact: true })
-      .click()
-    await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
-    await page.getByRole('button', { name: '允许一次' }).click()
-    await expect(page.getByText('已读取测试文件。', { exact: true })).toBeVisible()
-    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText('已处理')
-    await expect(page.getByText('准备检查文件。', { exact: true })).not.toBeVisible()
-    await expect(page.getByRole('button', { name: '允许一次' })).not.toBeVisible()
-    await expect(input).toBeVisible()
-    expect(
-      modelEndpoint?.requests.some(
-        (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
-      ),
-    ).toBe(true)
-    await page.screenshot({ path: '.artifacts/screenshots/conversation-approved.png' })
+    const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    for (const text of ['只读文件', '只读目录', '只读搜索']) {
+      await expect(input).toBeEnabled()
+      const before = await answers.count()
+      await input.fill(text)
+      await input.press('Enter')
+      await expect(answers).toHaveCount(before + 1)
+      await expect(answers.last()).toContainText('已完成只读检查。')
+      await expect(page.getByRole('region', { name: '工具审批', exact: true })).toHaveCount(0)
+    }
+    await expect(page.getByLabel('会话目录授权', { exact: true })).toHaveCount(0)
+    const trigger = page.getByRole('button', { name: '会话权限', exact: true })
+    await trigger.click()
+    const dialog = page.getByRole('dialog', { name: '会话权限', exact: true })
+    await expect(
+      dialog.getByText('暂无额外目录授权。普通读取无需先添加授权。', { exact: true }),
+    ).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(trigger).toBeFocused()
   })
 
-  test('底部审批在切换会话后恢复，拒绝与停止后保留草稿和自动增高', async ({
-    desktop,
-    modelEndpoint,
-    profile,
-  }) => {
-    if (!modelEndpoint) throw new Error('受控端点不存在')
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    const panel = page.getByRole('region', { name: '工具审批', exact: true })
-    const sidebar = page.getByRole('region', { name: '对话', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('需要延迟审批')
-    await input.press('Enter')
-    await expect(page.getByText('准备检查文件。', { exact: true })).toBeVisible()
-    await expect(input).toBeEnabled()
-    const draft = '审批后继续讨论。\n第二行草稿。'
-    await input.fill(draft)
-    const draftHeight = await input.evaluate((element) => element.getBoundingClientRect().height)
-    modelEndpoint.requestApproval()
-    await expect(panel).toBeVisible()
-    await expect(input).toBeVisible()
-    await expect(input).toBeDisabled()
-    await page.getByRole('button', { name: '设置', exact: true }).click()
-    await page.getByText('深色', { exact: true }).click()
-    await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
-    )
-    await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
-    await expect(panel).toBeVisible()
-    await page.screenshot({
-      path: '.artifacts/screenshots/approval-composer-dark.png',
-      animations: 'disabled',
-    })
-    await panel.getByText('查看详情', { exact: true }).click()
-    await expect(panel.getByLabel('完整操作快照')).toContainText(join(profile, 'fixture.txt'))
-    const panelBox = await panel.boundingBox(),
-      approveBox = await panel.getByRole('button', { name: '允许一次', exact: true }).boundingBox()
-    if (!panelBox || !approveBox) throw new Error('审批区域不存在')
-    expect(panelBox.y).toBeGreaterThanOrEqual(0)
-    expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(await page.evaluate(() => innerHeight))
-    expect(approveBox.y + approveBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height)
-    expect(
-      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
-    ).toBe(true)
-    await page.screenshot({
-      path: '.artifacts/screenshots/approval-details-compact.png',
-      animations: 'disabled',
-    })
-    await page.getByRole('button', { name: '新对话', exact: true }).click()
-    await expect(panel).not.toBeVisible()
-    await expect(input).toHaveValue('')
-    await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
-    await expect(panel).toBeVisible()
-    expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
-    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
-    await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
-    await expect(panel).not.toBeVisible()
-    await expect(input).toHaveValue(draft)
-    await expect(input).toBeFocused()
-    await expect
-      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
-      .toBe(draftHeight)
-    await input.fill('审批停止')
-    await input.press('Enter')
-    await expect(panel).toBeVisible()
-    const toolCalls = modelEndpoint.requests.filter((request) => request.lastRole === 'tool').length
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
-    await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
-    await expect(panel).not.toBeVisible()
-    await expect(input).toBeEnabled()
-    expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
-      toolCalls,
-    )
-  })
+  test.describe('逐次读取审批交互', () => {
+    test.use({ approvalPolicy: 'always' })
 
-  test('审批提交失败保留完整快照，提交中不能重复操作，可以重新查询待审批状态', async ({
-    desktop,
-    modelEndpoint,
-  }) => {
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    const panel = page.getByRole('region', { name: '工具审批', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('审批提交')
-    await input.press('Enter')
-    await expect(panel).toBeVisible()
-    const snapshot = await panel.getByLabel('完整操作快照').textContent()
-    // 仅替换本次隔离进程的 IPC 回包以制造失败；真实 Go 审批保持 pending。
-    await desktop.evaluate(({ ipcMain }, channel) => {
-      const state: { attempts: number; release: (() => void) | null } = {
-        attempts: 0,
-        release: null,
-      }
-      Reflect.set(globalThis, 'approvalFailure', state)
-      ipcMain.removeHandler(channel)
-      ipcMain.handle(channel, async () => {
-        state.attempts++
-        await new Promise<void>((resolve) => {
-          state.release = resolve
-        })
-        return { ok: false, error: '受控审批提交失败' }
+    test('审批位于底部输入区，过程说明和工具步骤在完成及历史重载后保留', async ({
+      desktop,
+      modelEndpoint,
+      profile,
+    }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('需要审批')
+      await input.press('Enter')
+      await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(input).toBeVisible()
+      await expect(input).toBeDisabled()
+      await expect(panel).toBeFocused()
+      await panel.press('Enter')
+      await panel.press('Escape')
+      await expect(panel).toBeVisible()
+      await panel.getByRole('button', { name: '收起工具审批', exact: true }).click()
+      await expect(panel.getByRole('button', { name: '仅本次允许', exact: true })).not.toBeVisible()
+      expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        0,
+      )
+      await panel.getByRole('button', { name: '展开工具审批', exact: true }).click()
+      await expect(panel.getByRole('button', { name: '仅本次允许', exact: true })).toBeVisible()
+      expect(
+        await panel.evaluate((element) => {
+          const section = element.closest('section[aria-label="对话内容"]')
+          const scroller =
+            section?.querySelector('[aria-label="消息记录"]')?.parentElement?.parentElement
+          return !!scroller && !scroller.contains(element)
+        }),
+      ).toBe(true)
+      await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
+      await page.screenshot({
+        path: '.artifacts/screenshots/approval-composer-light.png',
+        animations: 'disabled',
       })
-    }, IPC_CHANNELS.decideApproval)
-    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
-    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeDisabled()
-    await expect(panel.getByRole('button', { name: '拒绝', exact: true })).toBeDisabled()
-    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled()
-    await panel.press('Enter')
-    expect(await desktop.evaluate(() => Reflect.get(globalThis, 'approvalFailure').attempts)).toBe(
-      1,
-    )
-    await desktop.evaluate(() => {
-      const release: unknown = Reflect.get(globalThis, 'approvalFailure').release
-      if (typeof release !== 'function') throw new Error('没有待完成的提交')
-      release()
+      await panel.getByText('查看详情', { exact: true }).click()
+      await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+        '等待审批',
+      )
+      await expect(panel.locator('pre')).toContainText(join(profile, 'fixture.txt'))
+      expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        0,
+      )
+      await page.reload()
+      await page
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: '需要审批', exact: true })
+        .click()
+      await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
+      await page.getByRole('button', { name: '仅本次允许' }).click()
+      await expect(page.getByText('已读取测试文件。', { exact: true })).toBeVisible()
+      await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+        '已处理',
+      )
+      const timeline = page.getByRole('region', { name: '调用过程', exact: true })
+      await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
+      await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
+      await timeline.locator(':scope > div > details > summary').click()
+      await expect(timeline.getByText('已保存的结果', { exact: true })).toBeVisible()
+      await expect(timeline.getByLabel('工具结果', { exact: true })).toContainText(
+        'controlled-file',
+      )
+      await page.reload()
+      await page
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: '需要审批', exact: true })
+        .click()
+      await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
+      await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: '仅本次允许' })).not.toBeVisible()
+      await expect(input).toBeVisible()
+      expect(
+        modelEndpoint?.requests.some(
+          (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
+        ),
+      ).toBe(true)
+      await page.screenshot({ path: '.artifacts/screenshots/conversation-approved.png' })
     })
-    await expect(panel.getByRole('alert')).toContainText('受控审批提交失败')
-    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
-    await expect(input).toBeVisible()
-    await expect(input).toBeDisabled()
-    await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
-    await expect(panel.getByRole('alert')).toHaveCount(0)
-    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeEnabled()
-    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
-    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
+
+    test('底部审批在切换会话后恢复，拒绝与停止后保留草稿和自动增高', async ({
+      desktop,
+      modelEndpoint,
+      profile,
+    }) => {
+      if (!modelEndpoint) throw new Error('受控端点不存在')
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      const sidebar = page.getByRole('region', { name: '最近', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('需要延迟审批')
+      await input.press('Enter')
+      await expect(page.getByText('准备检查文件。', { exact: true })).toBeVisible()
+      await expect(input).toBeEnabled()
+      const draft = '审批后继续讨论。\n第二行草稿。'
+      await input.fill(draft)
+      const draftHeight = await input.evaluate((element) => element.getBoundingClientRect().height)
+      modelEndpoint.requestApproval()
+      await expect(panel).toBeVisible()
+      await expect(input).toBeVisible()
+      await expect(input).toBeDisabled()
+      await page.getByRole('button', { name: '设置', exact: true }).click()
+      await page.getByText('深色', { exact: true }).click()
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+      )
+      await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
+      await expect(panel).toBeVisible()
+      await page.screenshot({
+        path: '.artifacts/screenshots/approval-composer-dark.png',
+        animations: 'disabled',
+      })
+      await panel.getByText('查看详情', { exact: true }).click()
+      await expect(panel.getByLabel('完整操作快照')).toContainText(join(profile, 'fixture.txt'))
+      const panelBox = await panel.boundingBox(),
+        approveBox = await panel
+          .getByRole('button', { name: '仅本次允许', exact: true })
+          .boundingBox()
+      if (!panelBox || !approveBox) throw new Error('审批区域不存在')
+      expect(panelBox.y).toBeGreaterThanOrEqual(0)
+      expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(
+        await page.evaluate(() => innerHeight),
+      )
+      expect(approveBox.y + approveBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height)
+      expect(
+        await page
+          .locator('main')
+          .evaluate((element) => element.scrollWidth <= element.clientWidth),
+      ).toBe(true)
+      await page.screenshot({
+        path: '.artifacts/screenshots/approval-details-compact.png',
+        animations: 'disabled',
+      })
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      await expect(panel).not.toBeVisible()
+      await expect(input).toHaveValue('')
+      await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
+      await expect(panel).toBeVisible()
+      expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        0,
+      )
+      await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+      await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
+      await expect(panel).not.toBeVisible()
+      await expect(input).toHaveValue(draft)
+      await expect(input).toBeFocused()
+      await expect
+        .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+        .toBe(draftHeight)
+      await input.fill('审批停止')
+      await input.press('Enter')
+      await expect(panel).toBeVisible()
+      const toolCalls = modelEndpoint.requests.filter(
+        (request) => request.lastRole === 'tool',
+      ).length
+      await page.getByRole('button', { name: '停止生成', exact: true }).click()
+      await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
+      await expect(panel).not.toBeVisible()
+      await expect(input).toBeEnabled()
+      expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        toolCalls,
+      )
+    })
+
+    test('审批提交失败保留完整快照，提交中不能重复操作，可以重新查询待审批状态', async ({
+      desktop,
+      modelEndpoint,
+    }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('审批提交')
+      await input.press('Enter')
+      await expect(panel).toBeVisible()
+      const snapshot = await panel.getByLabel('完整操作快照').textContent()
+      // 仅替换本次隔离进程的 IPC 回包以制造失败；真实 Go 审批保持 pending。
+      await desktop.evaluate(({ ipcMain }, channel) => {
+        const state: { attempts: number; release: (() => void) | null } = {
+          attempts: 0,
+          release: null,
+        }
+        Reflect.set(globalThis, 'approvalFailure', state)
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, async () => {
+          state.attempts++
+          await new Promise<void>((resolve) => {
+            state.release = resolve
+          })
+          return { ok: false, error: '受控审批提交失败' }
+        })
+      }, IPC_CHANNELS.decideApproval)
+      await panel.getByRole('button', { name: '仅本次允许', exact: true }).click()
+      await expect(panel.getByRole('button', { name: '仅本次允许', exact: true })).toBeDisabled()
+      await expect(panel.getByRole('button', { name: '拒绝', exact: true })).toBeDisabled()
+      await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled()
+      await panel.press('Enter')
+      expect(
+        await desktop.evaluate(() => Reflect.get(globalThis, 'approvalFailure').attempts),
+      ).toBe(1)
+      await desktop.evaluate(() => {
+        const release: unknown = Reflect.get(globalThis, 'approvalFailure').release
+        if (typeof release !== 'function') throw new Error('没有待完成的提交')
+        release()
+      })
+      await expect(panel.getByRole('alert')).toContainText('受控审批提交失败')
+      expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+      await expect(input).toBeVisible()
+      await expect(input).toBeDisabled()
+      await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
+      await expect(panel.getByRole('alert')).toHaveCount(0)
+      await expect(panel.getByRole('button', { name: '仅本次允许', exact: true })).toBeEnabled()
+      expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+      expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        0,
+      )
+    })
   })
 
-  test('会话目录授权覆盖后续读取，其他会话隔离并可撤销', async ({ desktop }) => {
+  test('会话目录写授权覆盖子目录、其他会话隔离并可撤销', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const panel = page.getByRole('region', { name: '工具审批', exact: true })
@@ -828,88 +896,99 @@ test.describe('真实 Go 对话交互', () => {
     await input.fill('目录审批')
     await input.press('Enter')
     await expect(
-      panel.getByText('可在当前会话授权此目录及子目录读取', { exact: false }),
+      panel.getByText('本会话允许此目录及子目录读取和普通修改', { exact: false }),
     ).toBeVisible()
-    await panel.getByRole('button', { name: '授权目录及子目录', exact: true }).click()
-    await expect(answer.last()).toContainText('已读取测试文件。')
-    const permissions = page.getByLabel('会话目录授权', { exact: true })
-    await permissions.locator('summary').click()
-    await expect(permissions.getByText('只读', { exact: false })).toBeVisible()
+    await panel.getByRole('button', { name: '本会话允许此目录', exact: true }).click()
+    await expect(answer.last()).toContainText('已修改测试文件。')
+    await page.getByRole('button', { name: '会话权限', exact: true }).click()
+    const permissions = page.getByRole('dialog', { name: '会话权限', exact: true })
+    await expect(permissions).toBeVisible()
+    await expect(permissions.getByText('读取和普通修改', { exact: true })).toBeVisible()
+    await permissions.getByRole('button', { name: '关闭会话权限', exact: true }).click()
     await page.reload()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '目录审批', exact: true })
       .click()
     await input.fill('目录再次审批')
     await input.press('Enter')
-    await expect(answer.last()).toContainText('已读取测试文件。')
+    await expect(answer.last()).toContainText('已修改测试文件。')
     await expect(panel).not.toBeVisible()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
-    await input.fill('另一个会话审批')
+    await input.fill('另一个会话目录审批')
     await input.press('Enter')
     await expect(panel).toBeVisible()
     await panel.getByRole('button', { name: '拒绝', exact: true }).click()
     await expect(input).toBeEnabled()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '目录审批', exact: true })
       .click()
-    await permissions.locator('summary').click()
+    await page.getByRole('button', { name: '会话权限', exact: true }).click()
     await permissions.getByRole('button', { name: '撤销授权', exact: true }).click()
     await expect(permissions.getByText('已撤销', { exact: false })).toBeVisible()
-    await input.fill('撤销后审批')
+    await permissions.getByRole('button', { name: '关闭会话权限', exact: true }).click()
+    await input.fill('目录撤销后审批')
     await input.press('Enter')
     await expect(panel).toBeVisible()
     await panel.getByRole('button', { name: '拒绝', exact: true }).click()
   })
 
-  test('连续工具审批逐项确认，新目标不会继承上一项决定', async ({
-    desktop,
-    modelEndpoint,
-    profile,
-  }) => {
-    await writeFile(join(profile, 'fixture.txt.second'), 'second-controlled-file', { mode: 0o600 })
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    const panel = page.getByRole('region', { name: '工具审批', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('需要连续审批')
-    await input.press('Enter')
-    await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
-    await panel.getByText('查看详情', { exact: true }).click()
-    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
-    await expect(
-      panel.getByText(join(profile, 'fixture.txt.second'), { exact: true }),
-    ).toBeVisible()
-    await expect(panel.getByLabel('完整操作快照')).toBeHidden()
-    await expect(panel).toBeFocused()
-    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
-    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
-    await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
-    await expect(panel).not.toBeVisible()
-    await expect(input).toBeEnabled()
-  })
+  test.describe('逐次审批隔离与断连', () => {
+    test.use({ approvalPolicy: 'always' })
 
-  test('待审批时连接中断会保留操作详情并禁用所有决定和停止操作', async ({ desktop }) => {
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    const panel = page.getByRole('region', { name: '工具审批', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('审批服务中断')
-    await input.press('Enter')
-    await expect(panel).toBeVisible()
-    const snapshot = await panel.getByLabel('完整操作快照').textContent()
-    await interruptTestBackend(desktop)
-    await expect(panel.getByRole('alert')).toContainText('连接已中断')
-    for (const name of ['允许一次', '拒绝'])
-      await expect(panel.getByRole('button', { name, exact: true })).toBeDisabled()
-    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled()
-    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
-    await expect(input).toBeVisible()
-    await expect(input).toBeDisabled()
-    await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
-    await expect(panel.getByRole('alert')).toContainText('连接已中断')
-    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeDisabled()
+    test('连续工具审批逐项确认，新目标不会继承上一项决定', async ({
+      desktop,
+      modelEndpoint,
+      profile,
+    }) => {
+      await writeFile(join(profile, 'fixture.txt.second'), 'second-controlled-file', {
+        mode: 0o600,
+      })
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('需要连续审批')
+      await input.press('Enter')
+      await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
+      await panel.getByText('查看详情', { exact: true }).click()
+      await panel.getByRole('button', { name: '仅本次允许', exact: true }).click()
+      await expect(
+        panel.getByText(join(profile, 'fixture.txt.second'), { exact: true }),
+      ).toBeVisible()
+      await expect(panel.getByLabel('完整操作快照')).toBeHidden()
+      await expect(panel).toBeFocused()
+      expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+        0,
+      )
+      await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+      await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
+      await expect(panel).not.toBeVisible()
+      await expect(input).toBeEnabled()
+    })
+
+    test('待审批时连接中断会保留操作详情并禁用所有决定和停止操作', async ({ desktop }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('审批服务中断')
+      await input.press('Enter')
+      await expect(panel).toBeVisible()
+      const snapshot = await panel.getByLabel('完整操作快照').textContent()
+      await interruptTestBackend(desktop)
+      await expect(panel.getByRole('alert')).toContainText('连接已中断')
+      for (const name of ['仅本次允许', '拒绝'])
+        await expect(panel.getByRole('button', { name, exact: true })).toBeDisabled()
+      await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled()
+      expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+      await expect(input).toBeVisible()
+      await expect(input).toBeDisabled()
+      await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
+      await expect(panel.getByRole('alert')).toContainText('连接已中断')
+      await expect(panel.getByRole('button', { name: '仅本次允许', exact: true })).toBeDisabled()
+    })
   })
 
   test('失败不会当成成功，长消息在小窗口正常换行', async ({ desktop }) => {
@@ -961,7 +1040,7 @@ test.describe('真实 Go 对话交互', () => {
     })
     const reopened = await nextWindow
     await reopened
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '等待窗口恢复', exact: true })
       .click()
     await expect(reopened.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
@@ -1001,7 +1080,7 @@ test.describe('真实 Go 对话交互', () => {
       }
     })
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '分页-0', exact: true })
       .click()
     const messages = page.getByLabel('消息记录', { exact: true })
@@ -1107,6 +1186,124 @@ test.describe('会话与项目管理', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
 
+  test('输入区可搜索和新建项目，最近入口与项目选择保留隔离草稿并在发送时绑定', async ({
+    desktop,
+    profile,
+  }) => {
+    const firstFolder = join(profile, 'composer-existing-project')
+    const newFolder = join(profile, 'composer-new-project')
+    await mkdir(firstFolder)
+    await mkdir(newFolder)
+    const page = await desktop.firstWindow()
+    await addTestWorkspace(desktop, page, firstFolder, '输入区项目')
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const trigger = page.getByRole('button', { name: '选择项目', exact: true })
+    const picker = page.getByRole('dialog', { name: '选择项目', exact: true })
+    await expect(trigger).toHaveText('输入区项目')
+    await input.fill('项目草稿')
+    await page.getByRole('button', { name: '最近中新建对话', exact: true }).click()
+    await expect(trigger).toHaveText('选择项目')
+    await input.fill('独立草稿')
+    await trigger.click()
+    const search = picker.getByRole('combobox', { name: '搜索项目', exact: true })
+    await expect(search).toBeFocused()
+    await search.fill('没有这个项目')
+    await expect(picker.getByText('没有匹配的项目', { exact: true })).toBeVisible()
+    await search.fill('输入区')
+    await search.press('ArrowDown')
+    await search.press('Enter')
+    await expect(picker).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await expect(trigger).toHaveText('输入区项目')
+    await expect(input).toHaveValue('项目草稿')
+    await trigger.click()
+    await picker.getByRole('option', { name: '不选择项目', exact: true }).click()
+    await expect(input).toHaveValue('独立草稿')
+    const before = await page.evaluate(() => window.callum.getChatOverview(0))
+    expect(before.ok && before.value.conversations).toHaveLength(0)
+
+    await trigger.click()
+    await page.keyboard.press('Escape')
+    await expect(picker).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await trigger.click()
+    await picker.getByRole('button', { name: '新建项目', exact: true }).click()
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true })
+    await expect(creation).toBeVisible()
+    await creation.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(trigger).toBeFocused()
+    await expect(input).toHaveValue('独立草稿')
+    await trigger.click()
+    await picker.getByRole('button', { name: '新建项目', exact: true }).click()
+    await chooseTestDirectory(desktop, newFolder)
+    await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('输入区新项目')
+    await creation.getByRole('button', { name: '添加', exact: true }).click()
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click()
+    await expect(creation).toHaveCount(0)
+    await expect(trigger).toHaveText('输入区新项目')
+    await input.fill('从输入区绑定项目')
+    await input.press('Enter')
+    const project = page.getByRole('region', { name: '输入区新项目', exact: true })
+    await expect(
+      project.getByRole('button', { name: '从输入区绑定项目', exact: true }),
+    ).toBeVisible()
+    await expect(page.getByLabel('对话项目', { exact: true })).toHaveCount(0)
+    await expect(trigger).toHaveCount(0)
+    const details = await page.evaluate(async () => {
+      const projects = await window.callum.listWorkspaces(0)
+      if (!projects.ok) throw new Error(projects.error)
+      const project = projects.value.workspaces.find((item) => item.name === '输入区新项目')
+      if (!project) throw new Error('项目未创建')
+      const conversations = await window.callum.getWorkspaceConversations(project.id, 0)
+      if (!conversations.ok) throw new Error(conversations.error)
+      return { projectId: project.id, items: conversations.value.conversations }
+    })
+    expect(details.items).toEqual([
+      expect.objectContaining({ title: '从输入区绑定项目', workspaceId: details.projectId }),
+    ])
+    await page.reload()
+    await project.getByRole('button', { name: '输入区新项目', exact: true }).click()
+    await project.getByRole('button', { name: '从输入区绑定项目', exact: true }).click()
+    await expect(input).toBeEnabled()
+    await expect(page.getByLabel('对话项目', { exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: '最近中新建对话', exact: true }).click()
+    await expect(page.getByLabel('对话项目', { exact: true })).toBeVisible()
+    await expect(trigger).toHaveText('选择项目')
+  })
+
+  test('文件夹侧栏支持空项目、键盘新建、缩进会话与独立最近列表', async ({ desktop, profile }) => {
+    const folder = join(profile, 'sidebar-project')
+    await mkdir(folder)
+    const page = await desktop.firstWindow()
+    await addTestWorkspace(desktop, page, folder, '空项目')
+    const project = page.getByRole('region', { name: '空项目', exact: true })
+    const row = project.getByRole('button', { name: '空项目', exact: true })
+    await expect(row).toHaveAttribute('aria-expanded', 'true')
+    await expect(row).toHaveCSS('font-size', '13px')
+    await expect(project.getByText('暂无聊天', { exact: true })).toBeVisible()
+    const create = project.getByRole('button', { name: '在空项目中新建对话', exact: true })
+    await create.focus()
+    await expect(create).toHaveCSS('opacity', '1')
+    await create.press('Enter')
+    await expect(page.getByText('在 空项目 中开始对话。', { exact: true })).toBeVisible()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('项目聊天')
+    await input.press('Enter')
+    await expect(project.getByRole('button', { name: '项目聊天', exact: true })).toBeVisible()
+    await expect(
+      project.getByRole('button', { name: '项目聊天', exact: true }).locator('svg'),
+    ).toHaveCount(0)
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    await expect(recent.getByRole('button', { name: '项目聊天', exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('独立聊天')
+    await input.press('Enter')
+    const independent = recent.getByRole('button', { name: '独立聊天', exact: true })
+    await expect(independent).toBeVisible()
+    await expect(independent).toHaveCSS('font-size', '13px')
+    await expect(independent.locator('svg')).toHaveCount(0)
+  })
+
   test('创建项目在弹窗内命名和选择文件夹，更换或取消选择保留已填内容', async ({
     desktop,
     profile,
@@ -1164,7 +1361,7 @@ test.describe('会话与项目管理', () => {
     await page.getByRole('button', { name: '新对话', exact: true }).click()
     await expect(input).toHaveValue('')
     await input.fill('独立草稿')
-    await workspace.getByRole('button', { name: '新建对话', exact: true }).click()
+    await workspace.getByRole('button', { name: '在产品计划中新建对话', exact: true }).click()
     await expect(input).toHaveValue('项目草稿')
     await input.fill('项目提问')
     await input.press('Enter')
@@ -1172,7 +1369,7 @@ test.describe('会话与项目管理', () => {
     await expect(workspace.getByRole('button', { name: '项目提问', exact: true })).toBeVisible()
     await expect(
       page
-        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('region', { name: '最近', exact: true })
         .getByRole('button', { name: '项目提问', exact: true }),
     ).toHaveCount(0)
     await workspace.getByRole('button', { name: '项目提问的操作', exact: true }).click()
@@ -1190,7 +1387,7 @@ test.describe('会话与项目管理', () => {
     await input.press('Enter')
     await expect(
       page
-        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('region', { name: '最近', exact: true })
         .getByRole('button', { name: '独立提问', exact: true }),
     ).toBeVisible()
     await page.getByRole('button', { name: '产品计划的操作', exact: true }).click()
@@ -1236,7 +1433,7 @@ test.describe('会话与项目管理', () => {
     )
     await expect(
       page
-        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('region', { name: '最近', exact: true })
         .getByRole('button', { name: '独立提问', exact: true }),
     ).toBeVisible()
   })
@@ -1297,7 +1494,7 @@ test.describe('会话与项目管理', () => {
     await expect(
       page
         .getByRole('region', { name: '运行项目', exact: true })
-        .getByRole('button', { name: '新建对话', exact: true }),
+        .getByRole('button', { name: '在运行项目中新建对话', exact: true }),
     ).toBeVisible()
   })
 
@@ -1340,7 +1537,7 @@ test.describe('会话与项目管理', () => {
       { snapshots, firstId: first.id, channel: IPC_CHANNELS.getConversation },
     )
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '会话甲', exact: true })
       .click()
     await expect(page.getByText('正在加载消息…', { exact: true })).toBeVisible()
@@ -1351,7 +1548,7 @@ test.describe('会话与项目管理', () => {
       .getByRole('button', { name: '确认删除', exact: true })
       .click()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '会话乙', exact: true })
       .click()
     await desktop.evaluate(() => {
@@ -1567,7 +1764,7 @@ test.describe('输入区交互卡片', () => {
       BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
     )
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '提问甲', exact: true })
       .click()
     await expect(card.getByRole('button', { name: '展开补充输入', exact: true })).toBeVisible()
@@ -1585,7 +1782,7 @@ test.describe('输入区交互卡片', () => {
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(card).not.toBeVisible()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '提问乙', exact: true })
       .click()
     await expect(card.getByRole('textbox', { name: '自行回复', exact: true })).toHaveValue(
@@ -1610,7 +1807,7 @@ test.describe('输入区交互卡片', () => {
     await expect(card).toBeVisible()
     await page.reload()
     await page
-      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '提问提交', exact: true })
       .click()
     await expect(card).toBeVisible()
@@ -2041,7 +2238,7 @@ test.describe('Markdown 回答展示', () => {
       Reflect.get(globalThis, 'callumMarkdownTest').copyFails = false
       Reflect.get(globalThis, 'callumMarkdownTest').linkFails = false
     })
-    const sidebar = page.getByRole('region', { name: '对话', exact: true })
+    const sidebar = page.getByRole('region', { name: '最近', exact: true })
     const conversation = sidebar.getByRole('button').first()
     const title = await conversation.getAttribute('title')
     if (!title) throw new Error('会话标题不存在')

@@ -167,6 +167,12 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.getEarlierMessages, 2, (conversationId, beforeSequence) =>
     service.earlier(id(conversationId), integer(beforeSequence, 1)),
   )
+  handle(IPC_CHANNELS.listRunSteps, 3, (conversationId, runId, afterSequence) =>
+    service.listSteps(id(conversationId), id(runId), integer(afterSequence)),
+  )
+  handle(IPC_CHANNELS.getStepDetails, 3, (conversationId, runId, stepId) =>
+    service.stepDetails(id(conversationId), id(runId), id(stepId)),
+  )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
   handle(IPC_CHANNELS.submitUserInput, 3, (inputId, runId, answer) =>

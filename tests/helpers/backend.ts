@@ -9,7 +9,11 @@ export const backendExecutable = join(resourceRoot, `${'backend'}/darwin-arm64/c
 export const supportedBackend = process.platform === 'darwin' && process.arch === 'arm64'
 
 /** 仅对调用方提供的测试目录写入本机受控端点；不提供生产环境通用 RPC 入口。 */
-export async function seedModel(profile: string, baseUrl: string): Promise<string> {
+export async function seedModel(
+  profile: string,
+  baseUrl: string,
+  approvalPolicy: 'on-request' | 'always' = 'on-request',
+): Promise<string> {
   const client = new RpcClient(
     backendExecutable,
     ['--data-dir', join(profile, 'backend')],
@@ -17,6 +21,14 @@ export async function seedModel(profile: string, baseUrl: string): Promise<strin
     () => undefined,
   )
   try {
+    if (approvalPolicy !== 'on-request') {
+      const settings = record(await client.request('settings.get', { key: 'execution' }))
+      await client.request('settings.update', {
+        key: 'execution',
+        revision: settings.revision,
+        value: { approval_policy: approvalPolicy, approvals_reviewer: 'user' },
+      })
+    }
     const provider = record(
       await client.request('provider.create', {
         name: `受控本机端点-${randomUUID()}`,

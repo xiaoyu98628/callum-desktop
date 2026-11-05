@@ -1,6 +1,7 @@
 import { computed, inject, onMounted, onScopeDispose, provide, reactive } from 'vue'
 import type { InjectionKey } from 'vue'
 import { isActiveRun, isVisible } from '@shared/chat'
+import { boundSteps } from '@shared/steps'
 import type {
   ChatEvent,
   ApprovalScope,
@@ -274,6 +275,8 @@ function createConversations() {
       (!state.historical || state.detail.messages.some((item) => item.id === change.value.id))
     )
       state.detail.messages = boundMessages(upsert(state.detail.messages, change.value))
+    if (change.kind === 'step')
+      state.detail.steps = boundSteps(upsert(state.detail.steps, change.value))
     if (change.kind === 'run') {
       state.detail.runs = upsert(state.detail.runs, change.value)
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
@@ -529,6 +532,9 @@ function createConversations() {
   }
   function newConversation(workspaceId: string | null = null): void {
     selection++
+    state.directoriesLoading = false
+    state.directoriesOffset = 0
+    state.directoriesError = ''
     state.selectedId = null
     state.workspaceId = workspaceId
     selectAvailableModel()
@@ -539,8 +545,25 @@ function createConversations() {
     state.cancelling = false
     pendingEvents.clear()
   }
+  function selectDraftProject(workspaceId: string | null): boolean {
+    if (
+      state.selectedId ||
+      state.loading ||
+      state.sending ||
+      state.managing ||
+      state.serviceError ||
+      (workspaceId !== null && !state.workspaces.some((item) => item.id === workspaceId))
+    )
+      return false
+    if (workspaceId !== state.workspaceId) newConversation(workspaceId)
+    if (workspaceId) expandWorkspace(workspaceId)
+    return true
+  }
   async function openConversation(conversationId: string): Promise<void> {
     const token = ++selection
+    state.directoriesLoading = false
+    state.directoriesOffset = 0
+    state.directoriesError = ''
     detailRevision = 0
     state.selectedId = conversationId
     const known =
@@ -649,6 +672,7 @@ function createConversations() {
     const conversationId = state.selectedId
     if (!conversationId || state.directoriesLoading) return
     const currentSelection = selection
+    const before = new Map(state.detail?.directoryGrants.map((grant) => [grant.id, grant]))
     state.directoriesLoading = true
     state.directoriesError = ''
     try {
@@ -658,13 +682,21 @@ function createConversations() {
         selection === currentSelection &&
         state.detail?.conversation.id === conversationId
       ) {
-        state.detail.directoryGrants = values
+        // 查询期间收到的新增或撤销通知优先于早先生成的列表快照。
+        const changed = state.detail.directoryGrants.filter(
+          (grant) => before.get(grant.id) !== grant,
+        )
+        state.detail.directoryGrants = changed.reduce(
+          (items, grant) => upsert(items, grant),
+          values,
+        )
         state.directoriesOffset = offset
       }
     } catch (error) {
-      if (conversationId === state.selectedId) state.directoriesError = message(error)
+      if (!disposed && selection === currentSelection && conversationId === state.selectedId)
+        state.directoriesError = message(error)
     } finally {
-      state.directoriesLoading = false
+      if (!disposed && selection === currentSelection) state.directoriesLoading = false
     }
   }
   async function revokeDirectory(grantId: string): Promise<void> {
@@ -781,6 +813,7 @@ function createConversations() {
     renameConversation,
     deleteConversation,
     newConversation,
+    selectDraftProject,
     openConversation,
     refreshOverview,
     refreshModels,

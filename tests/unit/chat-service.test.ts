@@ -19,7 +19,7 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 test(
-  '真实 Go 服务：流式消息、隔离并行、取消、失败、审批与重启恢复',
+  '真实 Go 服务：流式、隔离、取消、失败、always 审批与重启恢复',
   { skip: !supportedBackend },
   async () => {
     const profile = await mkdtemp(join(tmpdir(), 'callum-chat-integration-'))
@@ -31,7 +31,7 @@ test(
     })
     let service: ChatService | undefined
     try {
-      const modelId = await seedModel(profile, upstream.baseUrl)
+      const modelId = await seedModel(profile, upstream.baseUrl, 'always')
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const events: ChatEvent[] = []
       service.subscribe((event) => events.push(event))
@@ -140,6 +140,32 @@ test(
       const final = (await service.detail(approvalRun.conversationId)).messages.at(-1)?.content[0]
         ?.text
       assert.equal(final, '已读取测试文件。', '完整消息应替换工具调用前的文本')
+      const steps = await service.listSteps(approvalRun.conversationId, approvalRun.runId, 0)
+      assert.equal(steps.hasMore, false)
+      const readStep = steps.steps.find((step) => step.name === 'read_file')
+      assert.ok(readStep)
+      assert.equal(readStep.status, 'completed')
+      const modelStep = steps.steps.find((step) => step.id === readStep.parentStepId)
+      assert.ok(modelStep?.commentary)
+      assert.equal(modelStep.text, '准备检查文件。', '消息清空后过程说明仍按步骤保存')
+      const readDetails = await service.stepDetails(
+        approvalRun.conversationId,
+        approvalRun.runId,
+        readStep.id,
+      )
+      assert.ok(readDetails.output.includes('controlled-file'))
+      await assert.rejects(service.listSteps(other.conversationId, approvalRun.runId, 0))
+      await assert.rejects(
+        service.stepDetails(other.conversationId, approvalRun.runId, readStep.id),
+      )
+      assert.ok(
+        events.some(
+          ({ change }) =>
+            change.kind === 'step' &&
+            change.value.runId === approvalRun.runId &&
+            change.value.name === 'read_file',
+        ),
+      )
       assert.ok(
         upstream.requests.some(
           (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
@@ -201,6 +227,21 @@ test(
         restored.runs.find((run) => run.id === first.runId)?.finishedAt,
         completed.finishedAt,
       )
+      const restoredSteps = await service.listSteps(
+        approvalRun.conversationId,
+        approvalRun.runId,
+        0,
+      )
+      const restoredModel = restoredSteps.steps.find(
+        (step) => step.commentary && step.purpose === 'answer',
+      )
+      assert.ok(restoredModel)
+      const restoredText = await service.stepDetails(
+        approvalRun.conversationId,
+        approvalRun.runId,
+        restoredModel.id,
+      )
+      assert.equal(restoredText.text, '准备检查文件。', '重启后从统一模型步骤恢复过程文字')
       assert.equal(restored.messages.length, 4)
       assert.equal(restored.messages.at(-1)?.status, 'cancelled')
       assert.equal((await service.overview(0)).conversations.length, 8)

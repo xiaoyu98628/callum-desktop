@@ -1,3 +1,4 @@
+import { truncateStepText } from '../../shared/steps.ts'
 import {
   array,
   id,
@@ -7,6 +8,7 @@ import {
   parseConversation,
   parseMessage,
   parseRun,
+  parseStep,
   parseWorkspace,
   parseUserInput,
   record,
@@ -17,6 +19,7 @@ import type {
   DirectoryGrant,
   ChatMessage,
   ChatRun,
+  ChatStep,
   ChatUserInput,
   Conversation,
   Workspace,
@@ -143,4 +146,38 @@ export function appendDelta(message: ChatMessage, params: Record<string, unknown
   if (Buffer.byteLength(content.map((item) => item.text).join('')) > 1024 * 1024)
     throw new Error('回答内容超出限制')
   return { ...message, content }
+}
+
+export function stepFromRpc(value: unknown): ChatStep {
+  const v = record(value)
+  const input = v.input == null ? {} : record(v.input)
+  const rawInput = JSON.stringify(input, null, 2)
+  return parseStep({
+    id: v.id,
+    conversationId: v.conversation_id,
+    runId: v.run_id,
+    parentStepId: v.parent_step_id ?? null,
+    sequence: v.sequence,
+    type: v.type,
+    name: v.name,
+    purpose:
+      typeof input.purpose === 'string'
+        ? input.purpose
+        : v.type === 'model_call' && v.parent_step_id == null
+          ? 'answer'
+          : '',
+    status: v.status,
+    input: truncateStepText(rawInput, 128 * 1024),
+    inputTruncated: rawInput.length > 128 * 1024,
+    error: v.error_message ?? null,
+    startedAt: v.started_at ?? null,
+    finishedAt: v.finished_at ?? null,
+    updatedAt: v.updated_at,
+    text: '',
+    commentary: false,
+    textTruncated: false,
+    output: '',
+    outputTruncated: false,
+    outputSequence: 0,
+  })
 }

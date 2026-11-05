@@ -6,6 +6,8 @@ import {
   array,
   id,
   parseChatEvent,
+  parseStepPage,
+  parseStepDetails,
   parseDetail,
   parseMessage,
   parseOverview,
@@ -120,6 +122,18 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getEarlierMessages, conversationId, beforeSequence),
       (value) => array(value, parseMessage),
+    )
+  },
+  async listRunSteps(conversationId, runId, afterSequence) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listRunSteps, conversationId, runId, afterSequence),
+      parseStepPage,
+    )
+  },
+  async getStepDetails(conversationId, runId, stepId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getStepDetails, conversationId, runId, stepId),
+      parseStepDetails,
     )
   },
   async sendMessage(input) {

@@ -19,6 +19,8 @@ export const IPC_CHANNELS = {
   deleteConversation: 'callum:chat:delete',
   getConversation: 'callum:chat:conversation',
   getEarlierMessages: 'callum:chat:earlier',
+  listRunSteps: 'callum:chat:steps',
+  getStepDetails: 'callum:chat:step-details',
   sendMessage: 'callum:chat:send',
   cancelRun: 'callum:chat:cancel',
   submitUserInput: 'callum:chat:submit-user-input',

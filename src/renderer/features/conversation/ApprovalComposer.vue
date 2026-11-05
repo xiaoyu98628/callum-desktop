@@ -34,7 +34,11 @@ const otherFields = computed(() => summary.value.fields.filter((field) => field 
 const heading = computed(() =>
   props.approval.toolName === 'read_file'
     ? '允许读取文件？'
-    : `允许 ${props.approval.toolName} 吗？`,
+    : props.approval.toolName === 'apply_patch'
+      ? '允许修改文件？'
+      : props.approval.toolName === 'run_command'
+        ? '允许运行命令？'
+        : `允许 ${props.approval.toolName} 吗？`,
 )
 const busy = computed(() => props.deciding || props.cancelling)
 const disabled = computed(() => busy.value || props.unavailable)
@@ -98,8 +102,8 @@ watch(
       </div>
       <dl v-if="otherFields.length" class="space-y-1.5 text-muted-foreground">
         <div
-          v-for="field in otherFields"
-          :key="field.label"
+          v-for="(field, index) in otherFields"
+          :key="`${field.label}:${index}`"
           class="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-2"
         >
           <dt class="text-muted-foreground">{{ field.label }}</dt>
@@ -113,7 +117,7 @@ watch(
         class="mt-3 rounded-lg bg-muted/60 p-2 text-muted-foreground"
       >
         <p>
-          可在当前会话授权此目录及子目录{{
+          本会话允许此目录及子目录{{
             approval.directoryScope.access === 'read' ? '读取' : '读取和普通修改'
           }}，重启后保留，可随时撤销。
         </p>
@@ -164,7 +168,7 @@ watch(
         class="rounded-full bg-foreground text-background hover:bg-foreground/90"
         :disabled="disabled"
         @click="decide('approved')"
-        >允许一次</Button
+        >仅本次允许</Button
       >
       <Button
         v-if="approval.directoryScope"
@@ -174,7 +178,7 @@ watch(
         class="rounded-full"
         :disabled="disabled"
         @click="decide('approved', 'conversation_directory')"
-        >授权目录及子目录</Button
+        >本会话允许此目录</Button
       >
     </footer>
   </InteractionCard>

@@ -11,7 +11,7 @@
   --md-subtle-background: color-mix(in srgb, var(--foreground) 7%, transparent);
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1.8;
 }
 .dark .markdown-message {
@@ -227,7 +227,7 @@
 }
 .message-markdown pre code {
   display: block;
-  font-size: 14px;
+  font-size: 13px;
 }
 .markdown-part > pre {
   border: 1px solid var(--md-code-border);

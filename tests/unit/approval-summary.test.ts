@@ -56,3 +56,47 @@ test('无法识别、过长和多目标快照要求展示完整详情，不生�
   )
   assert.equal(multi.recognized, false)
 })
+
+test('写入计划只展示服务端实际目标与操作影响，未知计划保留完整快照', () => {
+  const summary = approvalSummary(
+    JSON.stringify({
+      plan: {
+        targets: [
+          {
+            path: '/actual/new',
+            requested_path: '/requested/new',
+            kind: 'directory',
+            action: 'create',
+          },
+          { path: '/actual/new/a.txt', kind: 'file', action: 'create' },
+          { path: '/actual/b.txt', kind: 'file', action: 'update' },
+        ],
+      },
+      tool: { effects: ['write', 'destructive'] },
+      arguments: { path: '/do-not-display' },
+    }),
+  )
+  assert.equal(summary.recognized, true)
+  assert.ok(
+    summary.fields.some((field) => field.label === '创建目录' && field.value === '/actual/new'),
+  )
+  assert.ok(
+    summary.fields.some(
+      (field) => field.label === '创建文件' && field.value === '/actual/new/a.txt',
+    ),
+  )
+  assert.ok(
+    summary.fields.some(
+      (field) => field.label === '操作影响' && field.value === '删除或大范围覆盖',
+    ),
+  )
+  assert.ok(!summary.fields.some((field) => field.value === '/do-not-display'))
+  assert.equal(
+    approvalSummary(
+      JSON.stringify({
+        plan: { targets: [{ path: '/a', kind: 'file', action: 'future-operation' }] },
+      }),
+    ).recognized,
+    false,
+  )
+})

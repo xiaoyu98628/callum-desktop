@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import type { ServerResponse } from 'node:http'
 import { once } from 'node:events'
+import { dirname, join } from 'node:path'
 import { array, record, string } from '../../src/shared/chat.ts'
 import { MARKDOWN_START, MARKDOWN_END, MARKDOWN_UNSAFE } from './markdown-fixture.ts'
 
@@ -13,6 +14,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     expectedAuthorization: boolean
   }[] = []
   let cancelled = 0
+  let writeSequence = 0
   const markdownContinuations = new Set<() => void>()
   const approvalContinuations = new Set<() => void>()
   const streamingResponses = new Set<ServerResponse>()
@@ -78,6 +80,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         response.once('close', () => streamingResponses.delete(response))
         return
       }
+      const lastUser = messages.findLast((message) => message.role === 'user')
+      const prompt = typeof lastUser?.content === 'string' ? lastUser.content : ''
       if (role === 'tool') {
         if (text.includes('"question"')) {
           const answer = record(JSON.parse(text) as unknown)
@@ -90,9 +94,12 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
           finish(response)
           return
         }
-        emit(response, {
-          content: text.includes('permission_denied') ? '操作已拒绝。' : '已读取测试文件。',
-        })
+        let content = '已读取测试文件。'
+        if (prompt.startsWith('只读')) content = '已完成只读检查。'
+        else if (prompt.includes('目录') && prompt.includes('审批')) content = '已修改测试文件。'
+        else if (prompt.startsWith('命令')) content = '已完成命令检查。'
+        if (text.includes('permission_denied')) content = '操作已拒绝。'
+        emit(response, { content })
         finish(response)
         return
       }
@@ -117,6 +124,81 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         finish(response)
         return
       }
+      if (text.startsWith('只读')) {
+        const name = text.includes('目录')
+          ? 'list_directory'
+          : text.includes('搜索')
+            ? 'search_text'
+            : 'read_file'
+        const args =
+          name === 'read_file'
+            ? { path: fixturePath }
+            : name === 'list_directory'
+              ? { path: dirname(fixturePath) }
+              : { path: dirname(fixturePath), query: 'controlled-file' }
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-readonly',
+              type: 'function',
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (text.includes('目录') && text.includes('审批')) {
+        emit(response, { content: '准备修改文件。' })
+        const path = join(
+          dirname(fixturePath),
+          'directory-writes',
+          String(++writeSequence) + '.txt',
+        )
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-write',
+              type: 'function',
+              function: {
+                name: 'apply_patch',
+                arguments: JSON.stringify({
+                  patch: `*** Begin Patch\n*** Add File: ${path}\n+controlled directory write\n*** End Patch`,
+                  base_versions: [],
+                }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (text.startsWith('命令') && text.endsWith('步骤')) {
+        emit(response, { content: '准备运行命令并检查结果。' })
+        const script = text.includes('取消')
+          ? "process.stdout.write('command-started\\n'); setInterval(() => {}, 1000)"
+          : `process.stdout.write('command-out\\n'); process.stderr.write('command-err\\n'); process.exit(${text.includes('非零') ? 3 : 0})`
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-command',
+              type: 'function',
+              function: {
+                name: 'run_command',
+                arguments: JSON.stringify({
+                  command: [process.execPath, '-e', script],
+                  cwd: dirname(fixturePath),
+                }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (text.includes('审批')) {
         emit(response, { content: '准备检查文件。' })
         const requestApproval = (): void => {
@@ -128,6 +210,18 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
               function: { name: 'read_file', arguments: JSON.stringify({ path: fixturePath }) },
             },
           ]
+          if (text.includes('分页审批')) {
+            toolCalls.splice(
+              0,
+              toolCalls.length,
+              ...Array.from({ length: 51 }, (_, index) => ({
+                index,
+                id: `call-page-${index}`,
+                type: 'function',
+                function: { name: 'read_file', arguments: JSON.stringify({ path: fixturePath }) },
+              })),
+            )
+          }
           if (text.includes('连续审批'))
             toolCalls.push({
               index: 1,

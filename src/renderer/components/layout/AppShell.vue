@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { CircleAlertIcon, PanelLeftIcon } from '@lucide/vue'
+import { ref, watch } from 'vue'
+import { CircleAlertIcon, PanelLeftIcon, ShieldCheckIcon } from '@lucide/vue'
 import type { AppInfo } from '@shared/desktop-api'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import AppSidebar from './AppSidebar.vue'
+import ConversationPermissionsDialog from '@/features/conversation/ConversationPermissionsDialog.vue'
 import { useConversations } from '@/features/conversation/useConversations'
 
-defineProps<{
+const props = defineProps<{
   activePage: AppPage
   appInfo: AppInfo | null
   loading: boolean
@@ -20,7 +21,12 @@ defineEmits<{
 }>()
 
 const collapsed = ref(false)
-const { title } = useConversations()
+const { title, state } = useConversations()
+const permissionsOpen = ref(false)
+const permissionsTrigger = ref<InstanceType<typeof Button> | null>(null)
+watch([() => props.activePage, () => state.selectedId], () => {
+  permissionsOpen.value = false
+})
 </script>
 
 <template>
@@ -46,7 +52,21 @@ const { title } = useConversations()
       <span class="min-w-0 truncate text-xs font-medium">{{
         activePage === 'conversation' ? title : '设置'
       }}</span>
-      <span class="ml-auto text-[11px] tracking-wide text-muted-foreground">桌面客户端</span>
+      <div class="ml-auto flex shrink-0 items-center gap-3">
+        <Button
+          v-if="activePage === 'conversation' && state.selectedId"
+          ref="permissionsTrigger"
+          variant="ghost"
+          size="sm"
+          class="gap-1.5 text-xs text-muted-foreground"
+          aria-label="会话权限"
+          :disabled="state.loading || !state.detail"
+          @click="permissionsOpen = true"
+        >
+          <ShieldCheckIcon class="size-3.5" aria-hidden="true" />权限
+        </Button>
+        <span class="text-[11px] tracking-wide text-muted-foreground">桌面客户端</span>
+      </div>
     </header>
 
     <div class="flex min-h-0 flex-1">
@@ -74,4 +94,9 @@ const { title } = useConversations()
       </main>
     </div>
   </div>
+  <ConversationPermissionsDialog
+    v-if="permissionsOpen && activePage === 'conversation' && state.selectedId"
+    :return-focus="permissionsTrigger?.$el ?? null"
+    @close="permissionsOpen = false"
+  />
 </template>

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import {
-  ChevronRightIcon,
   FolderIcon,
+  FolderOpenIcon,
   MessageSquareIcon,
   PlusIcon,
   Settings2Icon,
@@ -160,7 +160,11 @@ async function confirmManagement(name: string): Promise<void> {
             class="mb-2 flex h-7 items-center"
             :class="collapsed ? 'justify-center' : 'gap-2 px-3'"
           >
-            <FolderIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <FolderIcon
+              v-if="collapsed"
+              class="size-3.5 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
             <h2
               id="workspace-heading"
               class="text-xs font-medium text-muted-foreground"
@@ -220,7 +224,7 @@ async function confirmManagement(name: string): Promise<void> {
             class="mb-1"
           >
             <div
-              class="group flex min-w-0 items-center rounded-lg"
+              class="group relative flex min-w-0 items-center rounded-lg"
               :class="
                 state.workspaceId === workspace.id &&
                 activePage === 'conversation' &&
@@ -231,36 +235,54 @@ async function confirmManagement(name: string): Promise<void> {
             >
               <Button
                 variant="ghost"
-                class="min-w-0 flex-1 justify-start gap-2 text-xs hover:bg-transparent"
-                :class="collapsed ? 'justify-center px-0' : 'px-3'"
+                class="h-8 min-w-0 flex-1 justify-start gap-2 text-[13px] font-normal hover:bg-transparent"
+                :class="
+                  collapsed
+                    ? 'justify-center px-0'
+                    : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
+                "
                 :title="workspace.name"
                 :aria-expanded="
                   collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
                 "
                 @click="collapsed ? startConversation(workspace.id) : toggleWorkspace(workspace.id)"
               >
-                <FolderIcon v-if="collapsed" class="size-3.5" aria-hidden="true" />
-                <ChevronRightIcon
+                <FolderOpenIcon
+                  v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
+                  class="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <FolderIcon
                   v-else
-                  class="size-3.5 shrink-0 text-muted-foreground transition-transform"
-                  :class="state.workspaceGroups[workspace.id]?.expanded ? 'rotate-90' : ''"
+                  class="size-3.5 shrink-0 text-muted-foreground"
                   aria-hidden="true"
                 />
                 <span :class="collapsed ? 'sr-only' : 'truncate'">{{ workspace.name }}</span>
               </Button>
-              <SidebarItemMenu
-                v-if="!collapsed"
-                :label="workspace.name"
-                workspace
-                :disabled="state.managing || !!state.serviceError"
-                @rename="manageWorkspace(workspace, false, $event)"
-                @delete="manageWorkspace(workspace, true, $event)"
-                @new-conversation="startConversation(workspace.id)"
-              />
+              <div v-if="!collapsed" class="absolute right-0 flex items-center">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  :aria-label="`在${workspace.name}中新建对话`"
+                  :disabled="state.managing || !!state.serviceError"
+                  @click="startConversation(workspace.id)"
+                >
+                  <PlusIcon class="size-3.5" aria-hidden="true" />
+                </Button>
+                <SidebarItemMenu
+                  :label="workspace.name"
+                  workspace
+                  :disabled="state.managing || !!state.serviceError"
+                  @rename="manageWorkspace(workspace, false, $event)"
+                  @delete="manageWorkspace(workspace, true, $event)"
+                  @new-conversation="startConversation(workspace.id)"
+                />
+              </div>
             </div>
             <div
               v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
-              class="ml-4 mt-1 border-l pl-1"
+              class="ml-6 mt-0.5"
             >
               <ConversationList
                 :items="state.workspaceGroups[workspace.id]?.items ?? []"
@@ -286,14 +308,12 @@ async function confirmManagement(name: string): Promise<void> {
                   >重新加载</Button
                 >
               </div>
-              <Button
+              <p
                 v-else-if="!state.workspaceGroups[workspace.id]?.items.length"
-                variant="ghost"
-                size="sm"
-                class="w-full justify-start px-3 text-xs text-muted-foreground"
-                @click="startConversation(workspace.id)"
-                ><PlusIcon class="size-3.5" aria-hidden="true" />新建对话</Button
+                class="px-3 py-1 text-[13px] leading-6 text-muted-foreground/60"
               >
+                暂无聊天
+              </p>
               <Button
                 v-if="state.workspaceGroups[workspace.id]?.hasMore"
                 variant="ghost"
@@ -321,14 +341,30 @@ async function confirmManagement(name: string): Promise<void> {
             class="mb-2 flex h-7 items-center"
             :class="collapsed ? 'justify-center' : 'gap-2 px-3'"
           >
-            <MessageSquareIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <MessageSquareIcon
+              v-if="collapsed"
+              class="size-3.5 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
             <h2
               id="conversations-heading"
               class="text-xs font-medium text-muted-foreground"
               :class="collapsed ? 'sr-only' : ''"
             >
-              对话
+              最近
             </h2>
+            <Button
+              v-if="!collapsed"
+              type="button"
+              variant="ghost"
+              size="icon"
+              class="ml-auto size-6 text-muted-foreground"
+              aria-label="最近中新建对话"
+              title="新建对话"
+              @click="startConversation()"
+            >
+              <SquarePenIcon class="size-3.5" aria-hidden="true" />
+            </Button>
           </div>
           <p
             v-if="state.loadingList && !state.conversations.length"

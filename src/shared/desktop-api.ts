@@ -1,5 +1,7 @@
 import type {
   ChatEvent,
+  StepPage,
+  StepDetails,
   ApprovalScope,
   DirectoryGrant,
   ChatMessage,
@@ -54,6 +56,16 @@ export interface DesktopApi {
     conversationId: string,
     beforeSequence: number,
   ): Promise<ChatResult<ChatMessage[]>>
+  listRunSteps(
+    conversationId: string,
+    runId: string,
+    afterSequence: number,
+  ): Promise<ChatResult<StepPage>>
+  getStepDetails(
+    conversationId: string,
+    runId: string,
+    stepId: string,
+  ): Promise<ChatResult<StepDetails>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>
   submitUserInput(

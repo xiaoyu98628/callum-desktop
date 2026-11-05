@@ -70,6 +70,48 @@ export interface ChatRun {
   createdAt: number
   finishedAt: number | null
 }
+/** 步骤快照包含有界的即时文字和工具输出；持久化详情通过专用查询读取。 */
+export interface ChatStep {
+  id: string
+  conversationId: string
+  runId: string
+  parentStepId: string | null
+  sequence: number
+  type: string
+  name: string
+  purpose: string
+  status: RunStatus
+  input: string
+  inputTruncated: boolean
+  error: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  updatedAt: number
+  text: string
+  commentary: boolean
+  textTruncated: boolean
+  output: string
+  outputTruncated: boolean
+  outputSequence: number
+}
+export interface StepPage {
+  steps: ChatStep[]
+  afterSequence: number
+  nextSequence: number
+  hasMore: boolean
+  revision: number
+}
+export interface StepDetails {
+  id: string
+  conversationId: string
+  runId: string
+  input: string
+  inputTruncated: boolean
+  output: string
+  outputTruncated: boolean
+  text: string | null
+  textTruncated: boolean
+}
 export interface DirectoryScope {
   rootPath: string
   access: 'read' | 'read_write'
@@ -113,6 +155,7 @@ export type ChatChange =
   | { kind: 'conversation'; value: Conversation }
   | { kind: 'workspace'; value: Workspace }
   | { kind: 'message'; value: ChatMessage }
+  | { kind: 'step'; value: ChatStep }
   | { kind: 'run'; value: ChatRun; persisted: boolean }
   | { kind: 'approval'; value: ChatApproval }
   | { kind: 'directory-grant'; value: DirectoryGrant }
@@ -132,6 +175,7 @@ export interface ConversationDetail {
   conversation: Conversation
   messages: ChatMessage[]
   runs: ChatRun[]
+  steps: ChatStep[]
   approvals: ChatApproval[]
   directoryGrants: DirectoryGrant[]
   userInputs: ChatUserInput[]
@@ -294,6 +338,97 @@ export function parseRun(value: unknown): ChatRun {
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
   }
 }
+export function parseStep(value: unknown): ChatStep {
+  const v = record(value)
+  const status = parseRun({
+    id: v.runId,
+    conversationId: v.conversationId,
+    status: v.status,
+    error: null,
+    createdAt: 0,
+    finishedAt: null,
+  }).status
+  if (
+    typeof v.inputTruncated !== 'boolean' ||
+    typeof v.commentary !== 'boolean' ||
+    typeof v.textTruncated !== 'boolean' ||
+    typeof v.outputTruncated !== 'boolean'
+  )
+    throw new Error('步骤格式无效')
+  const input = string(v.input),
+    text = string(v.text),
+    output = string(v.output)
+  if (input.length > 128 * 1024 || text.length > 512 * 1024 || output.length > 64 * 1024)
+    throw new Error('步骤内容过长')
+  return {
+    id: id(v.id),
+    conversationId: id(v.conversationId),
+    runId: id(v.runId),
+    parentStepId: v.parentStepId === null ? null : id(v.parentStepId),
+    sequence: integer(v.sequence, 1),
+    type: string(v.type),
+    name: string(v.name),
+    purpose: string(v.purpose),
+    status,
+    input,
+    inputTruncated: v.inputTruncated,
+    error: v.error === null ? null : string(v.error),
+    startedAt: v.startedAt === null ? null : integer(v.startedAt),
+    finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
+    updatedAt: integer(v.updatedAt),
+    text,
+    commentary: v.commentary,
+    textTruncated: v.textTruncated,
+    output,
+    outputTruncated: v.outputTruncated,
+    outputSequence: integer(v.outputSequence),
+  }
+}
+export function parseStepPage(value: unknown): StepPage {
+  const v = record(value)
+  if (typeof v.hasMore !== 'boolean') throw new Error('步骤分页格式无效')
+  const steps = array(v.steps, parseStep),
+    afterSequence = integer(v.afterSequence),
+    nextSequence = integer(v.nextSequence)
+  if (
+    steps.length > 50 ||
+    nextSequence !== (steps.at(-1)?.sequence ?? afterSequence) ||
+    (v.hasMore && !steps.length) ||
+    steps.some(
+      (step, index) =>
+        step.sequence <= (steps[index - 1]?.sequence ?? afterSequence) ||
+        step.runId !== steps[0]?.runId ||
+        step.conversationId !== steps[0]?.conversationId,
+    )
+  )
+    throw new Error('步骤分页顺序无效')
+  return { steps, afterSequence, nextSequence, hasMore: v.hasMore, revision: integer(v.revision) }
+}
+export function parseStepDetails(value: unknown): StepDetails {
+  const v = record(value)
+  if (
+    typeof v.inputTruncated !== 'boolean' ||
+    typeof v.outputTruncated !== 'boolean' ||
+    typeof v.textTruncated !== 'boolean'
+  )
+    throw new Error('步骤详情格式无效')
+  const input = string(v.input),
+    output = string(v.output)
+  const text = v.text === null ? null : string(v.text)
+  if (input.length > 128 * 1024 || output.length > 256 * 1024 || (text?.length ?? 0) > 512 * 1024)
+    throw new Error('步骤详情过长')
+  return {
+    id: id(v.id),
+    conversationId: id(v.conversationId),
+    runId: id(v.runId),
+    input,
+    inputTruncated: v.inputTruncated,
+    output,
+    text,
+    outputTruncated: v.outputTruncated,
+    textTruncated: v.textTruncated,
+  }
+}
 export function parseDirectoryScope(value: unknown): DirectoryScope {
   const v = record(value)
   if (v.access !== 'read' && v.access !== 'read_write') throw new Error('目录授权范围无效')
@@ -407,6 +542,7 @@ export function parseDetail(value: unknown): ConversationDetail {
     conversation: parseConversation(v.conversation),
     messages: array(v.messages, parseMessage),
     runs: array(v.runs, parseRun),
+    steps: array(v.steps ?? [], parseStep),
     approvals: array(v.approvals, parseApproval),
     directoryGrants: array(v.directoryGrants ?? [], parseDirectoryGrant),
     userInputs: array(v.userInputs, parseUserInput),
@@ -456,6 +592,8 @@ export function parseChatEvent(value: unknown): ChatEvent {
         change: { kind: 'run', value: parseRun(change.value), persisted: change.persisted },
       }
     }
+    case 'step':
+      return { revision, change: { kind: 'step', value: parseStep(change.value) } }
     case 'approval':
       return { revision, change: { kind: 'approval', value: parseApproval(change.value) } }
     case 'directory-grant':

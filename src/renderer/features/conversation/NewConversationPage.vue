@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
-import { ArrowUpIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
+import { ArrowUpIcon, LaptopIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
 import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
 import ModelSelector from './ModelSelector.vue'
+import ProjectSelector from './ProjectSelector.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 import RunStatus from './RunStatus.vue'
+import RunTimeline from './RunTimeline.vue'
 import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
 defineEmits<{ configureModels: [] }>()
@@ -28,8 +30,6 @@ const {
   send,
   cancel,
   decide,
-  loadDirectories,
-  revokeDirectory,
   openConversation,
   earlier,
 } = useConversations()
@@ -127,6 +127,14 @@ const runLabels = {
   interrupted: '回答已中断',
 }
 const latestRun = computed(() => state.detail?.runs.at(-1))
+const expandedRunId = ref<string | null>(null)
+watch(
+  [() => state.selectedId, () => latestRun.value?.id],
+  () => {
+    expandedRunId.value = latestRun.value?.id ?? null
+  },
+  { immediate: true },
+)
 function keydown(event: KeyboardEvent): void {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
@@ -154,7 +162,7 @@ function scrollToBottom(): void {
 function resizeMessageInput(): void {
   const input = messageInput.value
   if (!input) return
-  // 先恢复单行测量高度，使删除内容、发送或切换草稿时也能收缩；上限由 CSS 管理。
+  // 恢复 rows 对应的两行高度后测量，删除内容、发送或切换草稿时也能收缩。
   input.style.overflowY = 'hidden'
   input.style.height = 'auto'
   input.style.height = `${input.scrollHeight}px`
@@ -254,75 +262,6 @@ onScopeDispose(() => {
           </p>
         </div>
         <h1 v-else class="sr-only">{{ state.detail?.conversation.title || '对话' }}</h1>
-        <details
-          v-if="state.selectedId && state.detail && !state.loading"
-          class="mb-4 rounded-lg border p-3 text-xs"
-          aria-label="会话目录授权"
-        >
-          <summary class="cursor-pointer">目录授权（当前会话）</summary>
-          <p class="mt-2 text-muted-foreground">
-            授权覆盖子目录，重启后保留。撤销后，依赖目录授权的后续操作会重新判断，已批准或开始的操作不会撤回。
-          </p>
-          <p v-if="state.directoriesError" role="alert" class="mt-2 text-destructive">
-            {{ state.directoriesError }}
-          </p>
-          <p v-if="state.directoriesLoading" role="status" class="mt-2">正在读取目录授权…</p>
-          <p v-else-if="!state.detail.directoryGrants.length" class="mt-2 text-muted-foreground">
-            暂无目录授权。
-          </p>
-          <ul class="mt-2 space-y-2">
-            <li
-              v-for="grant in state.detail.directoryGrants"
-              :key="grant.id"
-              class="flex items-center gap-2"
-            >
-              <span class="min-w-0 flex-1 break-all"
-                >{{ grant.scope.rootPath }} ·
-                {{ grant.scope.access === 'read' ? '只读' : '读取和普通修改'
-                }}{{ grant.revokedAt === null ? '' : ' · 已撤销' }}</span
-              >
-              <Button
-                v-if="grant.revokedAt === null"
-                type="button"
-                variant="outline"
-                size="xs"
-                :disabled="
-                  !!state.revokingDirectory || state.directoriesLoading || !!state.serviceError
-                "
-                @click="revokeDirectory(grant.id)"
-                >{{ state.revokingDirectory === grant.id ? '正在撤销…' : '撤销授权' }}</Button
-              >
-            </li>
-          </ul>
-          <div class="mt-2 flex gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              :disabled="state.directoriesLoading || !!state.serviceError"
-              @click="loadDirectories(state.directoriesOffset)"
-              >刷新授权</Button
-            >
-            <Button
-              v-if="state.directoriesOffset > 0"
-              type="button"
-              variant="ghost"
-              size="xs"
-              :disabled="state.directoriesLoading"
-              @click="loadDirectories(Math.max(0, state.directoriesOffset - 200))"
-              >上一页授权</Button
-            >
-            <Button
-              v-if="state.detail.directoryGrants.length === 200"
-              type="button"
-              variant="ghost"
-              size="xs"
-              :disabled="state.directoriesLoading"
-              @click="loadDirectories(state.directoriesOffset + 200)"
-              >下一页授权</Button
-            >
-          </div>
-        </details>
         <div
           v-if="state.loading"
           role="status"
@@ -364,6 +303,17 @@ onScopeDispose(() => {
               v-if="item.role === 'assistant'"
               :run="messageRuns.get(item.id) ?? null"
               :connected="!state.serviceError"
+            />
+            <RunTimeline
+              v-if="item.role === 'assistant'"
+              :conversation-id="item.conversationId"
+              :run-id="item.runId"
+              :snapshots="state.detail?.steps ?? []"
+              :connected="!state.serviceError"
+              :expanded="expandedRunId === item.runId"
+              @expand="expandedRunId = $event ? item.runId : null"
+              @inspect="follow = false"
+              @changed="scrollToBottom"
             />
             <MarkdownMessage
               v-if="item.role === 'assistant'"
@@ -481,8 +431,18 @@ onScopeDispose(() => {
         @submit="submitCurrentInput"
         @reload="reloadApproval"
       />
+      <div
+        v-if="!state.selectedId"
+        class="mx-auto flex h-10 w-[calc(100%-1.5rem)] max-w-[calc(48rem-1.5rem)] items-center gap-2 rounded-t-2xl bg-muted/60 px-3"
+        aria-label="对话项目"
+      >
+        <ProjectSelector />
+        <span class="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <LaptopIcon class="size-3.5" aria-hidden="true" />此计算机
+        </span>
+      </div>
       <form
-        class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-1.5 shadow-sm transition-colors focus-within:border-foreground/30"
+        class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="send"
       >
         <label for="new-message" class="sr-only">消息</label>
@@ -490,7 +450,7 @@ onScopeDispose(() => {
           id="new-message"
           ref="messageInput"
           v-model="draft"
-          rows="1"
+          rows="2"
           :maxlength="MAX_MESSAGE_LENGTH"
           :disabled="
             !!currentInteraction ||
@@ -503,11 +463,11 @@ onScopeDispose(() => {
           "
           placeholder="你想聊些什么？"
           aria-describedby="conversation-hint"
-          class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+          class="block max-h-48 min-h-12 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
           @input="resizeMessageInput"
           @keydown="keydown"
         ></textarea>
-        <div class="flex items-center justify-end gap-2">
+        <div class="mt-2 flex items-center justify-end gap-2">
           <div class="flex min-w-0 items-center gap-2">
             <Button
               v-if="!state.models.length"
