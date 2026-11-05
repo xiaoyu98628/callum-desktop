@@ -9,7 +9,7 @@ import type { ElectronApplication } from '@playwright/test'
 import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
-import { MARKDOWN_CODE } from '../helpers/markdown-fixture'
+import { MARKDOWN_CODE, MARKDOWN_CODE_START } from '../helpers/markdown-fixture'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -896,23 +896,41 @@ test.describe('Markdown 回答展示', () => {
     await expect(answer.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
     await expect(answer.locator('strong')).toHaveText('粗体')
     await expect(answer.locator('blockquote')).toContainText('引用内容')
-    await expect(answer.locator('li')).toHaveCount(2)
+    await expect(answer.locator('li')).toHaveCount(4)
+    await expect(answer.locator('ul ul')).toHaveCount(1)
     await expect(answer.locator('code .hljs-keyword').first()).toHaveText('const')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
     await expect(
       page.getByRole('article', { name: '你的消息', exact: true }).locator('h1'),
     ).toHaveCount(0)
+    const code = answer.locator('pre').first()
+    const scrollLeft = await code.evaluate((element) => {
+      element.scrollLeft = 160
+      return element.scrollLeft
+    })
+    expect(scrollLeft).toBeGreaterThan(0)
+    const copy = answer.getByRole('button', { name: '复制代码', exact: true }).first()
+    await copy.focus()
+    await copy.press('Enter')
+    await expect(answer.getByRole('button', { name: '代码已复制', exact: true })).toBeFocused()
     modelEndpoint.finishMarkdown()
     await expect(answer.getByText('回答已经完成。', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
     await expect(answer.getByRole('table')).toBeVisible()
     await expect(answer.locator('pre')).toHaveCount(2)
-    const copy = answer.getByRole('button', { name: '复制代码', exact: true }).first()
-    await copy.click()
+    // 新快照替换了 DOM，代码续写仍保留阅读位置与键盘焦点；旧的复制反馈不能用于新代码。
+    await expect.poll(() => code.evaluate((element) => element.scrollLeft)).toBe(scrollLeft)
+    await expect(copy).toBeFocused()
+    await expect(answer.getByRole('button', { name: '代码已复制', exact: true })).toHaveCount(0)
+    await copy.press('Enter')
     await expect(answer.getByRole('button', { name: '代码已复制', exact: true })).toBeVisible()
     expect(
       await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies),
-    ).toEqual([MARKDOWN_CODE])
+    ).toEqual([MARKDOWN_CODE_START, MARKDOWN_CODE])
+    await answer
+      .getByRole('heading', { name: 'Markdown 示例', exact: true })
+      .scrollIntoViewIfNeeded()
+    await page.screenshot({ path: '.artifacts/screenshots/markdown-light-prose.png' })
     await answer.getByRole('link', { name: '项目文档', exact: true }).click()
     expect(
       await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').links),
@@ -942,10 +960,19 @@ test.describe('Markdown 回答展示', () => {
     )
     await sidebar.getByRole('button', { name: title, exact: true }).click()
     await expect(answer.getByRole('table')).toBeVisible()
+    const table = answer.locator('.markdown-table-wrap')
+    expect(await table.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+    await table.focus()
+    await table.press('ArrowRight')
+    await expect.poll(() => table.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
     expect(
       await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true)
     await page.screenshot({ path: '.artifacts/screenshots/markdown-dark-compact.png' })
+    await answer
+      .getByRole('heading', { name: 'Markdown 示例', exact: true })
+      .scrollIntoViewIfNeeded()
+    await page.screenshot({ path: '.artifacts/screenshots/markdown-dark-prose.png' })
     expect(errors).toEqual([])
   })
 

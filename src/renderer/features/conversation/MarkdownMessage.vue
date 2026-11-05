@@ -16,6 +16,7 @@ const rendered = shallowRef<MarkdownDocument | null>(null)
 const notice = ref(''),
   actionError = ref('')
 const busyCopies = new Set<number>()
+const copiedCodes = new Map<number, string>()
 const texts = computed(() =>
   props.content.map((block) => (block.type === 'text' ? block.text : '')),
 )
@@ -24,6 +25,59 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
 let disposed = false,
   previous: string[] = []
+function captureView() {
+  const focused = document.activeElement
+  const scrolling = Array.from(
+    root.value?.querySelectorAll('pre, .markdown-table-wrap') ?? [],
+    (element) => ({
+      text: element.textContent ?? '',
+      left: element.scrollLeft,
+      focused: element === focused,
+    }),
+  )
+  const copyIndex =
+    focused instanceof HTMLButtonElement && root.value?.contains(focused)
+      ? Number(focused.dataset.copyCode)
+      : NaN
+  return { scrolling, focused, copyIndex, code: rendered.value?.codes[copyIndex] }
+}
+function restoreView(view: ReturnType<typeof captureView>): void {
+  const lostFocus =
+    view.focused && !view.focused.isConnected && document.activeElement === document.body
+  root.value
+    ?.querySelectorAll<HTMLElement>('pre, .markdown-table-wrap')
+    .forEach((element, index) => {
+      const previous = view.scrolling[index]
+      // 只恢复同一内容的续写，避免工具轮次替换后把旧位置带入新的代码或表格。
+      if (previous && element.textContent?.startsWith(previous.text)) {
+        element.scrollLeft = previous.left
+        if (lostFocus && previous.focused) element.focus({ preventScroll: true })
+      }
+    })
+  // v-html 会替换按钮节点；只有焦点随旧节点丢失时才恢复，不能抢走输入区的焦点。
+  if (
+    view.focused &&
+    !view.focused.isConnected &&
+    document.activeElement === document.body &&
+    Number.isSafeInteger(view.copyIndex) &&
+    view.code !== undefined &&
+    rendered.value?.codes[view.copyIndex]?.startsWith(view.code)
+  )
+    root.value
+      ?.querySelector<HTMLButtonElement>(`button[data-copy-code="${view.copyIndex}"]`)
+      ?.focus({ preventScroll: true })
+}
+function syncCodeButtons(): void {
+  for (const [index, code] of copiedCodes)
+    if (rendered.value?.codes[index] !== code) copiedCodes.delete(index)
+  root.value?.querySelectorAll<HTMLButtonElement>('button[data-copy-code]').forEach((button) => {
+    const index = Number(button.dataset.copyCode)
+    const copied = copiedCodes.has(index)
+    button.setAttribute('aria-disabled', String(busyCopies.has(index)))
+    button.textContent = copied ? '已复制' : '复制'
+    button.setAttribute('aria-label', copied ? '代码已复制' : '复制代码')
+  })
+}
 function render(): void {
   clearTimeout(timer)
   timer = undefined
@@ -48,6 +102,7 @@ onMounted(() => {
   try {
     client = renderer.register((result) => {
       if (disposed) return
+      const view = captureView()
       try {
         if ('error' in result) {
           rendered.value = null
@@ -64,7 +119,10 @@ onMounted(() => {
         notice.value = '消息排版失败，已按文本显示。'
       }
       void nextTick(() => {
-        if (!disposed) emit('rendered')
+        if (disposed) return
+        syncCodeButtons()
+        restoreView(view)
+        emit('rendered')
       })
     })
     update()
@@ -83,29 +141,24 @@ async function act(event: MouseEvent): Promise<void> {
     if (!Number.isSafeInteger(index) || index < 0 || code === undefined || busyCopies.has(index))
       return
     busyCopies.add(index)
-    button.disabled = true
+    button.setAttribute('aria-disabled', 'true')
     actionError.value = ''
     try {
       const result = await getDesktopApi().copyCode(code)
       if (!result.ok) throw new Error(result.error)
       if (disposed) return
-      if (!disposed && button.isConnected) {
-        button.textContent = '已复制'
-        button.setAttribute('aria-label', '代码已复制')
-      }
+      copiedCodes.set(index, code)
+      syncCodeButtons()
       clearTimeout(copiedTimer)
       copiedTimer = setTimeout(() => {
-        if (disposed || !root.value) return
-        for (const current of root.value.querySelectorAll('button[data-copy-code]')) {
-          current.textContent = '复制'
-          current.setAttribute('aria-label', '复制代码')
-        }
+        copiedCodes.clear()
+        if (!disposed) syncCodeButtons()
       }, 1800)
     } catch {
       if (!disposed) actionError.value = '代码复制失败，请重试。'
     } finally {
       busyCopies.delete(index)
-      if (!disposed && button.isConnected) button.disabled = false
+      if (!disposed) syncCodeButtons()
     }
     return
   }
@@ -127,11 +180,12 @@ onScopeDispose(() => {
   clearTimeout(copiedTimer)
   client?.dispose()
   busyCopies.clear()
+  copiedCodes.clear()
 })
 </script>
 
 <template>
-  <div ref="root" class="min-w-0" @click="act" @auxclick.prevent>
+  <div ref="root" class="markdown-message" @click="act" @auxclick.prevent>
     <template v-for="(block, index) in content" :key="index">
       <!-- HTML 已经过严格允许列表清理；原始模型 HTML 在解析阶段也被禁用。 -->
       <!-- eslint-disable vue/no-v-html -->
@@ -141,10 +195,7 @@ onScopeDispose(() => {
         v-html="rendered.html[index]"
       />
       <!-- eslint-enable vue/no-v-html -->
-      <p
-        v-else-if="block.type === 'text'"
-        class="whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]"
-      >
+      <p v-else-if="block.type === 'text'" class="markdown-plain-text">
         {{ block.text }}
       </p>
       <p v-else class="text-sm leading-7 text-muted-foreground">
