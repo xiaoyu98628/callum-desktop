@@ -1,14 +1,29 @@
-import { access, mkdir } from 'node:fs/promises'
+import { access, mkdir, realpath, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import { array, id, isActiveRun, PAGE_SIZE, record, string } from '../../shared/chat.ts'
+import {
+  array,
+  id,
+  isActiveRun,
+  isVisible,
+  PAGE_SIZE,
+  parseName,
+  parseWorkspaceInput,
+  record,
+  string,
+} from '../../shared/chat.ts'
 import type {
   ChatChange,
   ChatEvent,
   ChatMessage,
   ChatOverview,
   ChatRun,
+  Conversation,
+  ConversationPage,
   ConversationDetail,
+  Workspace,
+  WorkspaceInput,
+  WorkspacePage,
   SendMessageInput,
   SendMessageResult,
 } from '../../shared/chat.ts'
@@ -18,6 +33,7 @@ import {
   conversationFromRpc,
   messageFromRpc,
   runFromRpc,
+  workspaceFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
@@ -42,6 +58,7 @@ export class ChatService {
   private historyBytes = 0
   private droppedRevision = 0
   private readonly persistenceFailures = new Set<string>()
+  private readonly mutations = new Set<string>()
   private closing = false
   private closeTask: Promise<void> | null = null
 
@@ -110,10 +127,122 @@ export class ChatService {
         const v = record(item)
         return { id: id(v.id), name: string(v.display_name) }
       }),
-      conversations: conversations.sort((a, b) => b.updatedAt - a.updatedAt),
+      conversations: conversations
+        .filter((item) => item.workspaceId === null && isVisible(item))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
       hasMore,
       revision: this.revision,
     }
+  }
+  async workspaceConversations(workspaceId: string, offset: number): Promise<ConversationPage> {
+    const start = this.revision
+    const [workspace, rows] = await Promise.all([
+      this.request('workspace.get', { id: workspaceId }),
+      this.request('conversation.list', { workspace_id: workspaceId, limit: PAGE_SIZE, offset }),
+    ])
+    if (!isVisible(workspaceFromRpc(workspace))) throw new Error('工作区已被删除或归档。')
+    let conversations = array(rows ?? [], conversationFromRpc)
+    const hasMore = conversations.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        change.value.id === workspaceId &&
+        !isVisible(change.value)
+      )
+        throw new Error('工作区已被删除或归档。')
+      if (
+        change.kind === 'conversation' &&
+        (offset === 0 || conversations.some((item) => item.id === change.value.id))
+      )
+        conversations = upsert(conversations, change.value)
+    }
+    return {
+      conversations: conversations
+        .filter((item) => item.workspaceId === workspaceId && isVisible(item))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async listWorkspaces(offset: number): Promise<WorkspacePage> {
+    const start = this.revision
+    let workspaces = array(
+      (await this.request('workspace.list', { limit: PAGE_SIZE, offset })) ?? [],
+      workspaceFromRpc,
+    )
+    const hasMore = workspaces.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        (offset === 0 || workspaces.some((item) => item.id === change.value.id))
+      )
+        workspaces = upsert(workspaces, change.value)
+    }
+    return { workspaces: workspaces.filter(isVisible), hasMore, revision: this.revision }
+  }
+  private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
+    if (this.mutations.has(key)) throw new Error('该项目正在保存，请稍候。')
+    if (this.mutations.size >= 32) throw new Error('正在处理的管理操作过多，请稍后重试。')
+    this.mutations.add(key)
+    try {
+      return await action()
+    } finally {
+      this.mutations.delete(key)
+    }
+  }
+  async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+    const parsed = parseWorkspaceInput(input)
+    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择工作区的绝对路径。')
+    const rootPath = await realpath(parsed.rootPath)
+    if (!(await stat(rootPath)).isDirectory()) throw new Error('工作区必须是文件夹。')
+    return this.mutate(`path:${rootPath}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.create', { name: parsed.name, root_path: rootPath }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
+    return this.mutate(`workspace:${workspaceId}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.update', { id: id(workspaceId), name: parseName(name) }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async deleteWorkspace(workspaceId: string): Promise<Workspace> {
+    return this.mutate(`workspace:${workspaceId}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.delete', { id: id(workspaceId) }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async renameConversation(conversationId: string, title: string): Promise<Conversation> {
+    return this.mutate(`conversation:${conversationId}`, async () => {
+      const value = conversationFromRpc(
+        await this.request('conversation.update', {
+          id: id(conversationId),
+          title: parseName(title),
+        }),
+      )
+      this.publish({ kind: 'conversation', value })
+      return value
+    })
+  }
+  async deleteConversation(conversationId: string): Promise<Conversation> {
+    return this.mutate(`conversation:${conversationId}`, async () => {
+      const value = conversationFromRpc(
+        await this.request('conversation.delete', { id: id(conversationId) }),
+      )
+      this.publish({ kind: 'conversation', value })
+      return value
+    })
   }
   async detail(conversationId: string): Promise<ConversationDetail> {
     const start = this.revision
@@ -143,6 +272,7 @@ export class ChatService {
         : null,
     }
     for (const event of this.since(start)) this.mergeDetail(result, event.change)
+    if (!isVisible(result.conversation)) throw new Error('会话已被删除或归档。')
     // 活动回答可能尚未落库；完整的内存消息优先于数据库及事件中的中间快照。
     for (const message of this.messages.values())
       if (message.conversationId === conversationId)
@@ -166,6 +296,7 @@ export class ChatService {
     const value = record(
       await this.request('conversation.send', {
         ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+        ...(!input.conversationId && input.workspaceId ? { workspace_id: input.workspaceId } : {}),
         model_id: input.modelId,
         stream: true,
         content: [{ type: 'text', text: input.text }],
@@ -185,8 +316,7 @@ export class ChatService {
   private receive(method: string, value: unknown): void {
     const p = record(value)
     if (method === 'conversation.created' || method === 'conversation.updated') {
-      if (record(p.conversation).workspace_id === null)
-        this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
+      this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)
       this.checkOwner(p, message)
@@ -260,6 +390,11 @@ export class ChatService {
   }
   private mergeDetail(detail: ConversationDetail, change: ChatChange): void {
     if (change.kind === 'service') throw new Error(change.error)
+    if (change.kind === 'workspace') {
+      if (change.value.id === detail.conversation.workspaceId && !isVisible(change.value))
+        throw new Error('工作区已被删除或归档。')
+      return
+    }
     if (change.kind === 'conversation') {
       if (change.value.id === detail.conversation.id) detail.conversation = change.value
       return

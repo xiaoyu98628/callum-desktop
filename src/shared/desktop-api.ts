@@ -4,6 +4,12 @@ import type {
   ChatOverview,
   ChatResult,
   ConversationDetail,
+  Conversation,
+  ConversationPage,
+  Workspace,
+  WorkspaceInput,
+  WorkspacePage,
+  SelectedDirectory,
   SendMessageInput,
   SendMessageResult,
 } from './chat'
@@ -28,6 +34,17 @@ export interface DesktopApi {
   setModelEnabled(modelId: string, enabled: boolean): Promise<ChatResult<string>>
   deleteModel(modelId: string): Promise<ChatResult<string>>
   getChatOverview(offset: number): Promise<ChatResult<ChatOverview>>
+  chooseWorkspaceDirectory(): Promise<ChatResult<SelectedDirectory | null>>
+  listWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
+  getWorkspaceConversations(
+    workspaceId: string,
+    offset: number,
+  ): Promise<ChatResult<ConversationPage>>
+  createWorkspace(input: WorkspaceInput): Promise<ChatResult<Workspace>>
+  renameWorkspace(workspaceId: string, name: string): Promise<ChatResult<Workspace>>
+  deleteWorkspace(workspaceId: string): Promise<ChatResult<Workspace>>
+  renameConversation(conversationId: string, title: string): Promise<ChatResult<Conversation>>
+  deleteConversation(conversationId: string): Promise<ChatResult<Conversation>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
   getEarlierMessages(
     conversationId: string,

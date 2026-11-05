@@ -49,7 +49,7 @@ watch(
     <SelectTrigger
       aria-label="模型"
       :title="selectedModel?.name ?? '当前模型不可用'"
-      class="group inline-flex h-8 min-w-0 max-w-56 items-center gap-2 rounded-lg px-2.5 text-xs text-muted-foreground outline-none transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+      class="group inline-flex h-7 min-w-0 max-w-56 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground outline-none transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
     >
       <SelectValue class="min-w-0 truncate">{{
         selectedModel?.name ?? '当前模型不可用'

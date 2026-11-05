@@ -5,10 +5,39 @@ export interface ChatModel {
 }
 export interface Conversation {
   id: string
+  workspaceId: string | null
   title: string
   modelId: string
   modelName: string
   updatedAt: number
+  deletedAt: number | null
+  archivedAt: number | null
+}
+export interface Workspace {
+  id: string
+  name: string
+  rootPath: string
+  updatedAt: number
+  deletedAt: number | null
+  archivedAt: number | null
+}
+export interface WorkspaceInput {
+  name: string
+  rootPath: string
+}
+export interface SelectedDirectory {
+  path: string
+  name: string
+}
+export interface ConversationPage {
+  conversations: Conversation[]
+  hasMore: boolean
+  revision: number
+}
+export interface WorkspacePage {
+  workspaces: Workspace[]
+  hasMore: boolean
+  revision: number
 }
 export interface ContentBlock {
   type: string
@@ -39,6 +68,7 @@ export interface ChatRun {
   status: RunStatus
   error: string | null
   createdAt: number
+  finishedAt: number | null
 }
 export interface ChatApproval {
   id: string
@@ -50,6 +80,7 @@ export interface ChatApproval {
 }
 export type ChatChange =
   | { kind: 'conversation'; value: Conversation }
+  | { kind: 'workspace'; value: Workspace }
   | { kind: 'message'; value: ChatMessage }
   | { kind: 'run'; value: ChatRun; persisted: boolean }
   | { kind: 'approval'; value: ChatApproval }
@@ -74,6 +105,7 @@ export interface ConversationDetail {
 }
 export interface SendMessageInput {
   conversationId: string | null
+  workspaceId?: string | null
   modelId: string
   text: string
 }
@@ -121,10 +153,69 @@ export function parseConversation(value: unknown): Conversation {
   const v = record(value)
   return {
     id: id(v.id),
+    workspaceId: v.workspaceId === null ? null : id(v.workspaceId),
     title: string(v.title),
     modelId: id(v.modelId),
     modelName: string(v.modelName),
     updatedAt: integer(v.updatedAt),
+    deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
+    archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
+  }
+}
+export function isVisible(value: { deletedAt: number | null; archivedAt: number | null }): boolean {
+  return value.deletedAt === null && value.archivedAt === null
+}
+export function parseName(value: unknown): string {
+  const name = string(value).trim()
+  if (
+    !name ||
+    new TextEncoder().encode(name).length > 1024 ||
+    [...name].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+  )
+    throw new Error('名称不能为空、包含控制字符或超过 1024 字节')
+  return name
+}
+export function parseWorkspaceInput(value: unknown): WorkspaceInput {
+  const v = record(value)
+  if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
+    throw new Error('工作区参数无效')
+  const rootPath = string(v.rootPath)
+  if (!rootPath || rootPath.length > 8192 || rootPath.includes('\0'))
+    throw new Error('工作区路径无效')
+  return { name: parseName(v.name), rootPath }
+}
+export function parseWorkspace(value: unknown): Workspace {
+  const v = record(value)
+  return {
+    id: id(v.id),
+    name: string(v.name),
+    rootPath: string(v.rootPath),
+    updatedAt: integer(v.updatedAt),
+    deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
+    archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
+  }
+}
+export function parseSelectedDirectory(value: unknown): SelectedDirectory | null {
+  if (value === null) return null
+  const v = record(value)
+  return { path: string(v.path), name: string(v.name) }
+}
+export function parseConversationPage(value: unknown): ConversationPage {
+  const v = record(value)
+  if (typeof v.hasMore !== 'boolean') throw new Error('分页格式无效')
+  return {
+    conversations: array(v.conversations, parseConversation),
+    hasMore: v.hasMore,
+    revision: integer(v.revision),
+  }
+}
+export function parseWorkspacePage(value: unknown): WorkspacePage {
+  const v = record(value)
+  if (typeof v.hasMore !== 'boolean') throw new Error('分页格式无效')
+  return {
+    workspaces: array(v.workspaces, parseWorkspace),
+    hasMore: v.hasMore,
+    revision: integer(v.revision),
   }
 }
 export function parseMessage(value: unknown): ChatMessage {
@@ -165,6 +256,7 @@ export function parseRun(value: unknown): ChatRun {
     status: status as RunStatus,
     error: v.error === null ? null : string(v.error),
     createdAt: integer(v.createdAt),
+    finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
   }
 }
 export function parseApproval(value: unknown): ChatApproval {
@@ -201,13 +293,20 @@ export function parseDetail(value: unknown): ConversationDetail {
 }
 export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)
-  if (Object.keys(v).some((key) => !['conversationId', 'modelId', 'text'].includes(key)))
+  if (
+    Object.keys(v).some(
+      (key) => !['conversationId', 'workspaceId', 'modelId', 'text'].includes(key),
+    )
+  )
     throw new Error('消息参数无效')
   const text = string(v.text).trim()
   if (!text || text.length > MAX_MESSAGE_LENGTH)
     throw new Error('消息不能为空，且不能超过 100000 个字符')
+  const workspaceId = v.workspaceId == null ? null : id(v.workspaceId)
+  if (workspaceId && v.conversationId !== null) throw new Error('已有会话不能在发送时修改工作区')
   return {
     conversationId: v.conversationId === null ? null : id(v.conversationId),
+    workspaceId,
     modelId: id(v.modelId),
     text,
   }
@@ -221,6 +320,8 @@ export function parseChatEvent(value: unknown): ChatEvent {
     change = record(v.change)
   const revision = integer(v.revision)
   switch (change.kind) {
+    case 'workspace':
+      return { revision, change: { kind: 'workspace', value: parseWorkspace(change.value) } }
     case 'conversation':
       return { revision, change: { kind: 'conversation', value: parseConversation(change.value) } }
     case 'message':

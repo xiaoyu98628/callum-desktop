@@ -6,20 +6,41 @@ import {
   parseConversation,
   parseMessage,
   parseRun,
+  parseWorkspace,
   record,
   string,
 } from '../../shared/chat.ts'
-import type { ChatApproval, ChatMessage, ChatRun, Conversation } from '../../shared/chat.ts'
+import type {
+  ChatApproval,
+  ChatMessage,
+  ChatRun,
+  Conversation,
+  Workspace,
+} from '../../shared/chat.ts'
 
 export function conversationFromRpc(value: unknown): Conversation {
   const v = record(value),
     model = record(v.model)
   return parseConversation({
     id: v.id,
+    workspaceId: v.workspace_id ?? null,
     title: v.title,
     modelId: model.id,
     modelName: model.display_name,
     updatedAt: v.updated_at,
+    deletedAt: v.deleted_at ?? null,
+    archivedAt: v.archived_at ?? null,
+  })
+}
+export function workspaceFromRpc(value: unknown): Workspace {
+  const v = record(value)
+  return parseWorkspace({
+    id: v.id,
+    name: v.name,
+    rootPath: v.root_path,
+    updatedAt: v.updated_at,
+    deletedAt: v.deleted_at ?? null,
+    archivedAt: v.archived_at ?? null,
   })
 }
 export function messageFromRpc(value: unknown): ChatMessage {
@@ -49,6 +70,7 @@ export function runFromRpc(value: unknown): ChatRun {
     status: v.status,
     error: v.error_message ?? null,
     createdAt: v.created_at,
+    finishedAt: v.finished_at ?? null,
   })
 }
 export function approvalFromRpc(value: unknown, conversationId: string): ChatApproval {

@@ -11,6 +11,11 @@ import {
   parseOverview,
   parseResult,
   parseSendResult,
+  parseConversation,
+  parseConversationPage,
+  parseSelectedDirectory,
+  parseWorkspace,
+  parseWorkspacePage,
 } from '../shared/chat'
 import { parseCatalog } from '../shared/models'
 
@@ -59,6 +64,54 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getConversation, conversationId),
       parseDetail,
+    )
+  },
+  async chooseWorkspaceDirectory() {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.chooseWorkspaceDirectory),
+      parseSelectedDirectory,
+    )
+  },
+  async listWorkspaces(offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listWorkspaces, offset),
+      parseWorkspacePage,
+    )
+  },
+  async getWorkspaceConversations(workspaceId, offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceConversations, workspaceId, offset),
+      parseConversationPage,
+    )
+  },
+  async createWorkspace(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.createWorkspace, input),
+      parseWorkspace,
+    )
+  },
+  async renameWorkspace(workspaceId, name) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.renameWorkspace, workspaceId, name),
+      parseWorkspace,
+    )
+  },
+  async deleteWorkspace(workspaceId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.deleteWorkspace, workspaceId),
+      parseWorkspace,
+    )
+  },
+  async renameConversation(conversationId, title) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.renameConversation, conversationId, title),
+      parseConversation,
+    )
+  },
+  async deleteConversation(conversationId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.deleteConversation, conversationId),
+      parseConversation,
     )
   },
   async getEarlierMessages(conversationId, beforeSequence) {

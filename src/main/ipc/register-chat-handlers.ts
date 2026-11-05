@@ -1,6 +1,8 @@
-import { ipcMain } from 'electron'
+import { dialog, ipcMain } from 'electron'
+import { realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute } from 'node:path'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
-import { id, integer, parseSendInput } from '../../shared/chat'
+import { id, integer, parseName, parseSendInput, parseWorkspaceInput } from '../../shared/chat'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { publicChatError } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
@@ -16,9 +18,14 @@ export function registerChatHandlers(
   const channels: string[] = []
   let active = false
   let target: WebContents | null = null
+  let selectedDirectory: string | null = null
+  let choosingDirectory = false
+  let directoryGeneration = 0
   const reset = (): void => {
     active = false
     delivery.reset()
+    selectedDirectory = null
+    directoryGeneration++
   }
   const delivery = new ChatEventDelivery((token, event) => {
     if (target && !target.isDestroyed() && active) target.send(IPC_CHANNELS.chatEvent, token, event)
@@ -85,6 +92,58 @@ export function registerChatHandlers(
     if (delivery.overloaded) delivery.reset()
     return service.overview(page)
   })
+  const pageOffset = (value: unknown): number => {
+    const offset = integer(value)
+    if (offset > 100_000) throw new Error('分页参数无效')
+    return offset
+  }
+  handle(IPC_CHANNELS.chooseWorkspaceDirectory, 0, async () => {
+    const window = getWindow()
+    if (!window || window.isDestroyed() || choosingDirectory)
+      throw new Error('文件夹选择器当前不可用。')
+    choosingDirectory = true
+    selectedDirectory = null
+    const generation = directoryGeneration
+    try {
+      const result = await dialog.showOpenDialog(window, {
+        title: '选择工作区文件夹',
+        buttonLabel: '选择文件夹',
+        properties: ['openDirectory'],
+      })
+      if (result.canceled || window.isDestroyed() || generation !== directoryGeneration) return null
+      const path = result.filePaths[0]
+      if (!path || !isAbsolute(path)) throw new Error('请选择有效的文件夹。')
+      const actualPath = await realpath(path)
+      if (!(await stat(actualPath)).isDirectory()) throw new Error('请选择文件夹。')
+      if (generation !== directoryGeneration) return null
+      selectedDirectory = actualPath
+      return { path: actualPath, name: basename(actualPath) || actualPath }
+    } finally {
+      choosingDirectory = false
+    }
+  })
+  handle(IPC_CHANNELS.listWorkspaces, 1, (offset) => service.listWorkspaces(pageOffset(offset)))
+  handle(IPC_CHANNELS.getWorkspaceConversations, 2, (workspaceId, offset) =>
+    service.workspaceConversations(id(workspaceId), pageOffset(offset)),
+  )
+  handle(IPC_CHANNELS.createWorkspace, 1, async (input) => {
+    const parsed = parseWorkspaceInput(input)
+    // 目录只能来自本窗口最近一次系统选择，不让渲染界面提交任意路径。
+    if (parsed.rootPath !== selectedDirectory) throw new Error('请重新选择工作区文件夹。')
+    const workspace = await service.createWorkspace(parsed)
+    selectedDirectory = null
+    return workspace
+  })
+  handle(IPC_CHANNELS.renameWorkspace, 2, (workspaceId, name) =>
+    service.renameWorkspace(id(workspaceId), parseName(name)),
+  )
+  handle(IPC_CHANNELS.deleteWorkspace, 1, (workspaceId) => service.deleteWorkspace(id(workspaceId)))
+  handle(IPC_CHANNELS.renameConversation, 2, (conversationId, title) =>
+    service.renameConversation(id(conversationId), parseName(title)),
+  )
+  handle(IPC_CHANNELS.deleteConversation, 1, (conversationId) =>
+    service.deleteConversation(id(conversationId)),
+  )
   handle(IPC_CHANNELS.getModelCatalog, 0, () => service.catalog.list())
   handle(IPC_CHANNELS.saveModelProvider, 1, (input) =>
     service.catalog.saveProvider(parseProviderInput(input)),

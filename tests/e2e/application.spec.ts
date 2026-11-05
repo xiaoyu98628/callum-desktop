@@ -1,17 +1,37 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
-import type { ElectronApplication } from '@playwright/test'
+import type { ElectronApplication, Page } from '@playwright/test'
 import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
 import { MARKDOWN_CODE, MARKDOWN_CODE_START } from '../helpers/markdown-fixture'
+import { IPC_CHANNELS } from '../../src/shared/ipc-channels'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
+
+async function interruptTestBackend(desktop: ElectronApplication): Promise<void> {
+  const main = await desktop.evaluate(({ app }) => ({
+    pid: process.pid,
+    profile: app.getPath('userData'),
+  }))
+  if (!main.profile.includes('callum-desktop-e2e-')) throw new Error('只能终止隔离测试的服务进程')
+  const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pid=,ppid=,command='])
+  const child = stdout
+    .split('\n')
+    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/))
+    .find(
+      (match) =>
+        match?.[2] === String(main.pid) &&
+        match[3] === `${backendExecutable} --data-dir ${join(main.profile, 'backend')}`,
+    )
+  if (!child?.[1]) throw new Error('未定位到本次测试独占的服务子进程')
+  process.kill(Number(child[1]), 'SIGKILL')
+}
 
 const test = base.extend<{
   desktop: ElectronApplication
@@ -90,6 +110,14 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'deleteModel',
     'getChatOverview',
     'getConversation',
+    'chooseWorkspaceDirectory',
+    'listWorkspaces',
+    'getWorkspaceConversations',
+    'createWorkspace',
+    'renameWorkspace',
+    'deleteWorkspace',
+    'renameConversation',
+    'deleteConversation',
     'getEarlierMessages',
     'sendMessage',
     'cancelRun',
@@ -157,7 +185,7 @@ test('工作内容为空时不创建记录，设置支持键盘操作和小窗�
   const conversations = page.getByRole('region', { name: '对话', exact: true })
   await expect(workspace.getByText('暂无工作区', { exact: true })).toBeVisible()
   await expect(conversations.getByText('暂无对话', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '添加工作区' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '添加工作区' })).toBeEnabled()
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '发送消息' })).toBeDisabled()
   await expect(page.getByText('尚未配置可用模型，配置完成后即可开始对话。')).toBeVisible()
@@ -235,6 +263,78 @@ test('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ d
 test.describe('真实 Go 对话交互', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('处理用时按执行关联，切换页面释放计时，完成与历史恢复后固定', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    // 观察真实浏览器定时器，不修改生产组件，也不改变后端或系统时间。
+    await page.evaluate(() => {
+      const timers = new Set<unknown>()
+      const start = window.setInterval.bind(window),
+        stop = window.clearInterval.bind(window)
+      Reflect.set(window, 'runStatusTimers', timers)
+      Reflect.set(window, 'setInterval', (...args: Parameters<typeof window.setInterval>) => {
+        const timer = start(...args)
+        if (args[1] === 1000) timers.add(timer)
+        return timer
+      })
+      Reflect.set(window, 'clearInterval', (...args: Parameters<typeof window.clearInterval>) => {
+        timers.delete(args[0])
+        return stop(...args)
+      })
+    })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const status = page.getByRole('group', { name: '执行状态', exact: true })
+    const sidebar = page.getByRole('region', { name: '对话', exact: true })
+    const timers = () => page.evaluate(() => Reflect.get(window, 'runStatusTimers').size)
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 流式')
+    await input.press('Enter')
+    await expect(status).toHaveCount(1)
+    await expect(status).toContainText(/正在处理\s+[1-9]\d* 秒/)
+    await expect.poll(timers).toBe(1)
+    const conversationId = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.conversations[0]) throw new Error('会话不存在')
+      return overview.value.conversations[0].id
+    })
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await expect.poll(timers).toBe(0)
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(status).toHaveCount(0)
+    await input.fill('另一轮')
+    await input.press('Enter')
+    await expect(status).toContainText('已处理')
+    await expect.poll(timers).toBe(0)
+    await sidebar.getByRole('button', { name: 'Markdown 流式', exact: true }).click()
+    await expect(status).toContainText(/正在处理\s+[1-9]\d* 秒/)
+    await expect.poll(timers).toBe(1)
+    modelEndpoint.finishMarkdown()
+    await expect(status).toContainText('已处理')
+    await expect.poll(timers).toBe(0)
+    const finished = await status.innerText()
+    const run = await page.evaluate(async (id) => {
+      const detail = await window.callum.getConversation(id)
+      if (!detail.ok || !detail.value.runs[0]) throw new Error('执行不存在')
+      return detail.value.runs[0]
+    }, conversationId)
+    expect(run.finishedAt).not.toBeNull()
+    if (run.finishedAt === null) throw new Error('执行没有结束时间')
+    expect(run.finishedAt - run.createdAt).toBeGreaterThanOrEqual(1000)
+    await sidebar.getByRole('button', { name: '另一轮', exact: true }).click()
+    await sidebar.getByRole('button', { name: 'Markdown 流式', exact: true }).click()
+    await expect(status).toHaveText(finished)
+    await expect.poll(timers).toBe(0)
+    await page.reload()
+    await sidebar.getByRole('button', { name: 'Markdown 流式', exact: true }).click()
+    await expect(status).toHaveText(finished)
+    await expect(page.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
+    await status.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: '.artifacts/screenshots/conversation-duration.png' })
+  })
 
   test('模型浮层向上展开，支持选中标记、键盘、长名称与深色小窗口', async ({ desktop }) => {
     const page = await desktop.firstWindow()
@@ -355,6 +455,7 @@ test.describe('真实 Go 对话交互', () => {
             parseFloat(style.paddingTop) +
             parseFloat(style.paddingBottom),
           maxHeight: parseFloat(style.maxHeight),
+          formHeight: rect.height,
           top: rect.top,
           bottom: rect.bottom,
           clientHeight: textarea.clientHeight,
@@ -365,6 +466,15 @@ test.describe('真实 Go 对话交互', () => {
     await expect(input).toHaveAttribute('rows', '1')
     const initial = await geometry()
     expect(initial.inputHeight).toBeCloseTo(initial.singleLineHeight, 0)
+    expect(initial.formHeight).toBeLessThanOrEqual(72)
+    const inputBox = await input.boundingBox(),
+      pickerBox = await page.getByRole('combobox', { name: '模型', exact: true }).boundingBox(),
+      sendBox = await page.getByRole('button', { name: '发送消息', exact: true }).boundingBox()
+    if (!inputBox || !pickerBox || !sendBox) throw new Error('输入区域不存在')
+    expect(pickerBox.y).toBeGreaterThanOrEqual(inputBox.y + inputBox.height)
+    expect(sendBox.y).toBeGreaterThanOrEqual(inputBox.y + inputBox.height)
+    expect(pickerBox.y + pickerBox.height).toBeLessThanOrEqual(initial.bottom)
+    expect(sendBox.y + sendBox.height).toBeLessThanOrEqual(initial.bottom)
     await page.screenshot({ path: '.artifacts/screenshots/composer-single-line.png' })
     const wrappedText = '内容超过一行时自动向上增高。'.repeat(9)
     await input.fill(wrappedText)
@@ -445,10 +555,42 @@ test.describe('真实 Go 对话交互', () => {
         .getByText('你好，这是受控回答。', { exact: true }),
     ).toBeVisible()
     await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible()
+    const bubble = await page
+      .getByRole('article', { name: '你的消息', exact: true })
+      .first()
+      .evaluate((element) => {
+        const container = element.parentElement
+        if (!container) throw new Error('消息容器不存在')
+        const rect = element.getBoundingClientRect(),
+          parent = container.getBoundingClientRect()
+        return {
+          width: rect.width,
+          containerWidth: parent.width,
+          rightGap: parent.right - rect.right,
+        }
+      })
+    expect(bubble.width).toBeLessThan(bubble.containerWidth / 2)
+    expect(bubble.rightGap).toBeCloseTo(0, 0)
+    const sendPosition = await page
+      .getByRole('button', { name: '发送消息', exact: true })
+      .boundingBox()
+    if (!sendPosition) throw new Error('发送按钮不存在')
     await input.fill('等待甲')
     await input.press('Enter')
     await expect(page.getByText('仅属于等待甲的内容', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '停止生成' })).toBeEnabled()
+    const stopPosition = await page
+      .getByRole('button', { name: '停止生成', exact: true })
+      .boundingBox()
+    if (!stopPosition) throw new Error('停止按钮不存在')
+    expect(stopPosition.width).toBeCloseTo(sendPosition.width, 0)
+    expect(stopPosition.height).toBeCloseTo(sendPosition.height, 0)
+    expect(stopPosition.x).toBeCloseTo(sendPosition.x, 0)
+    expect(stopPosition.y).toBeCloseTo(sendPosition.y, 0)
+    await page.screenshot({
+      path: '.artifacts/screenshots/composer-generating.png',
+      animations: 'disabled',
+    })
     await expect(page.getByRole('combobox', { name: '模型', exact: true })).toBeDisabled()
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible()
@@ -468,6 +610,7 @@ test.describe('真实 Go 对话交互', () => {
       .click()
     await page.getByRole('button', { name: '停止生成' }).click()
     await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
+    await expect(page.getByRole('group', { name: '执行状态' }).last()).toContainText('生成已停止')
     await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
     await page.reload()
     await page
@@ -485,7 +628,7 @@ test.describe('真实 Go 对话交互', () => {
     await page.screenshot({ path: '.artifacts/screenshots/conversation-connected.png' })
   })
 
-  test('审批展示固定操作，批准后用完整回答替换中间文本', async ({
+  test('审批位于底部输入区，展示固定操作，批准后用完整回答替换中间文本', async ({
     desktop,
     modelEndpoint,
     profile,
@@ -495,7 +638,30 @@ test.describe('真实 Go 对话交互', () => {
     await expect(input).toBeEnabled()
     await input.fill('需要审批')
     await input.press('Enter')
-    await expect(page.getByRole('heading', { name: '允许 read_file 吗？' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    await expect(input).toBeHidden()
+    await expect(panel).toBeFocused()
+    await panel.press('Enter')
+    await panel.press('Escape')
+    await expect(panel).toBeVisible()
+    expect(
+      await panel.evaluate((element) => {
+        const section = element.closest('section[aria-label="对话内容"]')
+        const scroller =
+          section?.querySelector('[aria-label="消息记录"]')?.parentElement?.parentElement
+        return !!scroller && !scroller.contains(element)
+      }),
+    ).toBe(true)
+    await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
+    await page.screenshot({
+      path: '.artifacts/screenshots/approval-composer-light.png',
+      animations: 'disabled',
+    })
+    await panel.getByText('查看详情', { exact: true }).click()
+    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+      '等待审批',
+    )
     await expect(page.locator('pre')).toContainText(join(profile, 'fixture.txt'))
     expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
     await page.reload()
@@ -503,17 +669,191 @@ test.describe('真实 Go 对话交互', () => {
       .getByRole('region', { name: '对话', exact: true })
       .getByRole('button', { name: '需要审批', exact: true })
       .click()
-    await expect(page.getByRole('heading', { name: '允许 read_file 吗？' })).toBeVisible()
-    await page.getByRole('button', { name: '允许本次操作' }).click()
+    await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
+    await page.getByRole('button', { name: '允许一次' }).click()
     await expect(page.getByText('已读取测试文件。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText('已处理')
     await expect(page.getByText('准备检查文件。', { exact: true })).not.toBeVisible()
-    await expect(page.getByRole('button', { name: '允许本次操作' })).not.toBeVisible()
+    await expect(page.getByRole('button', { name: '允许一次' })).not.toBeVisible()
+    await expect(input).toBeVisible()
     expect(
       modelEndpoint?.requests.some(
         (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
       ),
     ).toBe(true)
     await page.screenshot({ path: '.artifacts/screenshots/conversation-approved.png' })
+  })
+
+  test('底部审批在切换会话后恢复，拒绝与停止后保留草稿和自动增高', async ({
+    desktop,
+    modelEndpoint,
+    profile,
+  }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    const sidebar = page.getByRole('region', { name: '对话', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('需要延迟审批')
+    await input.press('Enter')
+    await expect(page.getByText('准备检查文件。', { exact: true })).toBeVisible()
+    await expect(input).toBeEnabled()
+    const draft = '审批后继续讨论。\n第二行草稿。'
+    await input.fill(draft)
+    const draftHeight = await input.evaluate((element) => element.getBoundingClientRect().height)
+    modelEndpoint.requestApproval()
+    await expect(panel).toBeVisible()
+    await expect(input).toBeHidden()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
+    await expect(panel).toBeVisible()
+    await page.screenshot({
+      path: '.artifacts/screenshots/approval-composer-dark.png',
+      animations: 'disabled',
+    })
+    await panel.getByText('查看详情', { exact: true }).click()
+    await expect(panel.getByLabel('完整操作快照')).toContainText(join(profile, 'fixture.txt'))
+    const panelBox = await panel.boundingBox(),
+      approveBox = await panel.getByRole('button', { name: '允许一次', exact: true }).boundingBox()
+    if (!panelBox || !approveBox) throw new Error('审批区域不存在')
+    expect(panelBox.y).toBeGreaterThanOrEqual(0)
+    expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(await page.evaluate(() => innerHeight))
+    expect(approveBox.y + approveBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height)
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+    await page.screenshot({
+      path: '.artifacts/screenshots/approval-details-compact.png',
+      animations: 'disabled',
+    })
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(panel).not.toBeVisible()
+    await expect(input).toHaveValue('')
+    await sidebar.getByRole('button', { name: '需要延迟审批', exact: true }).click()
+    await expect(panel).toBeVisible()
+    expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
+    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+    await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
+    await expect(panel).not.toBeVisible()
+    await expect(input).toHaveValue(draft)
+    await expect(input).toBeFocused()
+    await expect
+      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+      .toBe(draftHeight)
+    await input.fill('审批停止')
+    await input.press('Enter')
+    await expect(panel).toBeVisible()
+    const toolCalls = modelEndpoint.requests.filter((request) => request.lastRole === 'tool').length
+    await panel.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
+    await expect(panel).not.toBeVisible()
+    await expect(input).toBeEnabled()
+    expect(modelEndpoint.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(
+      toolCalls,
+    )
+  })
+
+  test('审批提交失败保留完整快照，提交中不能重复操作，可以重新查询待审批状态', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('审批提交')
+    await input.press('Enter')
+    await expect(panel).toBeVisible()
+    const snapshot = await panel.getByLabel('完整操作快照').textContent()
+    // 仅替换本次隔离进程的 IPC 回包以制造失败；真实 Go 审批保持 pending。
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      const state: { attempts: number; release: (() => void) | null } = {
+        attempts: 0,
+        release: null,
+      }
+      Reflect.set(globalThis, 'approvalFailure', state)
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, async () => {
+        state.attempts++
+        await new Promise<void>((resolve) => {
+          state.release = resolve
+        })
+        return { ok: false, error: '受控审批提交失败' }
+      })
+    }, IPC_CHANNELS.decideApproval)
+    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
+    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeDisabled()
+    await expect(panel.getByRole('button', { name: '拒绝', exact: true })).toBeDisabled()
+    await expect(panel.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled()
+    await panel.press('Enter')
+    expect(await desktop.evaluate(() => Reflect.get(globalThis, 'approvalFailure').attempts)).toBe(
+      1,
+    )
+    await desktop.evaluate(() => {
+      const release: unknown = Reflect.get(globalThis, 'approvalFailure').release
+      if (typeof release !== 'function') throw new Error('没有待完成的提交')
+      release()
+    })
+    await expect(panel.getByRole('alert')).toContainText('受控审批提交失败')
+    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+    await expect(input).toBeHidden()
+    await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
+    await expect(panel.getByRole('alert')).toHaveCount(0)
+    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeEnabled()
+    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
+  })
+
+  test('连续工具审批逐项确认，新目标不会继承上一项决定', async ({
+    desktop,
+    modelEndpoint,
+    profile,
+  }) => {
+    await writeFile(join(profile, 'fixture.txt.second'), 'second-controlled-file', { mode: 0o600 })
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('需要连续审批')
+    await input.press('Enter')
+    await expect(panel.getByText(join(profile, 'fixture.txt'), { exact: true })).toBeVisible()
+    await panel.getByText('查看详情', { exact: true }).click()
+    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
+    await expect(
+      panel.getByText(join(profile, 'fixture.txt.second'), { exact: true }),
+    ).toBeVisible()
+    await expect(panel.getByLabel('完整操作快照')).toBeHidden()
+    await expect(panel).toBeFocused()
+    expect(modelEndpoint?.requests.filter((request) => request.lastRole === 'tool')).toHaveLength(0)
+    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+    await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
+    await expect(panel).not.toBeVisible()
+    await expect(input).toBeEnabled()
+  })
+
+  test('待审批时连接中断会保留操作详情并禁用所有决定和停止操作', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('审批服务中断')
+    await input.press('Enter')
+    await expect(panel).toBeVisible()
+    const snapshot = await panel.getByLabel('完整操作快照').textContent()
+    await interruptTestBackend(desktop)
+    await expect(panel.getByRole('alert')).toContainText('连接已中断')
+    for (const name of ['允许一次', '拒绝', '停止生成'])
+      await expect(panel.getByRole('button', { name, exact: true })).toBeDisabled()
+    expect(await panel.getByLabel('完整操作快照').textContent()).toBe(snapshot)
+    await expect(input).toBeHidden()
+    await panel.getByRole('button', { name: '重新加载审批', exact: true }).click()
+    await expect(panel.getByRole('alert')).toContainText('连接已中断')
+    await expect(panel.getByRole('button', { name: '允许一次', exact: true })).toBeDisabled()
   })
 
   test('失败不会当成成功，长消息在小窗口正常换行', async ({ desktop }) => {
@@ -523,6 +863,9 @@ test.describe('真实 Go 对话交互', () => {
     await input.fill('失败')
     await input.press('Enter')
     await expect(page.getByRole('alert')).toContainText(/失败|暂不可用/)
+    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+      '回答失败',
+    )
     await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
     await desktop.evaluate(({ BrowserWindow }) =>
@@ -531,6 +874,11 @@ test.describe('真实 Go 对话交互', () => {
     await input.fill('长内容' + 'a'.repeat(3000))
     await input.press('Enter')
     await expect(page.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
+    expect(
+      await page
+        .getByRole('article', { name: '你的消息', exact: true })
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
     expect(
       await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true)
@@ -642,6 +990,9 @@ test.describe('真实 Go 对话交互', () => {
     if (!child?.[1]) throw new Error('未定位到本次测试独占的服务子进程')
     process.kill(Number(child[1]), 'SIGKILL')
     await expect(page.getByRole('alert')).toContainText('连接已中断')
+    await expect(page.getByRole('group', { name: '执行状态', exact: true })).toHaveText(
+      '连接已断开',
+    )
     await expect(page.getByRole('button', { name: '重试加载', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: '重试加载', exact: true }).click()
     await expect(page.getByRole('button', { name: '重试加载', exact: true })).toBeVisible()
@@ -661,6 +1012,364 @@ test.describe('真实 Go 对话交互', () => {
     } finally {
       await recovered.close()
     }
+  })
+})
+
+async function chooseTestDirectory(
+  desktop: ElectronApplication,
+  path: string | null,
+): Promise<void> {
+  // 仅替代操作系统选择器；返回值仍经过生产 IPC、路径检查和真实 Go 服务。
+  await desktop.evaluate(({ dialog }, path) => {
+    Reflect.set(
+      dialog,
+      'showOpenDialog',
+      async (_parent: unknown, options: { properties?: string[] }) => {
+        if (options.properties?.join() !== 'openDirectory') throw new Error('选择器未限制为文件夹')
+        return { canceled: path === null, filePaths: path === null ? [] : [path] }
+      },
+    )
+  }, path)
+}
+async function addTestWorkspace(
+  desktop: ElectronApplication,
+  page: Page,
+  path: string,
+  name: string,
+): Promise<void> {
+  await chooseTestDirectory(desktop, path)
+  await page.getByRole('button', { name: '添加工作区', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '添加工作区', exact: true })
+  await dialog.getByRole('textbox', { name: '工作区名称', exact: true }).fill(name)
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(page.getByRole('region', { name, exact: true })).toBeVisible()
+}
+
+test.describe('会话与工作区管理', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('管理工作区和会话，保留分组草稿，软删除后重新添加恢复', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const folder = join(profile, 'project')
+    await mkdir(folder)
+    await writeFile(join(folder, 'kept.txt'), 'original', { mode: 0o600 })
+    await addTestWorkspace(desktop, page, folder, '产品计划')
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const workspace = page.getByRole('region', { name: '产品计划', exact: true })
+    await expect(page.getByText('在 产品计划 中开始对话。', { exact: true })).toBeVisible()
+    await input.fill('工作区草稿')
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(input).toHaveValue('')
+    await input.fill('独立草稿')
+    await workspace.getByRole('button', { name: '新建对话', exact: true }).click()
+    await expect(input).toHaveValue('工作区草稿')
+    await input.fill('工作区提问')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
+    await expect(workspace.getByRole('button', { name: '工作区提问', exact: true })).toBeVisible()
+    await expect(
+      page
+        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('button', { name: '工作区提问', exact: true }),
+    ).toHaveCount(0)
+    await workspace.getByRole('button', { name: '工作区提问的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '重命名', exact: true }).click()
+    const rename = page.getByRole('dialog', { name: '重命名会话', exact: true })
+    await expect(rename.getByRole('textbox', { name: '会话标题', exact: true })).toBeFocused()
+    await rename.getByRole('textbox', { name: '会话标题', exact: true }).fill('讨论 <方案> & 计划')
+    await rename.getByRole('textbox', { name: '会话标题', exact: true }).press('Enter')
+    await expect(
+      workspace.getByRole('button', { name: '讨论 <方案> & 计划', exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(input).toHaveValue('独立草稿')
+    await input.fill('独立提问')
+    await input.press('Enter')
+    await expect(
+      page
+        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('button', { name: '独立提问', exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '产品计划的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '编辑工作区', exact: true }).click()
+    const edit = page.getByRole('dialog', { name: '编辑工作区', exact: true })
+    await expect(edit.getByText(await realpath(folder), { exact: true })).toBeVisible()
+    await edit.getByRole('textbox', { name: '工作区名称', exact: true }).fill('开发项目')
+    await edit.getByRole('button', { name: '保存', exact: true }).click()
+    const renamedWorkspace = page.getByRole('region', { name: '开发项目', exact: true })
+    await expect(renamedWorkspace).toBeVisible()
+    await page.screenshot({
+      path: '.artifacts/screenshots/workspaces-light.png',
+      animations: 'disabled',
+    })
+    await page.reload()
+    await page.getByRole('button', { name: '开发项目', exact: true }).click()
+    await renamedWorkspace.getByRole('button', { name: '讨论 <方案> & 计划', exact: true }).click()
+    await input.fill('会话草稿')
+    await page.getByRole('button', { name: '开发项目的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除工作区', exact: true }).click()
+    const deletion = page.getByRole('dialog', { name: '删除工作区', exact: true })
+    await expect(deletion.getByRole('button', { name: '取消', exact: true })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(deletion).not.toBeVisible()
+    await expect(renamedWorkspace).toBeVisible()
+    await page.getByRole('button', { name: '开发项目的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除工作区', exact: true }).click()
+    await page
+      .getByRole('dialog', { name: '删除工作区', exact: true })
+      .getByRole('button', { name: '确认删除', exact: true })
+      .click()
+    await expect(renamedWorkspace).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
+    expect(await readFile(join(folder, 'kept.txt'), 'utf8')).toBe('original')
+    await addTestWorkspace(desktop, page, folder, '恢复项目')
+    await page
+      .getByRole('region', { name: '恢复项目', exact: true })
+      .getByRole('button', { name: '讨论 <方案> & 计划', exact: true })
+      .click()
+    await expect(input).toHaveValue('')
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+      '工作区提问',
+    )
+    await expect(
+      page
+        .getByRole('region', { name: '对话', exact: true })
+        .getByRole('button', { name: '独立提问', exact: true }),
+    ).toBeVisible()
+  })
+
+  test('执行中拒绝删除，停止后可删除会话；取消选择和重复目录保持原状', async ({
+    desktop,
+    profile,
+  }) => {
+    const page = await desktop.firstWindow()
+    const folder = join(profile, 'project')
+    await mkdir(folder)
+    await chooseTestDirectory(desktop, null)
+    await page.getByRole('button', { name: '添加工作区', exact: true }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await addTestWorkspace(desktop, page, folder, '运行项目')
+    await chooseTestDirectory(desktop, folder)
+    await page.getByRole('button', { name: '添加工作区', exact: true }).click()
+    const addition = page.getByRole('dialog', { name: '添加工作区', exact: true })
+    await addition.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(addition.getByRole('alert')).toBeVisible()
+    await addition.getByRole('button', { name: '取消', exact: true }).click()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('等待甲')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '运行项目的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除工作区', exact: true }).click()
+    let deletion = page.getByRole('dialog', { name: '删除工作区', exact: true })
+    await deletion.getByRole('button', { name: '确认删除', exact: true }).click()
+    await expect(deletion.getByRole('alert')).toContainText('未结束执行')
+    await deletion.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '等待甲的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
+    deletion = page.getByRole('dialog', { name: '删除会话', exact: true })
+    await deletion.getByRole('button', { name: '确认删除', exact: true }).click()
+    await expect(deletion.getByRole('alert')).toBeVisible()
+    await deletion.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
+    await input.fill('将清除的草稿')
+    await page.getByRole('button', { name: '等待甲的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
+    await page
+      .getByRole('dialog', { name: '删除会话', exact: true })
+      .getByRole('button', { name: '确认删除', exact: true })
+      .click()
+    await expect(page.getByRole('button', { name: '等待甲', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
+    await page.reload()
+    await page.getByRole('button', { name: '运行项目', exact: true }).click()
+    await expect(page.getByRole('button', { name: '等待甲', exact: true })).toHaveCount(0)
+    await expect(
+      page
+        .getByRole('region', { name: '运行项目', exact: true })
+        .getByRole('button', { name: '新建对话', exact: true }),
+    ).toBeVisible()
+  })
+
+  test('删除与切换后丢弃迟到的详情和工作区列表', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    for (const text of ['会话甲', '会话乙']) {
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      await input.fill(text)
+      await input.press('Enter')
+      await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
+        '你好，这是受控回答。',
+      )
+      await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
+    }
+    const snapshots = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok) throw new Error(overview.error)
+      return Promise.all(
+        overview.value.conversations.map(async (item) => ({
+          id: item.id,
+          title: item.title,
+          result: await window.callum.getConversation(item.id),
+        })),
+      )
+    })
+    const first = snapshots.find((item) => item.title === '会话甲')!
+    await desktop.evaluate(
+      ({ ipcMain }, { snapshots, firstId, channel }) => {
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, (_event, id: string) => {
+          const result = snapshots.find((item) => item.id === id)?.result
+          if (id !== firstId) return result
+          return new Promise((resolve) =>
+            Reflect.set(globalThis, 'releaseConversationDetail', () => resolve(result)),
+          )
+        })
+      },
+      { snapshots, firstId: first.id, channel: IPC_CHANNELS.getConversation },
+    )
+    await page
+      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('button', { name: '会话甲', exact: true })
+      .click()
+    await expect(page.getByText('正在加载消息…', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '会话甲的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
+    await page
+      .getByRole('dialog', { name: '删除会话', exact: true })
+      .getByRole('button', { name: '确认删除', exact: true })
+      .click()
+    await page
+      .getByRole('region', { name: '对话', exact: true })
+      .getByRole('button', { name: '会话乙', exact: true })
+      .click()
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'releaseConversationDetail')()
+    })
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+      '会话乙',
+    )
+    await expect(page.getByRole('button', { name: '会话甲', exact: true })).toHaveCount(0)
+    const folder = join(profile, 'late-project')
+    await mkdir(folder)
+    await addTestWorkspace(desktop, page, folder, '迟到项目')
+    const listed = await page.evaluate(async () => {
+      const result = await window.callum.listWorkspaces(0)
+      if (!result.ok) throw new Error(result.error)
+      return window.callum.getWorkspaceConversations(result.value.workspaces[0]!.id, 0)
+    })
+    await desktop.evaluate(
+      ({ ipcMain }, { channel, result }) => {
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(
+          channel,
+          () =>
+            new Promise((resolve) =>
+              Reflect.set(globalThis, 'releaseWorkspaceList', () => resolve(result)),
+            ),
+        )
+      },
+      { channel: IPC_CHANNELS.getWorkspaceConversations, result: listed },
+    )
+    await page.getByRole('button', { name: '迟到项目', exact: true }).click()
+    await page.getByRole('button', { name: '迟到项目', exact: true }).click()
+    await expect(
+      page
+        .getByRole('region', { name: '迟到项目', exact: true })
+        .getByText('正在加载对话…', { exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '迟到项目的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '删除工作区', exact: true }).click()
+    await page
+      .getByRole('dialog', { name: '删除工作区', exact: true })
+      .getByRole('button', { name: '确认删除', exact: true })
+      .click()
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'releaseWorkspaceList')()
+    })
+    await expect(page.getByRole('region', { name: '迟到项目', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
+  })
+
+  test('保存失败保留原名和输入，忙碌时阻止重复操作，支持深色与小窗口', async ({
+    desktop,
+    profile,
+  }) => {
+    const page = await desktop.firstWindow()
+    const folder = join(profile, 'project')
+    await mkdir(folder)
+    await addTestWorkspace(desktop, page, folder, '界面验证项目')
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('radio', { name: '深色', exact: false }).focus()
+    await page.keyboard.press('Space')
+    await page.getByRole('button', { name: '界面验证项目的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '编辑工作区', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '编辑工作区', exact: true })
+    const name = dialog.getByRole('textbox', { name: '工作区名称', exact: true })
+    await name.fill('输入会保留的名称')
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      Reflect.set(globalThis, 'workspaceRenameCalls', 0)
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => {
+        Reflect.set(
+          globalThis,
+          'workspaceRenameCalls',
+          Number(Reflect.get(globalThis, 'workspaceRenameCalls')) + 1,
+        )
+        return new Promise((resolve) =>
+          Reflect.set(globalThis, 'releaseWorkspaceRename', () =>
+            resolve({ ok: false, error: '受控保存失败，请重新核对。' }),
+          ),
+        )
+      })
+    }, IPC_CHANNELS.renameWorkspace)
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeVisible()
+    expect(await desktop.evaluate(() => Reflect.get(globalThis, 'workspaceRenameCalls'))).toBe(1)
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'releaseWorkspaceRename')()
+    })
+    await expect(dialog.getByRole('alert')).toContainText('受控保存失败')
+    await expect(name).toHaveValue('输入会保留的名称')
+    await expect(
+      page.getByRole('region', { name: '界面验证项目', exact: true, includeHidden: true }),
+    ).toBeAttached()
+    const bounds = await dialog.boundingBox()
+    expect(
+      bounds &&
+        bounds.x >= 0 &&
+        bounds.y >= 0 &&
+        bounds.x + bounds.width <= 860 &&
+        bounds.y + bounds.height <= 620,
+    ).toBe(true)
+    await page.screenshot({
+      path: '.artifacts/screenshots/workspace-edit-dark-compact.png',
+      animations: 'disabled',
+    })
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(
+      page.getByRole('button', { name: '界面验证项目的操作', exact: true }),
+    ).toBeFocused()
+    const invalid = await page.evaluate(async () => ({
+      identifier: await window.callum.deleteWorkspace('../../invalid'),
+      name: await window.callum.renameConversation(
+        '019a4f39-0000-7000-8000-000000000001',
+        '中'.repeat(342),
+      ),
+      path: await window.callum.createWorkspace({ name: '伪造目录', rootPath: '/arbitrary-path' }),
+      page: await window.callum.listWorkspaces(-1),
+    }))
+    expect(Object.values(invalid).every((result) => !result.ok)).toBe(true)
   })
 })
 

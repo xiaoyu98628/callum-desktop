@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import {
+  ChevronRightIcon,
   FolderIcon,
   MessageSquareIcon,
   PlusIcon,
@@ -8,9 +10,15 @@ import {
   SquarePenIcon,
 } from '@lucide/vue'
 import type { AppInfo } from '@shared/desktop-api'
+import type { Conversation, Workspace } from '@shared/chat'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import { useConversations } from '@/features/conversation/useConversations'
+import { getDesktopApi } from '@/lib/desktop'
+import ConversationList from './ConversationList.vue'
+import SidebarItemMenu from './SidebarItemMenu.vue'
+import SidebarManagementDialog from './SidebarManagementDialog.vue'
+import type { ManagementTarget } from './SidebarManagementDialog.vue'
 
 defineProps<{
   collapsed: boolean
@@ -22,14 +30,105 @@ defineProps<{
 const emit = defineEmits<{ navigate: [page: AppPage] }>()
 
 const platformNames = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' } as const
-const { state, newConversation, openConversation, refreshOverview } = useConversations()
-function startConversation(): void {
-  newConversation()
+const {
+  state,
+  newConversation,
+  openConversation,
+  refreshOverview,
+  refreshWorkspaces,
+  toggleWorkspace,
+  expandWorkspace,
+  loadWorkspaceConversations,
+  createWorkspace,
+  renameWorkspace,
+  deleteWorkspace,
+  renameConversation,
+  deleteConversation,
+} = useConversations()
+const managementTarget = ref<ManagementTarget | null>(null)
+const managementReturnFocus = ref<HTMLElement | null>(null)
+const managementError = ref('')
+const choosing = ref(false)
+const chooseError = ref('')
+function startConversation(workspaceId: string | null = null): void {
+  if (workspaceId) expandWorkspace(workspaceId)
+  newConversation(workspaceId)
   emit('navigate', 'conversation')
 }
 function selectConversation(conversationId: string): void {
   void openConversation(conversationId)
   emit('navigate', 'conversation')
+}
+function manageConversation(
+  item: Conversation,
+  deleting: boolean,
+  trigger: HTMLElement | null,
+): void {
+  managementReturnFocus.value = trigger
+  managementError.value = ''
+  managementTarget.value = {
+    kind: 'conversation',
+    id: item.id,
+    name: item.title,
+    rootPath: '',
+    deleting,
+  }
+}
+function manageWorkspace(item: Workspace, deleting: boolean, trigger: HTMLElement | null): void {
+  managementReturnFocus.value = trigger
+  managementError.value = ''
+  managementTarget.value = {
+    kind: 'workspace',
+    id: item.id,
+    name: item.name,
+    rootPath: item.rootPath,
+    deleting,
+  }
+}
+async function addWorkspace(): Promise<void> {
+  if (choosing.value || state.managing) return
+  choosing.value = true
+  managementReturnFocus.value =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null
+  chooseError.value = ''
+  try {
+    const result = await getDesktopApi().chooseWorkspaceDirectory()
+    if (!result.ok) throw new Error(result.error)
+    if (result.value) {
+      managementError.value = ''
+      managementTarget.value = {
+        kind: 'workspace',
+        id: null,
+        name: result.value.name,
+        rootPath: result.value.path,
+        deleting: false,
+      }
+    }
+  } catch (error) {
+    chooseError.value = error instanceof Error ? error.message : '无法选择文件夹。'
+  } finally {
+    choosing.value = false
+  }
+}
+async function confirmManagement(name: string): Promise<void> {
+  const target = managementTarget.value
+  if (!target || state.managing) return
+  managementError.value = ''
+  try {
+    if (target.kind === 'conversation' && target.id) {
+      if (target.deleting) await deleteConversation(target.id)
+      else await renameConversation(target.id, name)
+    } else if (target.id) {
+      if (target.deleting) await deleteWorkspace(target.id)
+      else await renameWorkspace(target.id, name)
+    } else {
+      const workspace = await createWorkspace({ name, rootPath: target.rootPath })
+      startConversation(workspace.id)
+    }
+    managementTarget.value = null
+  } catch (error) {
+    managementError.value = error instanceof Error ? error.message : '无法保存，请重试。'
+  }
 }
 </script>
 
@@ -54,12 +153,13 @@ function selectConversation(conversationId: string): void {
 
     <nav class="flex min-h-0 flex-1 flex-col" aria-label="工作内容">
       <Button
+        id="new-conversation"
         variant="outline"
         class="w-full shrink-0 gap-3 rounded-xl bg-card font-medium"
         :class="collapsed ? 'px-0' : 'justify-start px-3'"
         :aria-current="activePage === 'conversation' && !state.selectedId ? 'page' : undefined"
         :title="collapsed ? '新对话' : undefined"
-        @click="startConversation"
+        @click="startConversation()"
       >
         <SquarePenIcon class="size-4 shrink-0" aria-hidden="true" />
         <span :class="collapsed ? 'sr-only' : ''">新对话</span>
@@ -79,23 +179,152 @@ function selectConversation(conversationId: string): void {
             >
               工作区
             </h2>
-            <span v-if="!collapsed" class="ml-auto" title="添加工作区功能尚未开放">
+            <span v-if="!collapsed" class="ml-auto">
               <Button
+                id="add-workspace"
                 variant="ghost"
                 size="icon"
                 class="size-6 text-muted-foreground"
-                disabled
+                :disabled="choosing || state.managing || !!state.serviceError"
                 aria-label="添加工作区"
-                aria-describedby="workspace-availability"
+                @click="addWorkspace"
               >
                 <PlusIcon class="size-3.5" aria-hidden="true" />
               </Button>
             </span>
           </div>
-          <div class="px-3" :class="collapsed ? 'sr-only' : ''">
-            <p class="text-xs leading-6 text-muted-foreground/80">暂无工作区</p>
-            <p id="workspace-availability" class="sr-only">添加工作区功能尚未开放</p>
+          <p
+            v-if="state.workspacesLoading && !state.workspaces.length"
+            class="px-3 text-xs text-muted-foreground"
+            :class="collapsed ? 'sr-only' : ''"
+          >
+            正在加载工作区…
+          </p>
+          <p
+            v-else-if="!state.workspaces.length && !state.workspacesError"
+            class="px-3 text-xs leading-6 text-muted-foreground/80"
+            :class="collapsed ? 'sr-only' : ''"
+          >
+            暂无工作区
+          </p>
+          <div
+            v-if="state.workspacesError || chooseError"
+            class="px-3 text-xs"
+            :class="collapsed ? 'sr-only' : ''"
+          >
+            <p role="alert" class="break-words text-destructive">
+              {{ state.workspacesError || chooseError }}
+            </p>
+            <Button
+              v-if="state.workspacesError"
+              variant="link"
+              size="sm"
+              :disabled="state.workspacesLoading"
+              @click="refreshWorkspaces()"
+              >重新加载工作区</Button
+            >
           </div>
+          <section
+            v-for="workspace in state.workspaces"
+            :key="workspace.id"
+            :aria-label="workspace.name"
+            class="mb-1"
+          >
+            <div
+              class="group flex min-w-0 items-center rounded-lg"
+              :class="
+                state.workspaceId === workspace.id &&
+                activePage === 'conversation' &&
+                !state.selectedId
+                  ? 'bg-secondary'
+                  : 'hover:bg-accent/70'
+              "
+            >
+              <Button
+                variant="ghost"
+                class="min-w-0 flex-1 justify-start gap-2 text-xs hover:bg-transparent"
+                :class="collapsed ? 'justify-center px-0' : 'px-3'"
+                :title="workspace.name"
+                :aria-expanded="
+                  collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
+                "
+                @click="collapsed ? startConversation(workspace.id) : toggleWorkspace(workspace.id)"
+              >
+                <FolderIcon v-if="collapsed" class="size-3.5" aria-hidden="true" />
+                <ChevronRightIcon
+                  v-else
+                  class="size-3.5 shrink-0 text-muted-foreground transition-transform"
+                  :class="state.workspaceGroups[workspace.id]?.expanded ? 'rotate-90' : ''"
+                  aria-hidden="true"
+                />
+                <span :class="collapsed ? 'sr-only' : 'truncate'">{{ workspace.name }}</span>
+              </Button>
+              <SidebarItemMenu
+                v-if="!collapsed"
+                :label="workspace.name"
+                workspace
+                :disabled="state.managing || !!state.serviceError"
+                @rename="manageWorkspace(workspace, false, $event)"
+                @delete="manageWorkspace(workspace, true, $event)"
+                @new-conversation="startConversation(workspace.id)"
+              />
+            </div>
+            <div
+              v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
+              class="ml-4 mt-1 border-l pl-1"
+            >
+              <ConversationList
+                :items="state.workspaceGroups[workspace.id]?.items ?? []"
+                :selected-id="state.selectedId"
+                :active="activePage === 'conversation'"
+                :collapsed="false"
+                :disabled="state.managing || !!state.serviceError"
+                @select="selectConversation"
+                @rename="(item, trigger) => manageConversation(item, false, trigger)"
+                @delete="(item, trigger) => manageConversation(item, true, trigger)"
+              />
+              <p
+                v-if="state.workspaceGroups[workspace.id]?.loading"
+                class="px-3 py-2 text-xs text-muted-foreground"
+              >
+                正在加载对话…
+              </p>
+              <div v-else-if="state.workspaceGroups[workspace.id]?.error" class="px-3 text-xs">
+                <p role="alert" class="break-words text-destructive">
+                  {{ state.workspaceGroups[workspace.id]?.error }}
+                </p>
+                <Button variant="link" size="sm" @click="loadWorkspaceConversations(workspace.id)"
+                  >重新加载</Button
+                >
+              </div>
+              <Button
+                v-else-if="!state.workspaceGroups[workspace.id]?.items.length"
+                variant="ghost"
+                size="sm"
+                class="w-full justify-start px-3 text-xs text-muted-foreground"
+                @click="startConversation(workspace.id)"
+                ><PlusIcon class="size-3.5" aria-hidden="true" />新建对话</Button
+              >
+              <Button
+                v-if="state.workspaceGroups[workspace.id]?.hasMore"
+                variant="ghost"
+                size="sm"
+                class="w-full text-xs text-muted-foreground"
+                :disabled="state.workspaceGroups[workspace.id]?.loading"
+                @click="loadWorkspaceConversations(workspace.id, true)"
+                >加载更多对话</Button
+              >
+            </div>
+          </section>
+          <Button
+            v-if="state.workspacesHasMore && !collapsed"
+            variant="ghost"
+            size="sm"
+            class="w-full text-xs text-muted-foreground"
+            :disabled="state.workspacesLoading"
+            @click="refreshWorkspaces(true)"
+            >加载更多工作区</Button
+          >
         </section>
 
         <section aria-labelledby="conversations-heading">
@@ -126,29 +355,16 @@ function selectConversation(conversationId: string): void {
           >
             暂无对话
           </p>
-          <div v-if="state.conversations.length" class="space-y-1">
-            <Button
-              v-for="conversation in state.conversations"
-              :key="conversation.id"
-              :variant="
-                activePage === 'conversation' && state.selectedId === conversation.id
-                  ? 'secondary'
-                  : 'ghost'
-              "
-              class="w-full min-w-0 justify-start gap-2 text-xs"
-              :class="collapsed ? 'justify-center px-0' : 'px-3'"
-              :aria-current="
-                activePage === 'conversation' && state.selectedId === conversation.id
-                  ? 'page'
-                  : undefined
-              "
-              :title="conversation.title"
-              @click="selectConversation(conversation.id)"
-            >
-              <MessageSquareIcon class="size-3.5 shrink-0" aria-hidden="true" />
-              <span :class="collapsed ? 'sr-only' : 'truncate'">{{ conversation.title }}</span>
-            </Button>
-          </div>
+          <ConversationList
+            :items="state.conversations"
+            :selected-id="state.selectedId"
+            :active="activePage === 'conversation'"
+            :collapsed="collapsed"
+            :disabled="state.managing || !!state.serviceError"
+            @select="selectConversation"
+            @rename="(item, trigger) => manageConversation(item, false, trigger)"
+            @delete="(item, trigger) => manageConversation(item, true, trigger)"
+          />
           <Button
             v-if="state.hasMore && !collapsed"
             variant="ghost"
@@ -185,4 +401,13 @@ function selectConversation(conversationId: string): void {
       </div>
     </div>
   </aside>
+  <SidebarManagementDialog
+    v-if="managementTarget"
+    :target="managementTarget"
+    :busy="state.managing"
+    :error="managementError"
+    :return-focus="managementReturnFocus"
+    @close="managementTarget = null"
+    @confirm="confirmManagement"
+  />
 </template>

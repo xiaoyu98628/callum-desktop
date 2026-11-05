@@ -48,6 +48,17 @@ test(
       const detail = await service.detail(first.conversationId)
       assert.equal(detail.messages.length, 2)
       assert.equal(detail.messages[1]?.content[0]?.text, '你好，这是受控回答。')
+      const completed = detail.runs.find((run) => run.id === first.runId)
+      assert.ok(completed && completed.finishedAt !== null)
+      assert.ok(completed.finishedAt >= completed.createdAt)
+      assert.ok(
+        events.some(
+          (event) =>
+            event.change.kind === 'run' &&
+            event.change.value.id === first.runId &&
+            event.change.value.finishedAt === completed.finishedAt,
+        ),
+      )
       assert.ok(
         events.some(
           (event) =>
@@ -186,6 +197,10 @@ test(
       await service.close()
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const restored = await service.detail(first.conversationId)
+      assert.equal(
+        restored.runs.find((run) => run.id === first.runId)?.finishedAt,
+        completed.finishedAt,
+      )
       assert.equal(restored.messages.length, 4)
       assert.equal(restored.messages.at(-1)?.status, 'cancelled')
       assert.equal((await service.overview(0)).conversations.length, 8)

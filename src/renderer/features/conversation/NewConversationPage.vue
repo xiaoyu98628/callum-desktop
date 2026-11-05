@@ -2,15 +2,19 @@
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { ArrowUpIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
+import type { ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
 import ModelSelector from './ModelSelector.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
+import RunStatus from './RunStatus.vue'
+import ApprovalComposer from './ApprovalComposer.vue'
 defineEmits<{ configureModels: [] }>()
 
 const {
   state,
   draft,
+  workspace,
   activeRun,
   pendingApprovals,
   refreshOverview,
@@ -22,18 +26,59 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
+const approvals = computed(() =>
+  pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
+)
+const currentApproval = computed(() => approvals.value[0] ?? null)
+const approvalUnavailable = computed(
+  () =>
+    state.loading ||
+    state.loadingList ||
+    !!state.serviceError ||
+    !activeRun.value ||
+    activeRun.value.id !== currentApproval.value?.runId,
+)
+const approvalError = computed(
+  () =>
+    state.serviceError ||
+    state.modelError ||
+    state.error ||
+    (currentApproval.value && !state.loading && activeRun.value?.id !== currentApproval.value.runId
+      ? '执行状态已变化，请重新加载审批后核对。'
+      : ''),
+)
+const messageRuns = computed(() => {
+  const runs = new Map(state.detail?.runs.map((run) => [run.id, run]))
+  const shown = new Set<string>()
+  const result = new Map<string, ChatRun>()
+  for (const item of messages.value) {
+    if (item.role !== 'assistant' || shown.has(item.runId)) continue
+    shown.add(item.runId)
+    const run = runs.get(item.runId)
+    if (run) result.set(item.id, run)
+  }
+  return result
+})
 const scroller = ref<HTMLElement | null>(null)
 const messageInput = ref<HTMLTextAreaElement | null>(null)
 let inputResizeObserver: ResizeObserver | undefined
 let inputResizeFrame: number | undefined
 const follow = ref(true)
 const availableModel = computed(() => state.models.some((item) => item.id === state.modelId))
+const composerNotice = computed(() =>
+  state.loadingList || state.modelsLoading
+    ? '正在读取模型…'
+    : !state.models.length && !state.serviceError
+      ? '尚未配置可用模型，配置完成后即可开始对话。'
+      : '',
+)
 const canSend = computed(
   () =>
     !state.loading &&
     !state.loadingList &&
     !state.sending &&
     !activeRun.value &&
+    !currentApproval.value &&
     !state.serviceError &&
     !state.modelsLoading &&
     !state.modelError &&
@@ -72,7 +117,7 @@ async function scrollToBottom(): Promise<void> {
 }
 function resizeMessageInput(): void {
   const input = messageInput.value
-  if (!input) return
+  if (!input || currentApproval.value) return
   // 先恢复单行测量高度，使删除内容、发送或切换草稿时也能收缩；上限由 CSS 管理。
   input.style.overflowY = 'hidden'
   input.style.height = 'auto'
@@ -81,6 +126,45 @@ function resizeMessageInput(): void {
   void scrollToBottom()
 }
 watch(draft, resizeMessageInput, { flush: 'post' })
+watch(
+  () => currentApproval.value?.id,
+  async (id, previous) => {
+    if (id) return
+    await nextTick()
+    if (currentApproval.value) return
+    resizeMessageInput()
+    const input = messageInput.value
+    // 审批面板移除时恢复输入；切换会话或设置时不抢走其他控件的焦点。
+    if (previous && input && !input.disabled && document.activeElement === document.body)
+      input.focus({ preventScroll: true })
+  },
+  { flush: 'post' },
+)
+function decideCurrent(id: string, decision: 'approved' | 'rejected'): void {
+  if (
+    id !== currentApproval.value?.id ||
+    approvalUnavailable.value ||
+    state.deciding ||
+    state.cancelling
+  )
+    return
+  void decide(id, decision)
+}
+function stopApproval(id: string): void {
+  if (
+    id !== currentApproval.value?.id ||
+    approvalUnavailable.value ||
+    state.deciding ||
+    state.cancelling
+  )
+    return
+  void cancel()
+}
+function reloadApproval(): void {
+  if (state.serviceError) void refreshOverview()
+  else if (state.modelError) void refreshModels()
+  else if (state.selectedId) void openConversation(state.selectedId)
+}
 watch(
   () => messages.value,
   () => {
@@ -120,7 +204,7 @@ onScopeDispose(() => {
   <section class="flex h-full min-h-0 flex-col" aria-label="对话内容">
     <div
       ref="scroller"
-      class="min-h-0 flex-1 overflow-y-auto px-6 py-8 lg:px-12"
+      class="min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-6 lg:px-12"
       @scroll="trackScroll"
     >
       <div class="mx-auto w-full max-w-3xl">
@@ -132,7 +216,7 @@ onScopeDispose(() => {
           </div>
           <h1 class="text-center text-3xl font-semibold tracking-tight">开始一段新对话</h1>
           <p class="mt-4 text-center text-sm leading-7 text-muted-foreground">
-            每个想法，都从这里开始。
+            {{ workspace ? `在 ${workspace.name} 中开始对话。` : '每个想法，都从这里开始。' }}
           </p>
         </div>
         <h1 v-else class="sr-only">{{ state.detail?.conversation.title || '对话' }}</h1>
@@ -143,7 +227,14 @@ onScopeDispose(() => {
         >
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
-        <div v-if="state.selectedId && !state.loading" class="mb-5 flex justify-center gap-3">
+        <div
+          v-if="
+            state.selectedId &&
+            !state.loading &&
+            ((messages[0]?.sequence ?? 0) > 1 || state.historical)
+          "
+          class="mb-4 flex justify-center gap-3"
+        >
           <Button
             v-if="messages[0] && messages[0].sequence > 1"
             variant="ghost"
@@ -155,20 +246,22 @@ onScopeDispose(() => {
             >回到最新消息</Button
           >
         </div>
-        <div class="space-y-8" aria-label="消息记录">
+        <div class="space-y-4" aria-label="消息记录">
           <article
             v-for="item in messages"
             :key="item.id"
             :aria-label="item.role === 'user' ? '你的消息' : 'Callum 的回答'"
             :class="
               item.role === 'user'
-                ? 'ml-auto max-w-[88%] rounded-2xl border bg-muted/60 px-5 py-4'
-                : 'py-2'
+                ? 'ml-auto w-fit max-w-[88%] rounded-2xl border bg-muted/60 px-3 py-2'
+                : 'py-1'
             "
           >
-            <p class="mb-2 text-xs font-medium text-muted-foreground">
-              {{ item.role === 'user' ? '你' : 'Callum' }}
-            </p>
+            <RunStatus
+              v-if="item.role === 'assistant'"
+              :run="messageRuns.get(item.id) ?? null"
+              :connected="!state.serviceError"
+            />
             <MarkdownMessage
               v-if="item.role === 'assistant'"
               :content="item.content"
@@ -179,7 +272,7 @@ onScopeDispose(() => {
               <div
                 v-for="(block, index) in item.content"
                 :key="index"
-                class="whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]"
+                class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
               >
                 <template v-if="block.type === 'text'">{{ block.text }}</template>
                 <p v-else class="text-muted-foreground">
@@ -189,13 +282,19 @@ onScopeDispose(() => {
             </template>
             <span
               v-if="
-                item.role === 'assistant' && !item.content.length && activeRun?.id === item.runId
+                item.role === 'assistant' &&
+                !item.content.length &&
+                activeRun?.id === item.runId &&
+                !messageRuns.has(item.id)
               "
               class="text-sm text-muted-foreground"
               >正在思考…</span
             >
             <p
-              v-if="['cancelled', 'failed', 'interrupted'].includes(item.status)"
+              v-if="
+                ['cancelled', 'failed', 'interrupted'].includes(item.status) &&
+                !messageRuns.has(item.id)
+              "
               class="mt-2 text-xs text-muted-foreground"
             >
               {{
@@ -208,35 +307,6 @@ onScopeDispose(() => {
             </p>
           </article>
         </div>
-        <div
-          v-for="approval in pendingApprovals"
-          :key="approval.id"
-          class="mt-6 rounded-xl border border-primary/25 bg-accent/40 p-5"
-          :aria-label="'审批：' + approval.toolName"
-        >
-          <h2 class="text-sm font-semibold">允许 {{ approval.toolName }} 吗？</h2>
-          <p class="mt-2 text-xs leading-6 text-muted-foreground">
-            请检查后端提供的操作及实际目标。本次决定仅适用于下方操作。
-          </p>
-          <pre
-            class="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-background p-3 text-xs leading-6"
-            >{{ approval.snapshot }}</pre>
-          <div class="mt-4 flex justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              :disabled="!!state.deciding || !!state.serviceError"
-              @click="decide(approval.id, 'rejected')"
-              >拒绝</Button
-            >
-            <Button
-              size="sm"
-              :disabled="!!state.deciding || !!state.serviceError"
-              @click="decide(approval.id, 'approved')"
-              >允许本次操作</Button
-            >
-          </div>
-        </div>
         <p
           v-if="latestRun && !activeRun && ['failed', 'interrupted'].includes(latestRun.status)"
           role="alert"
@@ -245,7 +315,7 @@ onScopeDispose(() => {
           {{ latestRun.error || runLabels[latestRun.status] }}
         </p>
         <div
-          v-if="state.error || state.serviceError || state.modelError"
+          v-if="!currentApproval && (state.error || state.serviceError || state.modelError)"
           role="alert"
           class="mt-5 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm leading-6"
         >
@@ -278,9 +348,23 @@ onScopeDispose(() => {
         </div>
       </div>
     </div>
-    <div class="shrink-0 px-6 pb-5 lg:px-12">
+    <div class="shrink-0 px-6 pb-3 lg:px-12">
+      <ApprovalComposer
+        v-if="currentApproval"
+        :key="currentApproval.id"
+        :approval="currentApproval"
+        :count="approvals.length"
+        :deciding="!!state.deciding"
+        :cancelling="state.cancelling"
+        :unavailable="approvalUnavailable"
+        :error="approvalError"
+        @decide="decideCurrent"
+        @stop="stopApproval"
+        @reload="reloadApproval"
+      />
       <form
-        class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-[0_8px_40px_-24px_rgba(30,25,60,0.2)] focus-within:ring-2 focus-within:ring-ring/30"
+        v-show="!currentApproval"
+        class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-1.5 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="send"
       >
         <label for="new-message" class="sr-only">消息</label>
@@ -291,6 +375,7 @@ onScopeDispose(() => {
           rows="1"
           :maxlength="MAX_MESSAGE_LENGTH"
           :disabled="
+            !!currentApproval ||
             state.loading ||
             state.sending ||
             state.modelsLoading ||
@@ -300,17 +385,18 @@ onScopeDispose(() => {
           "
           placeholder="你想聊些什么？"
           aria-describedby="conversation-hint"
-          class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent px-1 py-1 text-sm leading-7 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+          class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
           @input="resizeMessageInput"
           @keydown="keydown"
         ></textarea>
-        <div class="mt-1 flex items-center justify-end gap-3">
+        <div class="flex items-center justify-end gap-2">
           <div class="flex min-w-0 items-center gap-2">
             <Button
               v-if="!state.models.length"
               type="button"
               variant="ghost"
               size="sm"
+              class="h-7"
               :disabled="state.loadingList || state.modelsLoading || !!state.serviceError"
               @click="$emit('configureModels')"
               >{{ state.loadingList || state.modelsLoading ? '正在读取模型…' : '配置模型' }}</Button
@@ -331,19 +417,25 @@ onScopeDispose(() => {
           <Button
             v-if="activeRun"
             type="button"
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="icon"
+            class="size-7 shrink-0 rounded-full border bg-background text-foreground hover:bg-muted"
+            aria-label="停止生成"
+            :title="state.cancelling ? '正在停止…' : '停止生成'"
+            :aria-busy="state.cancelling"
             :disabled="state.cancelling || !!state.serviceError"
             @click="cancel"
-            ><SquareIcon class="size-3" aria-hidden="true" />{{
-              state.cancelling ? '正在停止…' : '停止生成'
-            }}</Button
-          >
+            ><LoaderCircleIcon
+              v-if="state.cancelling"
+              class="size-3.5 animate-spin"
+              aria-hidden="true" />
+            <SquareIcon v-else class="size-3 fill-current" aria-hidden="true"
+          /></Button>
           <Button
             v-else
             type="submit"
             size="icon"
-            class="size-8 shrink-0 rounded-lg"
+            class="size-7 shrink-0 rounded-full bg-foreground text-background hover:bg-foreground/90"
             :disabled="!canSend"
             aria-label="发送消息"
             ><LoaderCircleIcon
@@ -354,18 +446,21 @@ onScopeDispose(() => {
         </div>
       </form>
       <p
+        v-if="!currentApproval"
         id="conversation-hint"
-        class="mx-auto mt-3 max-w-3xl text-center text-xs leading-5 text-muted-foreground"
+        :class="
+          !activeRun && composerNotice
+            ? 'mx-auto mt-2 min-h-5 max-w-3xl text-center text-xs leading-5 text-muted-foreground'
+            : 'sr-only'
+        "
         role="status"
       >
         {{
-          state.loadingList || state.modelsLoading
-            ? '正在读取模型…'
-            : !state.models.length && !state.serviceError
-              ? '尚未配置可用模型，配置完成后即可开始对话。'
-              : activeRun
-                ? runLabels[activeRun.status]
-                : 'Enter 发送，Shift + Enter 换行'
+          activeRun
+            ? state.serviceError
+              ? '连接已断开'
+              : runLabels[activeRun.status]
+            : composerNotice || 'Enter 发送，Shift + Enter 换行'
         }}
       </p>
     </div>

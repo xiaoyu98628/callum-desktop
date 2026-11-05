@@ -14,6 +14,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   }[] = []
   let cancelled = 0
   const markdownContinuations = new Set<() => void>()
+  const approvalContinuations = new Set<() => void>()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
@@ -91,17 +92,33 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       }
       if (text.includes('审批')) {
         emit(response, { content: '准备检查文件。' })
-        emit(response, {
-          tool_calls: [
+        const requestApproval = (): void => {
+          const toolCalls = [
             {
               index: 0,
               id: 'call-read',
               type: 'function',
               function: { name: 'read_file', arguments: JSON.stringify({ path: fixturePath }) },
             },
-          ],
-        })
-        finish(response, 'tool_calls')
+          ]
+          if (text.includes('连续审批'))
+            toolCalls.push({
+              index: 1,
+              id: 'call-read-second',
+              type: 'function',
+              function: {
+                name: 'read_file',
+                arguments: JSON.stringify({ path: fixturePath + '.second' }),
+              },
+            })
+          emit(response, { tool_calls: toolCalls })
+          finish(response, 'tool_calls')
+          approvalContinuations.delete(requestApproval)
+        }
+        if (text.includes('延迟审批')) {
+          approvalContinuations.add(requestApproval)
+          response.once('close', () => approvalContinuations.delete(requestApproval))
+        } else requestApproval()
         return
       }
       if (text.includes('等待')) {
@@ -139,6 +156,9 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     requests,
     finishMarkdown() {
       for (const continuation of [...markdownContinuations]) continuation()
+    },
+    requestApproval() {
+      for (const continuation of [...approvalContinuations]) continuation()
     },
     get cancelled() {
       return cancelled

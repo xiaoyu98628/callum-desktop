@@ -1,6 +1,6 @@
 import { computed, inject, onMounted, onScopeDispose, provide, reactive } from 'vue'
 import type { InjectionKey } from 'vue'
-import { isActiveRun } from '@shared/chat'
+import { isActiveRun, isVisible } from '@shared/chat'
 import type {
   ChatEvent,
   ChatMessage,
@@ -8,6 +8,8 @@ import type {
   ChatResult,
   Conversation,
   ConversationDetail,
+  Workspace,
+  WorkspaceInput,
 } from '@shared/chat'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
@@ -36,11 +38,29 @@ function boundMessages(messages: ChatMessage[]): ChatMessage[] {
   }
   return sorted.slice(start)
 }
+interface ConversationGroup {
+  items: Conversation[]
+  loading: boolean
+  error: string
+  hasMore: boolean
+  offset: number
+  revision: number
+  generation: number
+  expanded: boolean
+  events: Map<string, ChatEvent>
+}
 function createConversations() {
   const state = reactive({
     conversations: [] as Conversation[],
     models: [] as ChatModel[],
     selectedId: null as string | null,
+    workspaceId: null as string | null,
+    workspaces: [] as Workspace[],
+    workspaceGroups: {} as Record<string, ConversationGroup>,
+    workspacesLoading: false,
+    workspacesError: '',
+    workspacesHasMore: false,
+    managing: false,
     modelId: '',
     detail: null as ConversationDetail | null,
     loading: true,
@@ -65,23 +85,90 @@ function createConversations() {
   let listRevision = 0,
     detailRevision = 0
   let modelGeneration = 0
+  let overviewGeneration = 0,
+    workspaceGeneration = 0,
+    workspaceOffset = 0,
+    workspaceRevision = 0
+  const workspaceEvents = new Map<string, ChatEvent>()
+  const hiddenConversations = new Set<string>()
+  const hiddenWorkspaces = new Set<string>()
+  const draftWorkspaces = new Map<string, string | null>()
+  const draftKey = () => state.selectedId ?? `new:${state.workspaceId ?? 'unbound'}`
   const draft = computed({
-    get: () => state.drafts[state.selectedId ?? 'new'] ?? '',
+    get: () => state.drafts[draftKey()] ?? '',
     set: (value: string) => {
-      const key = state.selectedId ?? 'new'
+      const key = draftKey()
       if (!(key in state.drafts) && Object.keys(state.drafts).length >= 100) {
         state.error = '草稿数量已达上限，请发送或清空已有草稿。'
         return
       }
-      if (value) state.drafts[key] = value
-      else delete state.drafts[key]
+      if (value) {
+        state.drafts[key] = value
+        draftWorkspaces.set(key, state.workspaceId)
+      } else {
+        delete state.drafts[key]
+        draftWorkspaces.delete(key)
+      }
     },
   })
   const activeRun = computed(() => state.detail?.runs.find(isActiveRun) ?? null)
   const pendingApprovals = computed(
     () => state.detail?.approvals.filter((item) => item.status === 'pending') ?? [],
   )
-  const title = computed(() => state.detail?.conversation.title || '新对话')
+  const workspace = computed(
+    () => state.workspaces.find((item) => item.id === state.workspaceId) ?? null,
+  )
+  const title = computed(
+    () =>
+      state.detail?.conversation.title ||
+      (workspace.value ? `${workspace.value.name} · 新对话` : '新对话'),
+  )
+  function rememberHidden(items: Set<string>, id: string): void {
+    items.add(id)
+    if (items.size > 1000) {
+      const oldest = items.values().next().value
+      if (oldest) items.delete(oldest)
+    }
+  }
+  function visibleConversation(item: Conversation, workspaceId: string | null): boolean {
+    return (
+      item.workspaceId === workspaceId &&
+      isVisible(item) &&
+      !hiddenConversations.has(item.id) &&
+      (!item.workspaceId || !hiddenWorkspaces.has(item.workspaceId))
+    )
+  }
+  function mergeConversation(
+    items: Conversation[],
+    item: Conversation,
+    workspaceId: string | null,
+  ): Conversation[] {
+    return upsert(items, item)
+      .filter((row) => visibleConversation(row, workspaceId))
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))
+      .slice(0, 1000)
+  }
+  function removeConversation(conversationId: string): void {
+    rememberHidden(hiddenConversations, conversationId)
+    delete state.drafts[conversationId]
+    draftWorkspaces.delete(conversationId)
+    state.conversations = state.conversations.filter((item) => item.id !== conversationId)
+    for (const group of Object.values(state.workspaceGroups))
+      group.items = group.items.filter((item) => item.id !== conversationId)
+    if (state.selectedId === conversationId) newConversation()
+  }
+  function removeWorkspace(workspaceId: string): void {
+    rememberHidden(hiddenWorkspaces, workspaceId)
+    for (const [key, owner] of draftWorkspaces) {
+      if (owner === workspaceId) {
+        delete state.drafts[key]
+        draftWorkspaces.delete(key)
+      }
+    }
+    delete state.workspaceGroups[workspaceId]
+    state.workspaces = state.workspaces.filter((item) => item.id !== workspaceId)
+    if (state.workspaceId === workspaceId) newConversation()
+  }
   function selectAvailableModel(): void {
     if (
       !state.modelId ||
@@ -115,12 +202,37 @@ function createConversations() {
       state.serviceError = change.error
       return
     }
-    if (change.kind === 'conversation') {
-      if (event.revision > listRevision)
-        state.conversations = upsert(state.conversations, change.value)
+    if (change.kind === 'workspace') {
+      if (event.revision <= workspaceRevision) return
+      if (!isVisible(change.value)) removeWorkspace(change.value.id)
+      else if (!hiddenWorkspaces.has(change.value.id))
+        state.workspaces = upsert(state.workspaces, change.value)
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .slice(0, 1000)
-      if (event.revision > detailRevision && state.detail?.conversation.id === change.value.id)
+      return
+    }
+    if (change.kind === 'conversation') {
+      if (!isVisible(change.value)) removeConversation(change.value.id)
+      if (event.revision > listRevision)
+        state.conversations = mergeConversation(state.conversations, change.value, null)
+      for (const [workspaceId, group] of Object.entries(state.workspaceGroups)) {
+        if (group.loading) {
+          group.events.set(change.value.id, event)
+          if (group.events.size > 500) {
+            group.generation++
+            group.loading = false
+            group.events.clear()
+            group.error = '对话变化较快，请重新加载。'
+          }
+        }
+        if (event.revision > group.revision)
+          group.items = mergeConversation(group.items, change.value, workspaceId)
+      }
+      if (
+        event.revision > detailRevision &&
+        state.detail?.conversation.id === change.value.id &&
+        visibleConversation(change.value, state.workspaceId)
+      )
         state.detail.conversation = change.value
       return
     }
@@ -146,8 +258,30 @@ function createConversations() {
   }
   function receive(event: ChatEvent): void {
     const change = event.change
-    if (change.kind === 'conversation' && state.loadingList) listEvents.set(change.value.id, event)
-    if (state.loading && change.kind !== 'service' && change.kind !== 'conversation') {
+    if (change.kind === 'conversation' && state.loadingList) {
+      listEvents.set(change.value.id, event)
+      if (listEvents.size > 500) {
+        overviewGeneration++
+        listEvents.clear()
+        state.loadingList = false
+        state.serviceError = '对话变化较快，请重新加载。'
+      }
+    }
+    if (change.kind === 'workspace' && state.workspacesLoading) {
+      workspaceEvents.set(change.value.id, event)
+      if (workspaceEvents.size > 500) {
+        workspaceGeneration++
+        workspaceEvents.clear()
+        state.workspacesLoading = false
+        state.workspacesError = '工作区变化较快，请重新加载。'
+      }
+    }
+    if (
+      state.loading &&
+      change.kind !== 'service' &&
+      change.kind !== 'conversation' &&
+      change.kind !== 'workspace'
+    ) {
       if (change.value.conversationId === state.selectedId) {
         pendingEvents.set(`${change.kind}:${change.value.id}`, event)
         if (pendingEvents.size > 500) {
@@ -162,6 +296,7 @@ function createConversations() {
   async function refreshOverview(more = false): Promise<void> {
     if (state.loadingList && more) return
     state.loadingList = true
+    const requestGeneration = ++overviewGeneration
     const generation = modelGeneration
     const recovering = !!state.serviceError
     if (!more) {
@@ -170,7 +305,7 @@ function createConversations() {
     }
     try {
       const result = unwrap(await getDesktopApi().getChatOverview(more ? listOffset : 0))
-      if (disposed) return
+      if (disposed || requestGeneration !== overviewGeneration) return
       // 配置页面可能在概览查询期间保存模型，不让迟到的旧列表覆盖已保存配置。
       if (generation === modelGeneration) setModels(result.models)
       listRevision = result.revision
@@ -182,23 +317,184 @@ function createConversations() {
               ).values(),
             ]
           : result.conversations
-      ).slice(0, 1000)
+      )
+        .filter((item) => visibleConversation(item, null))
+        .slice(0, 1000)
       state.hasMore = result.hasMore && state.conversations.length < 1000
       listOffset = (more ? listOffset : 0) + 50
       for (const event of listEvents.values()) if (event.revision > result.revision) apply(event)
       if (recovering && state.selectedId) await openConversation(state.selectedId)
     } catch (error) {
-      state.serviceError = message(error)
+      if (requestGeneration === overviewGeneration && !disposed) state.serviceError = message(error)
     } finally {
-      if (!disposed) {
+      if (!disposed && requestGeneration === overviewGeneration) {
         state.loadingList = false
         listEvents.clear()
       }
     }
   }
-  function newConversation(): void {
+  async function refreshWorkspaces(more = false): Promise<void> {
+    if (more && state.workspacesLoading) return
+    const generation = ++workspaceGeneration
+    state.workspacesLoading = true
+    state.workspacesError = ''
+    workspaceEvents.clear()
+    try {
+      const result = unwrap(await getDesktopApi().listWorkspaces(more ? workspaceOffset : 0))
+      if (disposed || generation !== workspaceGeneration) return
+      workspaceRevision = result.revision
+      state.workspaces = (
+        more
+          ? [
+              ...new Map(
+                [...state.workspaces, ...result.workspaces].map((item) => [item.id, item]),
+              ).values(),
+            ]
+          : result.workspaces
+      )
+        .filter((item) => isVisible(item) && !hiddenWorkspaces.has(item.id))
+        .slice(0, 1000)
+      state.workspacesHasMore = result.hasMore && state.workspaces.length < 1000
+      workspaceOffset = (more ? workspaceOffset : 0) + 50
+      for (const event of workspaceEvents.values())
+        if (event.revision > result.revision) apply(event)
+    } catch (error) {
+      if (!disposed && generation === workspaceGeneration) state.workspacesError = message(error)
+    } finally {
+      if (!disposed && generation === workspaceGeneration) {
+        state.workspacesLoading = false
+        workspaceEvents.clear()
+      }
+    }
+  }
+  async function loadWorkspaceConversations(workspaceId: string, more = false): Promise<void> {
+    const group = state.workspaceGroups[workspaceId]
+    if (!group || (more && group.loading)) return
+    const generation = ++group.generation
+    group.loading = true
+    group.error = ''
+    group.events.clear()
+    try {
+      const result = unwrap(
+        await getDesktopApi().getWorkspaceConversations(workspaceId, more ? group.offset : 0),
+      )
+      if (
+        disposed ||
+        group !== state.workspaceGroups[workspaceId] ||
+        generation !== group.generation
+      )
+        return
+      group.items = (
+        more
+          ? [
+              ...new Map(
+                [...group.items, ...result.conversations].map((item) => [item.id, item]),
+              ).values(),
+            ]
+          : result.conversations
+      )
+        .filter((item) => visibleConversation(item, workspaceId))
+        .slice(0, 1000)
+      group.revision = result.revision
+      group.offset = (more ? group.offset : 0) + 50
+      group.hasMore = result.hasMore && group.items.length < 1000
+      for (const event of group.events.values()) if (event.revision > result.revision) apply(event)
+    } catch (error) {
+      if (
+        !disposed &&
+        group === state.workspaceGroups[workspaceId] &&
+        generation === group.generation
+      )
+        group.error = message(error)
+    } finally {
+      if (generation === group.generation) {
+        group.loading = false
+        group.events.clear()
+      }
+    }
+  }
+  function expandWorkspace(workspaceId: string): void {
+    if (state.workspaceGroups[workspaceId]?.expanded) return
+    if (!state.workspaceGroups[workspaceId]) {
+      // 仅保留 20 个分组缓存；移除分组不会删除草稿或后端记录。
+      if (Object.keys(state.workspaceGroups).length >= 20) {
+        const oldest = Object.keys(state.workspaceGroups).find((id) => id !== state.workspaceId)
+        if (oldest) delete state.workspaceGroups[oldest]
+      }
+      state.workspaceGroups[workspaceId] = {
+        items: [],
+        loading: false,
+        error: '',
+        hasMore: false,
+        offset: 0,
+        revision: 0,
+        generation: 0,
+        expanded: true,
+        events: new Map(),
+      }
+    } else state.workspaceGroups[workspaceId]!.expanded = true
+    void loadWorkspaceConversations(workspaceId)
+  }
+  function toggleWorkspace(workspaceId: string): void {
+    const group = state.workspaceGroups[workspaceId]
+    if (group?.expanded) group.expanded = false
+    else expandWorkspace(workspaceId)
+  }
+  async function manage<T>(action: () => Promise<ChatResult<T>>): Promise<T> {
+    if (state.managing) throw new Error('正在保存，请稍候。')
+    state.managing = true
+    try {
+      return unwrap(await action())
+    } finally {
+      state.managing = false
+    }
+  }
+  async function createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+    const result = await manage(() => getDesktopApi().createWorkspace(input))
+    if (!disposed) {
+      hiddenWorkspaces.delete(result.id)
+      state.workspaces = upsert(state.workspaces, result)
+        .filter(isVisible)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 1000)
+      expandWorkspace(result.id)
+    }
+    return result
+  }
+  async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
+    const result = await manage(() => getDesktopApi().renameWorkspace(workspaceId, name))
+    if (!disposed && !hiddenWorkspaces.has(workspaceId))
+      state.workspaces = upsert(state.workspaces, result)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 1000)
+  }
+  async function deleteWorkspace(workspaceId: string): Promise<void> {
+    await manage(() => getDesktopApi().deleteWorkspace(workspaceId))
+    if (!disposed) {
+      removeWorkspace(workspaceId)
+      void refreshWorkspaces()
+    }
+  }
+  async function renameConversation(conversationId: string, name: string): Promise<void> {
+    const result = await manage(() => getDesktopApi().renameConversation(conversationId, name))
+    if (disposed) return
+    state.conversations = mergeConversation(state.conversations, result, null)
+    for (const [workspaceId, group] of Object.entries(state.workspaceGroups))
+      group.items = mergeConversation(group.items, result, workspaceId)
+    if (state.detail?.conversation.id === result.id) state.detail.conversation = result
+  }
+  async function deleteConversation(conversationId: string): Promise<void> {
+    const result = await manage(() => getDesktopApi().deleteConversation(conversationId))
+    if (!disposed) {
+      removeConversation(conversationId)
+      if (result.workspaceId) void loadWorkspaceConversations(result.workspaceId)
+      else void refreshOverview()
+    }
+  }
+  function newConversation(workspaceId: string | null = null): void {
     selection++
     state.selectedId = null
+    state.workspaceId = workspaceId
     selectAvailableModel()
     state.detail = null
     state.loading = false
@@ -211,6 +507,12 @@ function createConversations() {
     const token = ++selection
     detailRevision = 0
     state.selectedId = conversationId
+    const known =
+      state.conversations.find((item) => item.id === conversationId) ??
+      Object.values(state.workspaceGroups)
+        .flatMap((group) => group.items)
+        .find((item) => item.id === conversationId)
+    if (known) state.workspaceId = known.workspaceId
     state.detail = null
     state.loading = true
     state.error = ''
@@ -221,6 +523,7 @@ function createConversations() {
       const result = unwrap(await getDesktopApi().getConversation(conversationId))
       if (disposed || token !== selection) return
       state.detail = result
+      state.workspaceId = result.conversation.workspaceId
       state.detail.messages = boundMessages(result.messages)
       state.error = result.warning ?? ''
       detailRevision = result.revision
@@ -253,12 +556,21 @@ function createConversations() {
     const conversationId = state.selectedId,
       text = draft.value,
       token = selection
-    const key = conversationId ?? 'new'
+    const key = draftKey()
+    const workspaceId = conversationId ? null : state.workspaceId
     try {
       const result = unwrap(
-        await getDesktopApi().sendMessage({ conversationId, text, modelId: state.modelId }),
+        await getDesktopApi().sendMessage({
+          conversationId,
+          workspaceId,
+          text,
+          modelId: state.modelId,
+        }),
       )
-      if (state.drafts[key] === text) delete state.drafts[key]
+      if (state.drafts[key] === text) {
+        delete state.drafts[key]
+        draftWorkspaces.delete(key)
+      }
       if (token === selection && !disposed) await openConversation(result.conversationId)
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
@@ -323,13 +635,17 @@ function createConversations() {
     unsubscribe = getDesktopApi().onChatEvent(receive)
     state.loading = false
     void refreshOverview()
+    void refreshWorkspaces()
   })
   onScopeDispose(() => {
     disposed = true
     selection++
+    overviewGeneration++
+    workspaceGeneration++
     unsubscribe?.()
     pendingEvents.clear()
     listEvents.clear()
+    workspaceEvents.clear()
   })
   return {
     state,
@@ -337,6 +653,16 @@ function createConversations() {
     activeRun,
     pendingApprovals,
     title,
+    workspace,
+    refreshWorkspaces,
+    toggleWorkspace,
+    expandWorkspace,
+    loadWorkspaceConversations,
+    createWorkspace,
+    renameWorkspace,
+    deleteWorkspace,
+    renameConversation,
+    deleteConversation,
     newConversation,
     openConversation,
     refreshOverview,
