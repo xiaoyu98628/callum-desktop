@@ -155,6 +155,10 @@ export type ChatChange =
   | { kind: 'conversation'; value: Conversation }
   | { kind: 'workspace'; value: Workspace }
   | { kind: 'message'; value: ChatMessage }
+  | {
+      kind: 'messages-removed'
+      value: { id: string; conversationId: string; messageIds: string[] }
+    }
   | { kind: 'step'; value: ChatStep }
   | { kind: 'run'; value: ChatRun; persisted: boolean }
   | { kind: 'approval'; value: ChatApproval }
@@ -191,6 +195,15 @@ export interface SendMessageInput {
 export interface SendMessageResult {
   conversationId: string
   runId: string
+}
+export interface ResendMessageInput {
+  conversationId: string
+  messageId: string
+  modelId: string
+  text: string
+}
+export interface ResendMessageResult extends SendMessageResult {
+  removedMessageIds: string[]
 }
 export type ChatResult<T> = { ok: true; value: T } | { ok: false; error: string }
 export const MAX_MESSAGE_LENGTH = 100_000
@@ -574,6 +587,26 @@ export function parseSendResult(value: unknown): SendMessageResult {
   const v = record(value)
   return { conversationId: id(v.conversationId), runId: id(v.runId) }
 }
+export function parseResendInput(value: unknown): ResendMessageInput {
+  const v = record(value)
+  if (
+    Object.keys(v).some((key) => !['conversationId', 'messageId', 'modelId', 'text'].includes(key))
+  )
+    throw new Error('重发参数无效')
+  const text = string(v.text).trim()
+  if (!text || text.length > MAX_MESSAGE_LENGTH)
+    throw new Error('消息不能为空，且不能超过 100000 个字符')
+  return {
+    conversationId: id(v.conversationId),
+    messageId: id(v.messageId),
+    modelId: id(v.modelId),
+    text,
+  }
+}
+export function parseResendResult(value: unknown): ResendMessageResult {
+  const v = record(value)
+  return { ...parseSendResult(v), removedMessageIds: array(v.removedMessageIds, id) }
+}
 export function parseChatEvent(value: unknown): ChatEvent {
   const v = record(value),
     change = record(v.change)
@@ -585,6 +618,20 @@ export function parseChatEvent(value: unknown): ChatEvent {
       return { revision, change: { kind: 'conversation', value: parseConversation(change.value) } }
     case 'message':
       return { revision, change: { kind: 'message', value: parseMessage(change.value) } }
+    case 'messages-removed': {
+      const value = record(change.value)
+      return {
+        revision,
+        change: {
+          kind: 'messages-removed',
+          value: {
+            id: id(value.id),
+            conversationId: id(value.conversationId),
+            messageIds: array(value.messageIds, id),
+          },
+        },
+      }
+    }
     case 'run': {
       if (typeof change.persisted !== 'boolean') throw new Error('执行数据无效')
       return {

@@ -12,6 +12,8 @@ import RunStatus from './RunStatus.vue'
 import RunTimeline from './RunTimeline.vue'
 import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
+import MessageActions from './MessageActions.vue'
+import MessageEditor from './MessageEditor.vue'
 defineEmits<{ configureModels: [] }>()
 
 const {
@@ -19,6 +21,11 @@ const {
   draft,
   workspace,
   activeRun,
+  lastUserMessage,
+  editUnavailable,
+  startEditing,
+  cancelEditing,
+  resend,
   pendingApprovals,
   pendingInputs,
   inputReply,
@@ -108,6 +115,8 @@ const canSend = computed(
     !state.loading &&
     !state.loadingList &&
     !state.sending &&
+    !state.resending &&
+    !state.editing &&
     !activeRun.value &&
     !currentInteraction.value &&
     !state.serviceError &&
@@ -204,6 +213,17 @@ function reloadApproval(): void {
   else if (state.modelError) void refreshModels()
   else if (state.selectedId) void openConversation(state.selectedId)
 }
+async function cancelMessageEdit(): Promise<void> {
+  const messageId = state.editing?.messageId
+  cancelEditing()
+  await nextTick()
+  if (messageId && !state.editing)
+    scroller.value
+      ?.querySelector<HTMLButtonElement>(
+        `[data-message-id="${messageId}"] button[aria-label="编辑提问"]`,
+      )
+      ?.focus({ preventScroll: true })
+}
 watch(
   () => messages.value,
   () => {
@@ -281,6 +301,7 @@ onScopeDispose(() => {
             v-if="messages[0] && messages[0].sequence > 1"
             variant="ghost"
             size="sm"
+            :disabled="!!state.editing || state.resending"
             @click="earlier"
             >更早的消息</Button
           >
@@ -292,10 +313,13 @@ onScopeDispose(() => {
           <article
             v-for="item in messages"
             :key="item.id"
+            :data-message-id="item.id"
             :aria-label="item.role === 'user' ? '你的消息' : 'Callum 的回答'"
             :class="
               item.role === 'user'
-                ? 'ml-auto w-fit max-w-[88%] rounded-2xl border bg-muted/60 px-3 py-2'
+                ? state.editing?.messageId === item.id
+                  ? 'ml-auto w-full max-w-[88%]'
+                  : 'ml-auto w-fit max-w-[88%]'
                 : 'py-1'
             "
           >
@@ -321,7 +345,16 @@ onScopeDispose(() => {
               :streaming="activeRun?.id === item.runId"
               @rendered="scrollToBottom"
             />
-            <template v-else>
+            <MessageEditor
+              v-else-if="state.editing?.messageId === item.id"
+              v-model="state.editing.text"
+              :busy="state.resending"
+              :disabled="editUnavailable || !!state.modelError || state.modelsLoading"
+              :error="state.editing.error"
+              @cancel="cancelMessageEdit"
+              @submit="resend"
+            />
+            <div v-else class="ml-auto w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2">
               <div
                 v-for="(block, index) in item.content"
                 :key="index"
@@ -332,7 +365,19 @@ onScopeDispose(() => {
                   [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
                 </p>
               </div>
-            </template>
+            </div>
+            <MessageActions
+              v-if="state.editing?.messageId !== item.id"
+              :message="item"
+              :editable="
+                item.role === 'user' &&
+                lastUserMessage?.id === item.id &&
+                item.content.every((block) => block.type === 'text')
+              "
+              :edit-disabled="editUnavailable"
+              :class="item.role === 'user' ? 'justify-end' : ''"
+              @edit="startEditing(item.id)"
+            />
             <span
               v-if="
                 item.role === 'assistant' &&
@@ -456,6 +501,8 @@ onScopeDispose(() => {
             !!currentInteraction ||
             state.loading ||
             state.sending ||
+            state.resending ||
+            !!state.editing ||
             state.modelsLoading ||
             !!state.modelError ||
             !!state.serviceError ||
@@ -488,6 +535,7 @@ onScopeDispose(() => {
                 state.loadingList ||
                 state.modelsLoading ||
                 state.sending ||
+                state.resending ||
                 !!state.serviceError
               "
             />

@@ -2,7 +2,13 @@ import { app, clipboard, ipcMain, shell } from 'electron'
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import { parseAppInfo } from '../../shared/desktop-api'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { MAX_CODE_LENGTH, parseCodeText, parseWebLink } from '../../shared/message-actions'
+import {
+  MAX_CODE_LENGTH,
+  MAX_MESSAGE_COPY_LENGTH,
+  parseCodeText,
+  parseMessageText,
+  parseWebLink,
+} from '../../shared/message-actions'
 import { isTrustedRendererUrl } from '../security/renderer-policy'
 
 export function registerAppHandlers(
@@ -37,6 +43,18 @@ export function registerAppHandlers(
       return { ok: false, error: '代码复制失败，请重试。' }
     }
   })
+  ipcMain.handle(IPC_CHANNELS.copyMessage, async (event, ...args: unknown[]) => {
+    if (!validSource(event, args, 1)) throw new Error('拒绝无效的消息复制请求')
+    try {
+      const text = parseMessageText(args[0])
+      if (Buffer.byteLength(text) > MAX_MESSAGE_COPY_LENGTH)
+        return { ok: false, error: '消息正文过长，无法复制。' }
+      await clipboard.writeText(text)
+      return { ok: true, value: true }
+    } catch {
+      return { ok: false, error: '消息复制失败，请重试。' }
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.openWebLink, async (event, ...args: unknown[]) => {
     if (!validSource(event, args, 1)) throw new Error('拒绝无效的网页链接请求')
     try {
@@ -52,6 +70,7 @@ export function registerAppHandlers(
   return () => {
     ipcMain.removeHandler(IPC_CHANNELS.getAppInfo)
     ipcMain.removeHandler(IPC_CHANNELS.copyCode)
+    ipcMain.removeHandler(IPC_CHANNELS.copyMessage)
     ipcMain.removeHandler(IPC_CHANNELS.openWebLink)
   }
 }

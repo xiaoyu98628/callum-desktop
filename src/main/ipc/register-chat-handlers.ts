@@ -7,6 +7,7 @@ import {
   integer,
   parseName,
   parseSendInput,
+  parseResendInput,
   parseWorkspaceInput,
   parseUserInputAnswer,
 } from '../../shared/chat'
@@ -174,6 +175,7 @@ export function registerChatHandlers(
     service.stepDetails(id(conversationId), id(runId), id(stepId)),
   )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
+  handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
   handle(IPC_CHANNELS.submitUserInput, 3, (inputId, runId, answer) =>
     service.submitUserInput(id(inputId), id(runId), parseUserInputAnswer(answer)),

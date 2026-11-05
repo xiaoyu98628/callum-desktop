@@ -18,6 +18,8 @@ import type {
   SelectedDirectory,
   SendMessageInput,
   SendMessageResult,
+  ResendMessageInput,
+  ResendMessageResult,
 } from './chat'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 
@@ -32,6 +34,7 @@ export interface AppInfo {
 export interface DesktopApi {
   getAppInfo(): Promise<AppInfo>
   copyCode(text: string): Promise<ChatResult<boolean>>
+  copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
   getModelCatalog(): Promise<ChatResult<ModelCatalog>>
   saveModelProvider(input: ProviderInput): Promise<ChatResult<string>>
@@ -67,6 +70,7 @@ export interface DesktopApi {
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
+  resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>
   submitUserInput(
     inputId: string,

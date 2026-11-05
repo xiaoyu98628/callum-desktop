@@ -9,7 +9,7 @@ import type { ElectronApplication, Page } from '@playwright/test'
 import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
-import { MARKDOWN_CODE, MARKDOWN_CODE_START } from '../helpers/markdown-fixture'
+import { MARKDOWN_CODE, MARKDOWN_CODE_START, MARKDOWN_UNSAFE } from '../helpers/markdown-fixture'
 import { IPC_CHANNELS } from '../../src/shared/ipc-channels'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
@@ -103,6 +103,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   expect(bridge.methods).toEqual([
     'getAppInfo',
     'copyCode',
+    'copyMessage',
     'openWebLink',
     'getModelCatalog',
     'saveModelProvider',
@@ -124,6 +125,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'listRunSteps',
     'getStepDetails',
     'sendMessage',
+    'resendMessage',
     'cancelRun',
     'submitUserInput',
     'decideApproval',
@@ -270,6 +272,103 @@ test('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ d
 test.describe('真实 Go 对话交互', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('双方消息可复制正文，最后一条提问支持取消编辑和重发并在历史中替换回答', async ({
+    desktop,
+  }) => {
+    await desktop.evaluate(({ clipboard }) => {
+      const state = { copies: [] as string[], fail: false }
+      Reflect.set(globalThis, 'messageActionsTest', state)
+      clipboard.writeText = async (text) => {
+        if (state.fail) throw new Error('受控剪贴板失败')
+        state.copies.push(text)
+      }
+    })
+    const copies = () =>
+      desktop.evaluate(() => Reflect.get(globalThis, 'messageActionsTest').copies as string[])
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const users = page.getByRole('article', { name: '你的消息', exact: true })
+    const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('保留第一条提问\n第二行')
+    await input.press('Enter')
+    await expect(answers.last()).toContainText('你好，这是受控回答。')
+    const copyQuestion = users.first().getByRole('button', { name: '复制提问', exact: true })
+    await copyQuestion.focus()
+    await copyQuestion.press('Enter')
+    expect((await copies()).at(-1)).toBe('保留第一条提问\n第二行')
+    await expect(copyQuestion).toBeFocused()
+    await answers.first().getByRole('button', { name: '复制回答', exact: true }).click()
+    expect((await copies()).at(-1)).toBe('你好，这是受控回答。')
+    await expect(answers.first().getByRole('status')).toHaveText('已复制')
+    await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.conversations[0]) throw new Error('测试会话不存在')
+      await window.callum.renameConversation(overview.value.conversations[0].id, '消息操作测试')
+    })
+
+    await expect(input).toBeEnabled()
+    await input.fill('Markdown 安全')
+    await input.press('Enter')
+    await expect(answers).toHaveCount(2)
+    await expect(input).toBeEnabled()
+    await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
+    expect((await copies()).at(-1)).toBe(MARKDOWN_UNSAFE)
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'messageActionsTest').fail = true
+    })
+    await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
+    await expect(answers.last().getByRole('alert')).toContainText('复制失败')
+    await desktop.evaluate(() => {
+      Reflect.get(globalThis, 'messageActionsTest').fail = false
+    })
+    await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
+    await expect(answers.last().getByRole('alert')).toHaveCount(0)
+    await expect(users.first().getByRole('button', { name: '编辑提问', exact: true })).toHaveCount(
+      0,
+    )
+
+    await input.fill('普通输入草稿')
+    const edit = users.last().getByRole('button', { name: '编辑提问', exact: true })
+    await edit.focus()
+    await edit.press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问', exact: true })
+    const text = editor.getByRole('textbox', { name: '编辑提问', exact: true })
+    await expect(text).toBeFocused()
+    await expect(text).toHaveValue('Markdown 安全')
+    await expect(input).toBeDisabled()
+    await text.fill('取消这次修改')
+    await editor.getByRole('button', { name: '取消编辑', exact: true }).click()
+    await expect(users.last()).toContainText('Markdown 安全')
+    await expect(input).toHaveValue('普通输入草稿')
+    await edit.click()
+    await text.fill('修正后的最后一条提问')
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(users).toHaveCount(2)
+    await expect(answers).toHaveCount(2)
+    await expect(users.last()).toContainText('修正后的最后一条提问')
+    await expect(answers.last()).toContainText('你好，这是受控回答。')
+    await expect(input).toHaveValue('普通输入草稿')
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '消息操作测试', exact: true })
+      .click()
+    await expect(users.last()).toContainText('修正后的最后一条提问')
+    await expect(answers).toHaveCount(2)
+    await expect(answers.last()).toContainText('你好，这是受控回答。')
+    await input.fill('等待甲')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
+    await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeDisabled()
+    await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
+    expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeEnabled()
+    await page.screenshot({ path: '.artifacts/screenshots/message-actions-light.png' })
+  })
 
   test('处理用时按执行关联，切换页面释放计时，完成与历史恢复后固定', async ({
     desktop,

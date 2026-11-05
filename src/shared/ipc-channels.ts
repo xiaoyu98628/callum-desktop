@@ -1,6 +1,7 @@
 export const IPC_CHANNELS = {
   getAppInfo: 'callum:app:get-info',
   copyCode: 'callum:message:copy-code',
+  copyMessage: 'callum:message:copy-text',
   openWebLink: 'callum:message:open-web-link',
   getModelCatalog: 'callum:models:catalog',
   saveModelProvider: 'callum:models:save-provider',
@@ -22,6 +23,7 @@ export const IPC_CHANNELS = {
   listRunSteps: 'callum:chat:steps',
   getStepDetails: 'callum:chat:step-details',
   sendMessage: 'callum:chat:send',
+  resendMessage: 'callum:chat:resend',
   cancelRun: 'callum:chat:cancel',
   submitUserInput: 'callum:chat:submit-user-input',
   decideApproval: 'callum:chat:decide-approval',

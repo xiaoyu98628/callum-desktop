@@ -1,7 +1,8 @@
 import { computed, inject, onMounted, onScopeDispose, provide, reactive } from 'vue'
 import type { InjectionKey } from 'vue'
-import { isActiveRun, isVisible } from '@shared/chat'
+import { isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
+import { messageText } from '@shared/message-actions'
 import type {
   ChatEvent,
   ApprovalScope,
@@ -69,6 +70,13 @@ function createConversations() {
     loading: true,
     loadingList: true,
     sending: false,
+    resending: false,
+    editing: null as {
+      messageId: string
+      originalText: string
+      text: string
+      error: string
+    } | null,
     cancelling: false,
     deciding: '',
     revokingDirectory: '',
@@ -122,6 +130,20 @@ function createConversations() {
     },
   })
   const activeRun = computed(() => state.detail?.runs.find(isActiveRun) ?? null)
+  const lastUserMessage = computed(() =>
+    state.historical
+      ? null
+      : (state.detail?.messages.findLast((item) => item.role === 'user') ?? null),
+  )
+  const editUnavailable = computed(
+    () =>
+      state.loading ||
+      state.loadingList ||
+      state.sending ||
+      state.resending ||
+      !!state.serviceError ||
+      !!activeRun.value,
+  )
   const pendingApprovals = computed(
     () => state.detail?.approvals.filter((item) => item.status === 'pending') ?? [],
   )
@@ -270,6 +292,12 @@ function createConversations() {
       event.revision <= detailRevision
     )
       return
+    if (change.kind === 'messages-removed') {
+      state.detail.messages = state.detail.messages.filter(
+        (item) => !change.value.messageIds.includes(item.id),
+      )
+      return
+    }
     if (
       change.kind === 'message' &&
       (!state.historical || state.detail.messages.some((item) => item.id === change.value.id))
@@ -532,6 +560,7 @@ function createConversations() {
   }
   function newConversation(workspaceId: string | null = null): void {
     selection++
+    state.editing = null
     state.directoriesLoading = false
     state.directoriesOffset = 0
     state.directoriesError = ''
@@ -560,6 +589,7 @@ function createConversations() {
     return true
   }
   async function openConversation(conversationId: string): Promise<void> {
+    if (state.selectedId !== conversationId) state.editing = null
     const token = ++selection
     state.directoriesLoading = false
     state.directoriesOffset = 0
@@ -601,6 +631,8 @@ function createConversations() {
   async function send(): Promise<void> {
     if (
       state.sending ||
+      state.resending ||
+      state.editing ||
       state.loading ||
       activeRun.value ||
       state.serviceError ||
@@ -636,6 +668,68 @@ function createConversations() {
       if (token === selection) state.error = message(error)
     } finally {
       state.sending = false
+    }
+  }
+  function startEditing(messageId: string): void {
+    const target = lastUserMessage.value
+    if (
+      editUnavailable.value ||
+      !target ||
+      target.id !== messageId ||
+      target.content.some((block) => block.type !== 'text')
+    )
+      return
+    const text = messageText(target.content)
+    state.editing = { messageId, originalText: text, text, error: '' }
+  }
+  function cancelEditing(): void {
+    if (!state.resending) state.editing = null
+  }
+  async function resend(): Promise<void> {
+    const edit = state.editing,
+      conversationId = state.selectedId,
+      target = lastUserMessage.value
+    if (!edit || !conversationId || editUnavailable.value) return
+    if (
+      !target ||
+      edit.messageId !== target.id ||
+      edit.originalText !== messageText(target.content)
+    ) {
+      edit.error = '原提问已变化，请取消编辑并重新加载对话后核对。'
+      return
+    }
+    if (!edit.text.trim() || edit.text.trim().length > MAX_MESSAGE_LENGTH) {
+      edit.error = '消息不能为空，且不能超过 100000 个字符。'
+      return
+    }
+    if (
+      state.modelsLoading ||
+      state.modelError ||
+      !state.models.some((item) => item.id === state.modelId)
+    ) {
+      edit.error = '请选择可用模型后重新发送。'
+      return
+    }
+    const token = selection
+    state.resending = true
+    edit.error = ''
+    try {
+      unwrap(
+        await getDesktopApi().resendMessage({
+          conversationId,
+          messageId: edit.messageId,
+          modelId: state.modelId,
+          text: edit.text,
+        }),
+      )
+      if (!disposed && selection === token && state.selectedId === conversationId) {
+        state.editing = null
+        await openConversation(conversationId)
+      }
+    } catch (error) {
+      if (!disposed && selection === token && state.editing === edit) edit.error = message(error)
+    } finally {
+      state.resending = false
     }
   }
   async function cancel(): Promise<void> {
@@ -795,6 +889,11 @@ function createConversations() {
     state,
     draft,
     activeRun,
+    lastUserMessage,
+    editUnavailable,
+    startEditing,
+    cancelEditing,
+    resend,
     pendingApprovals,
     pendingInputs,
     inputReply,

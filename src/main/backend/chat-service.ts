@@ -33,6 +33,8 @@ import type {
   WorkspacePage,
   SendMessageInput,
   SendMessageResult,
+  ResendMessageInput,
+  ResendMessageResult,
 } from '../../shared/chat.ts'
 import {
   appendDelta,
@@ -204,7 +206,7 @@ export class ChatService {
     return { workspaces: workspaces.filter(isVisible), hasMore, revision: this.revision }
   }
   private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
-    if (this.mutations.has(key)) throw new Error('该项目正在保存，请稍候。')
+    if (this.mutations.has(key)) throw new Error('此操作正在提交，请稍候。')
     if (this.mutations.size >= 32) throw new Error('正在处理的管理操作过多，请稍后重试。')
     this.mutations.add(key)
     try {
@@ -413,6 +415,46 @@ export class ChatService {
       }),
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
+  }
+  async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
+    return this.mutate(`resend:${input.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.resend', {
+          conversation_id: input.conversationId,
+          message_id: input.messageId,
+          model_id: input.modelId,
+          stream: true,
+          content: [{ type: 'text', text: input.text }],
+        }),
+      )
+      const conversationId = id(value.conversation_id),
+        runId = id(value.run_id)
+      const removedMessageIds = array(value.removed_message_ids ?? [], id)
+      if (
+        conversationId !== input.conversationId ||
+        id(value.user_message_id) !== input.messageId ||
+        new Set(removedMessageIds).size !== removedMessageIds.length ||
+        removedMessageIds.includes(input.messageId) ||
+        removedMessageIds.includes(id(value.message_id))
+      )
+        throw new Error('重发结果归属不匹配，请重新加载历史后核对。')
+      // 以服务端受理结果移除旧回答。先排空通知，避免旧的增量在移除通知之后再出现。
+      this.flush()
+      for (const messageId of removedMessageIds) {
+        this.messages.delete(messageId)
+        this.dirty.delete(messageId)
+      }
+      if (removedMessageIds.length)
+        this.publish({
+          kind: 'messages-removed',
+          value: {
+            id: runId,
+            conversationId,
+            messageIds: removedMessageIds,
+          },
+        })
+      return { conversationId, runId, removedMessageIds }
+    })
   }
   async cancel(runId: string): Promise<boolean> {
     const value = record(await this.request('run.cancel', { run_id: runId }))
@@ -639,6 +681,10 @@ export class ChatService {
       return
     }
     if (change.value.conversationId !== detail.conversation.id) return
+    if (change.kind === 'messages-removed')
+      detail.messages = detail.messages.filter(
+        (message) => !change.value.messageIds.includes(message.id),
+      )
     if (change.kind === 'message') detail.messages = upsert(detail.messages, change.value)
     if (change.kind === 'step') detail.steps = boundSteps(upsert(detail.steps, change.value))
     if (change.kind === 'run') {

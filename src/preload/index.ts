@@ -13,6 +13,7 @@ import {
   parseOverview,
   parseResult,
   parseSendResult,
+  parseResendResult,
   parseConversation,
   parseConversationPage,
   parseSelectedDirectory,
@@ -36,6 +37,9 @@ const desktopApi: DesktopApi = {
   },
   async copyCode(text) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.copyCode, text), boolean)
+  },
+  async copyMessage(text) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.copyMessage, text), boolean)
   },
   async openWebLink(url) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.openWebLink, url), boolean)
@@ -138,6 +142,12 @@ const desktopApi: DesktopApi = {
   },
   async sendMessage(input) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.sendMessage, input), parseSendResult)
+  },
+  async resendMessage(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.resendMessage, input),
+      parseResendResult,
+    )
   },
   async cancelRun(runId) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.cancelRun, runId), boolean)
