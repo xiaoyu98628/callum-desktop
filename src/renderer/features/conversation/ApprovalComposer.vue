@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
-import { ChevronRightIcon, FileTextIcon, LoaderCircleIcon, SquareIcon } from '@lucide/vue'
-import type { ChatApproval } from '@shared/chat'
+import { computed, nextTick, ref, useId, watch } from 'vue'
+import { ChevronRightIcon, FileTextIcon, LoaderCircleIcon } from '@lucide/vue'
+import type { ApprovalScope, ChatApproval } from '@shared/chat'
 import { approvalSummary } from '@shared/approval-summary'
 import { Button } from '@/components/ui/button'
+import InteractionCard from './InteractionCard.vue'
 
 const props = defineProps<{
   approval: ChatApproval
@@ -12,13 +13,13 @@ const props = defineProps<{
   cancelling: boolean
   unavailable: boolean
   error: string
+  collapsed: boolean
 }>()
 const emit = defineEmits<{
-  decide: [id: string, decision: 'approved' | 'rejected']
-  stop: [id: string]
+  decide: [id: string, decision: 'approved' | 'rejected', scope: ApprovalScope]
   reload: []
+  'update:collapsed': [value: boolean]
 }>()
-const panel = ref<HTMLElement | null>(null)
 const body = ref<HTMLElement | null>(null)
 const detailsId = useId()
 const summary = computed(() => approvalSummary(props.approval.snapshot))
@@ -37,13 +38,9 @@ const heading = computed(() =>
 )
 const busy = computed(() => props.deciding || props.cancelling)
 const disabled = computed(() => busy.value || props.unavailable)
-function decide(decision: 'approved' | 'rejected'): void {
-  if (!disabled.value) emit('decide', props.approval.id, decision)
+function decide(decision: 'approved' | 'rejected', scope: ApprovalScope = 'once'): void {
+  if (!disabled.value) emit('decide', props.approval.id, decision, scope)
 }
-onMounted(() => {
-  // 焦点落在说明区域，Enter 不会默认批准；这是非模态面板，仍可切换会话。
-  panel.value?.focus({ preventScroll: true })
-})
 watch(
   () => summary.value.recognized,
   (recognized) => {
@@ -61,36 +58,19 @@ watch(
 </script>
 
 <template>
-  <section
-    ref="panel"
-    role="region"
-    aria-label="工具审批"
-    tabindex="-1"
-    class="mx-auto flex max-h-[min(26rem,60vh)] min-h-0 max-w-3xl flex-col overflow-hidden rounded-2xl border bg-card shadow-sm outline-none transition-colors focus-visible:border-foreground/30"
+  <InteractionCard
+    label="需要审批"
+    region-label="工具审批"
+    :collapsed="collapsed"
+    :busy="busy"
+    :count="count"
+    :error="!!error"
+    @update:collapsed="emit('update:collapsed', $event)"
   >
-    <header class="flex shrink-0 items-center gap-3 px-4 pb-2 pt-3">
-      <h2 class="min-w-0 flex-1 break-words text-sm font-medium [overflow-wrap:anywhere]">
+    <div ref="body" class="min-h-0 overflow-y-auto px-4 pb-3 text-xs leading-5">
+      <h2 class="mb-3 mt-1 break-words text-sm font-medium leading-6 [overflow-wrap:anywhere]">
         {{ heading }}
       </h2>
-      <span v-if="count > 1" class="shrink-0 text-xs leading-5 text-muted-foreground">
-        待确认 {{ count }} 项
-      </span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        class="size-7 shrink-0 rounded-full border text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-label="停止生成"
-        :title="cancelling ? '正在停止…' : '停止生成'"
-        :aria-busy="cancelling"
-        :disabled="disabled"
-        @click="emit('stop', approval.id)"
-      >
-        <LoaderCircleIcon v-if="cancelling" class="size-3.5 animate-spin" aria-hidden="true" />
-        <SquareIcon v-else class="size-3 fill-current" aria-hidden="true" />
-      </Button>
-    </header>
-    <div ref="body" class="min-h-0 overflow-y-auto px-4 pb-3 text-xs leading-5">
       <div v-if="error" role="alert" class="mt-2 rounded-lg bg-destructive/5 p-2 text-destructive">
         <p class="break-words [overflow-wrap:anywhere]">{{ error }}</p>
         <Button
@@ -128,6 +108,17 @@ watch(
           </dd>
         </div>
       </dl>
+      <div
+        v-if="approval.directoryScope"
+        class="mt-3 rounded-lg bg-muted/60 p-2 text-muted-foreground"
+      >
+        <p>
+          可在当前会话授权此目录及子目录{{
+            approval.directoryScope.access === 'read' ? '读取' : '读取和普通修改'
+          }}，重启后保留，可随时撤销。
+        </p>
+        <p class="break-all font-mono">{{ approval.directoryScope.rootPath }}</p>
+      </div>
       <pre
         v-show="expanded"
         :id="detailsId"
@@ -163,18 +154,28 @@ watch(
         variant="outline"
         size="sm"
         :disabled="disabled"
-        class="rounded-lg"
+        class="rounded-full"
         @click="decide('rejected')"
         >拒绝</Button
       >
       <Button
         type="button"
         size="sm"
-        class="rounded-lg bg-foreground text-background hover:bg-foreground/90"
+        class="rounded-full bg-foreground text-background hover:bg-foreground/90"
         :disabled="disabled"
         @click="decide('approved')"
         >允许一次</Button
       >
+      <Button
+        v-if="approval.directoryScope"
+        type="button"
+        variant="outline"
+        size="sm"
+        class="rounded-full"
+        :disabled="disabled"
+        @click="decide('approved', 'conversation_directory')"
+        >授权目录及子目录</Button
+      >
     </footer>
-  </section>
+  </InteractionCard>
 </template>

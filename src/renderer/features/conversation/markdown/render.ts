@@ -13,6 +13,33 @@ import java from 'highlight.js/lib/languages/java'
 import { parseWebLink } from '../../../../shared/message-actions.ts'
 import { validateDocument, validateTexts } from './contract.ts'
 import type { MarkdownDocument } from './contract.ts'
+import { MAX_MARKDOWN_PARTS } from './contract.ts'
+
+// Worker 内仅缓存高亮结果，既不保存整段对话，也不改变后置引用定义的解析语义。
+const highlights = new Map<string, string>()
+let highlightSize = 0
+function highlight(code: string, language: string): string {
+  const key = `${language}\0${code}`
+  const cached = highlights.get(key)
+  if (cached !== undefined) {
+    highlights.delete(key)
+    highlights.set(key, cached)
+    return cached
+  }
+  const html = hljs.highlight(code, { language, ignoreIllegals: true }).value
+  const size = key.length + html.length
+  if (size <= 512 * 1024) {
+    highlights.set(key, html)
+    highlightSize += size
+    while (highlightSize > 512 * 1024 || highlights.size > 64) {
+      const oldest = highlights.entries().next().value
+      if (!oldest) break
+      highlightSize -= oldest[0].length + oldest[1].length
+      highlights.delete(oldest[0])
+    }
+  }
+  return html
+}
 
 for (const [name, grammar] of Object.entries({
   javascript,
@@ -28,7 +55,7 @@ for (const [name, grammar] of Object.entries({
 }))
   hljs.registerLanguage(name, grammar)
 
-/** 在 Worker 中同步处理一次完整快照；每次调用独享代码块索引，不拼接旧 HTML。 */
+/** 完整解析保证列表、表格和后置引用正确，按顶层节点输出以避免整体替换 DOM。 */
 export function renderMarkdown(texts: string[]): MarkdownDocument {
   const content = validateTexts(texts)
   const codes: string[] = []
@@ -51,7 +78,7 @@ export function renderMarkdown(texts: string[]): MarkdownDocument {
     let highlighted = markdown.utils.escapeHtml(code)
     if (code.length <= 20_000 && hljs.getLanguage(label)) {
       try {
-        highlighted = hljs.highlight(code, { language: label, ignoreIllegals: true }).value
+        highlighted = highlight(code, label)
       } catch {
         /* 未完成代码或语法异常时保留转义文本，不影响回答正文。 */
       }
@@ -78,6 +105,24 @@ export function renderMarkdown(texts: string[]): MarkdownDocument {
       return `[图片：${label}]`
     }
   }
-  const html = content.map((text) => markdown.render(text))
+  let count = 0
+  const html = content.map((text) => {
+    // parse 已完成整篇文档的 block/inline 处理，不能按空行切 Markdown 源码。
+    const environment = {}
+    const tokens = markdown.parse(text, environment)
+    const parts: string[] = []
+    let start = 0
+    let depth = 0
+    for (let index = 0; index < tokens.length; index++) {
+      depth += tokens[index]?.nesting ?? 0
+      if (depth !== 0) continue
+      if (++count > MAX_MARKDOWN_PARTS) throw new Error('排版段落较多，已按文本显示。')
+      parts.push(
+        markdown.renderer.render(tokens.slice(start, index + 1), markdown.options, environment),
+      )
+      start = index + 1
+    }
+    return parts
+  })
   return validateDocument({ html, codes })
 }

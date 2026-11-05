@@ -15,6 +15,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   let cancelled = 0
   const markdownContinuations = new Set<() => void>()
   const approvalContinuations = new Set<() => void>()
+  const streamingResponses = new Set<ServerResponse>()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
@@ -62,7 +63,33 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      if (text === '连续流渲染') {
+        emit(response, {
+          content:
+            '# 连续流渲染\n\n' +
+            Array.from(
+              { length: 12 },
+              (_, index) =>
+                `稳定段落 ${index}。\n\n\`\`\`typescript\nconst fixed${index} = ${index};\n\`\`\`\n\n`,
+            ).join('') +
+            '连续正文：',
+        })
+        streamingResponses.add(response)
+        response.once('close', () => streamingResponses.delete(response))
+        return
+      }
       if (role === 'tool') {
+        if (text.includes('"question"')) {
+          const answer = record(JSON.parse(text) as unknown)
+          emit(response, {
+            content:
+              answer.skipped === true
+                ? '用户已跳过问题。'
+                : `已收到你的回复：${String(answer.selected_option || answer.text)}`,
+          })
+          finish(response)
+          return
+        }
         emit(response, {
           content: text.includes('permission_denied') ? '操作已拒绝。' : '已读取测试文件。',
         })
@@ -121,6 +148,26 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         } else requestApproval()
         return
       }
+      if (text.startsWith('提问')) {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-question',
+              type: 'function',
+              function: {
+                name: 'request_user_input',
+                arguments: JSON.stringify({
+                  question: '另一个任务是否已经结束？这会影响接下来的验证。',
+                  options: ['已结束，可以复验', '仍在进行'],
+                }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (text.includes('等待')) {
         emit(response, { content: `仅属于${text}的内容` })
         response.once('close', () => {
@@ -154,6 +201,13 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    appendStream(text: string) {
+      for (const response of streamingResponses) emit(response, { content: text })
+    },
+    finishStream() {
+      for (const response of streamingResponses) finish(response)
+      streamingResponses.clear()
+    },
     finishMarkdown() {
       for (const continuation of [...markdownContinuations]) continuation()
     },

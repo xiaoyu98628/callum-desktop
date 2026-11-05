@@ -1,6 +1,10 @@
 import type {
   ChatEvent,
+  ApprovalScope,
+  DirectoryGrant,
   ChatMessage,
+  ChatUserInput,
+  UserInputAnswer,
   ChatOverview,
   ChatResult,
   ConversationDetail,
@@ -52,10 +56,18 @@ export interface DesktopApi {
   ): Promise<ChatResult<ChatMessage[]>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>
+  submitUserInput(
+    inputId: string,
+    runId: string,
+    answer: UserInputAnswer,
+  ): Promise<ChatResult<ChatUserInput>>
   decideApproval(
     approvalId: string,
     decision: 'approved' | 'rejected',
+    scope?: ApprovalScope,
   ): Promise<ChatResult<boolean>>
+  listDirectoryGrants(conversationId: string, offset: number): Promise<ChatResult<DirectoryGrant[]>>
+  revokeDirectoryGrant(conversationId: string, grantId: string): Promise<ChatResult<DirectoryGrant>>
   /** 每个窗口一个订阅，由根组件持有；返回可重复调用的取消订阅函数。 */
   onChatEvent(listener: (event: ChatEvent) => void): () => void
 }

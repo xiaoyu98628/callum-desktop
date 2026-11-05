@@ -3,21 +3,44 @@ import {
   id,
   integer,
   parseApproval,
+  parseDirectoryGrant,
   parseConversation,
   parseMessage,
   parseRun,
   parseWorkspace,
+  parseUserInput,
   record,
   string,
 } from '../../shared/chat.ts'
 import type {
   ChatApproval,
+  DirectoryGrant,
   ChatMessage,
   ChatRun,
+  ChatUserInput,
   Conversation,
   Workspace,
 } from '../../shared/chat.ts'
 
+export function userInputFromRpc(value: unknown): ChatUserInput {
+  const v = record(value)
+  const answer = v.answer === null ? null : record(v.answer)
+  return parseUserInput({
+    id: v.id,
+    conversationId: v.conversation_id,
+    runId: v.run_id,
+    stepId: v.step_id,
+    question: v.question,
+    options: v.options,
+    status: v.status,
+    answer:
+      answer === null
+        ? null
+        : { optionIndex: answer.option_index, text: answer.text, skipped: answer.skipped },
+    createdAt: v.created_at,
+    updatedAt: v.updated_at,
+  })
+}
 export function conversationFromRpc(value: unknown): Conversation {
   const v = record(value),
     model = record(v.model)
@@ -84,6 +107,25 @@ export function approvalFromRpc(value: unknown, conversationId: string): ChatApp
     status: v.status,
     toolName: tool ? string(tool.name) : '工具操作',
     snapshot: JSON.stringify(request, null, 2),
+    directoryScope:
+      v.directory_scope == null
+        ? null
+        : {
+            rootPath: record(v.directory_scope).root_path,
+            access: record(v.directory_scope).access,
+          },
+  })
+}
+export function directoryGrantFromRpc(value: unknown): DirectoryGrant {
+  const v = record(value),
+    scope = record(v.scope)
+  return parseDirectoryGrant({
+    id: v.id,
+    conversationId: v.conversation_id,
+    approvalId: v.approval_id,
+    scope: { rootPath: scope.root_path, access: scope.access },
+    createdAt: v.created_at,
+    revokedAt: v.revoked_at,
   })
 }
 export function appendDelta(message: ChatMessage, params: Record<string, unknown>): ChatMessage {

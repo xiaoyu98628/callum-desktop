@@ -70,6 +70,19 @@ export interface ChatRun {
   createdAt: number
   finishedAt: number | null
 }
+export interface DirectoryScope {
+  rootPath: string
+  access: 'read' | 'read_write'
+}
+export interface DirectoryGrant {
+  id: string
+  conversationId: string
+  approvalId: string
+  scope: DirectoryScope
+  createdAt: number
+  revokedAt: number | null
+}
+export type ApprovalScope = 'once' | 'conversation_directory'
 export interface ChatApproval {
   id: string
   conversationId: string
@@ -77,6 +90,24 @@ export interface ChatApproval {
   status: string
   toolName: string
   snapshot: string
+  directoryScope: DirectoryScope | null
+}
+export interface UserInputAnswer {
+  optionIndex: number | null
+  text: string
+  skipped: boolean
+}
+export interface ChatUserInput {
+  id: string
+  conversationId: string
+  runId: string
+  stepId: string
+  question: string
+  options: string[]
+  status: 'pending' | 'answered' | 'skipped' | 'cancelled' | 'interrupted' | 'failed'
+  answer: UserInputAnswer | null
+  createdAt: number
+  updatedAt: number
 }
 export type ChatChange =
   | { kind: 'conversation'; value: Conversation }
@@ -84,6 +115,8 @@ export type ChatChange =
   | { kind: 'message'; value: ChatMessage }
   | { kind: 'run'; value: ChatRun; persisted: boolean }
   | { kind: 'approval'; value: ChatApproval }
+  | { kind: 'directory-grant'; value: DirectoryGrant }
+  | { kind: 'user-input'; value: ChatUserInput }
   | { kind: 'service'; error: string }
 export interface ChatEvent {
   revision: number
@@ -100,6 +133,8 @@ export interface ConversationDetail {
   messages: ChatMessage[]
   runs: ChatRun[]
   approvals: ChatApproval[]
+  directoryGrants: DirectoryGrant[]
+  userInputs: ChatUserInput[]
   revision: number
   warning: string | null
 }
@@ -178,10 +213,10 @@ export function parseName(value: unknown): string {
 export function parseWorkspaceInput(value: unknown): WorkspaceInput {
   const v = record(value)
   if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
-    throw new Error('工作区参数无效')
+    throw new Error('项目参数无效')
   const rootPath = string(v.rootPath)
   if (!rootPath || rootPath.length > 8192 || rootPath.includes('\0'))
-    throw new Error('工作区路径无效')
+    throw new Error('项目路径无效')
   return { name: parseName(v.name), rootPath }
 }
 export function parseWorkspace(value: unknown): Workspace {
@@ -259,6 +294,24 @@ export function parseRun(value: unknown): ChatRun {
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
   }
 }
+export function parseDirectoryScope(value: unknown): DirectoryScope {
+  const v = record(value)
+  if (v.access !== 'read' && v.access !== 'read_write') throw new Error('目录授权范围无效')
+  const rootPath = string(v.rootPath)
+  if (!rootPath) throw new Error('目录路径无效')
+  return { rootPath, access: v.access }
+}
+export function parseDirectoryGrant(value: unknown): DirectoryGrant {
+  const v = record(value)
+  return {
+    id: id(v.id),
+    conversationId: id(v.conversationId),
+    approvalId: id(v.approvalId),
+    scope: parseDirectoryScope(v.scope),
+    createdAt: integer(v.createdAt),
+    revokedAt: v.revokedAt === null ? null : integer(v.revokedAt),
+  }
+}
 export function parseApproval(value: unknown): ChatApproval {
   const v = record(value)
   return {
@@ -268,6 +321,74 @@ export function parseApproval(value: unknown): ChatApproval {
     status: string(v.status),
     toolName: string(v.toolName),
     snapshot: string(v.snapshot),
+    directoryScope: v.directoryScope == null ? null : parseDirectoryScope(v.directoryScope),
+  }
+}
+export function parseUserInputAnswer(value: unknown): UserInputAnswer {
+  const v = record(value)
+  if (Object.keys(v).some((key) => !['optionIndex', 'text', 'skipped'].includes(key)))
+    throw new Error('回复包含不支持的字段')
+  const text = string(v.text)
+  const optionIndex = v.optionIndex === null ? null : integer(v.optionIndex)
+  if (
+    typeof v.skipped !== 'boolean' ||
+    (optionIndex !== null && optionIndex > 7) ||
+    new TextEncoder().encode(text).length > 4096 ||
+    text.includes('\0')
+  )
+    throw new Error('回复格式无效或内容过长')
+  if (v.skipped ? optionIndex !== null || text !== '' : optionIndex === null && !text.trim())
+    throw new Error('请选择选项或填写回复')
+  return { optionIndex, text, skipped: v.skipped }
+}
+export function parseUserInput(value: unknown): ChatUserInput {
+  const v = record(value)
+  const status = v.status
+  if (
+    status !== 'pending' &&
+    status !== 'answered' &&
+    status !== 'skipped' &&
+    status !== 'cancelled' &&
+    status !== 'interrupted' &&
+    status !== 'failed'
+  )
+    throw new Error('问题状态无效')
+  const question = string(v.question)
+  const options = array(v.options, string)
+  if (
+    !question.trim() ||
+    new TextEncoder().encode(question).length > 4096 ||
+    options.length > 8 ||
+    options.some((option) => !option.trim() || new TextEncoder().encode(option).length > 1024) ||
+    new Set(options).size !== options.length
+  )
+    throw new Error('问题内容无效')
+  const answer = v.answer === null ? null : parseUserInputAnswer(v.answer)
+  if (
+    answer?.optionIndex !== null &&
+    answer?.optionIndex !== undefined &&
+    answer.optionIndex >= options.length
+  )
+    throw new Error('回复选项无效')
+  if (
+    (status === 'answered' || status === 'skipped') !== (answer !== null) ||
+    (answer !== null && answer.skipped !== (status === 'skipped'))
+  )
+    throw new Error('问题与回复状态不匹配')
+  const inputId = id(v.id),
+    stepId = id(v.stepId)
+  if (inputId !== stepId) throw new Error('问题步骤归属无效')
+  return {
+    id: inputId,
+    conversationId: id(v.conversationId),
+    runId: id(v.runId),
+    stepId,
+    question,
+    options,
+    status,
+    answer,
+    createdAt: integer(v.createdAt),
+    updatedAt: integer(v.updatedAt),
   }
 }
 export function parseOverview(value: unknown): ChatOverview {
@@ -287,6 +408,8 @@ export function parseDetail(value: unknown): ConversationDetail {
     messages: array(v.messages, parseMessage),
     runs: array(v.runs, parseRun),
     approvals: array(v.approvals, parseApproval),
+    directoryGrants: array(v.directoryGrants ?? [], parseDirectoryGrant),
+    userInputs: array(v.userInputs, parseUserInput),
     revision: integer(v.revision),
     warning: v.warning === null ? null : string(v.warning),
   }
@@ -303,7 +426,7 @@ export function parseSendInput(value: unknown): SendMessageInput {
   if (!text || text.length > MAX_MESSAGE_LENGTH)
     throw new Error('消息不能为空，且不能超过 100000 个字符')
   const workspaceId = v.workspaceId == null ? null : id(v.workspaceId)
-  if (workspaceId && v.conversationId !== null) throw new Error('已有会话不能在发送时修改工作区')
+  if (workspaceId && v.conversationId !== null) throw new Error('已有会话不能在发送时修改项目')
   return {
     conversationId: v.conversationId === null ? null : id(v.conversationId),
     workspaceId,
@@ -335,6 +458,13 @@ export function parseChatEvent(value: unknown): ChatEvent {
     }
     case 'approval':
       return { revision, change: { kind: 'approval', value: parseApproval(change.value) } }
+    case 'directory-grant':
+      return {
+        revision,
+        change: { kind: 'directory-grant', value: parseDirectoryGrant(change.value) },
+      }
+    case 'user-input':
+      return { revision, change: { kind: 'user-input', value: parseUserInput(change.value) } }
     case 'service':
       return { revision, change: { kind: 'service', error: string(change.error) } }
     default:

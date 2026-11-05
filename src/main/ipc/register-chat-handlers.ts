@@ -2,7 +2,14 @@ import { dialog, ipcMain } from 'electron'
 import { realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute } from 'node:path'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
-import { id, integer, parseName, parseSendInput, parseWorkspaceInput } from '../../shared/chat'
+import {
+  id,
+  integer,
+  parseName,
+  parseSendInput,
+  parseWorkspaceInput,
+  parseUserInputAnswer,
+} from '../../shared/chat'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { publicChatError } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
@@ -102,11 +109,10 @@ export function registerChatHandlers(
     if (!window || window.isDestroyed() || choosingDirectory)
       throw new Error('文件夹选择器当前不可用。')
     choosingDirectory = true
-    selectedDirectory = null
     const generation = directoryGeneration
     try {
       const result = await dialog.showOpenDialog(window, {
-        title: '选择工作区文件夹',
+        title: '选择项目文件夹',
         buttonLabel: '选择文件夹',
         properties: ['openDirectory'],
       })
@@ -129,7 +135,7 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.createWorkspace, 1, async (input) => {
     const parsed = parseWorkspaceInput(input)
     // 目录只能来自本窗口最近一次系统选择，不让渲染界面提交任意路径。
-    if (parsed.rootPath !== selectedDirectory) throw new Error('请重新选择工作区文件夹。')
+    if (parsed.rootPath !== selectedDirectory) throw new Error('请重新选择项目文件夹。')
     const workspace = await service.createWorkspace(parsed)
     selectedDirectory = null
     return workspace
@@ -163,10 +169,21 @@ export function registerChatHandlers(
   )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
-  handle(IPC_CHANNELS.decideApproval, 2, (approvalId, decision) => {
+  handle(IPC_CHANNELS.submitUserInput, 3, (inputId, runId, answer) =>
+    service.submitUserInput(id(inputId), id(runId), parseUserInputAnswer(answer)),
+  )
+  handle(IPC_CHANNELS.decideApproval, 3, (approvalId, decision, scope) => {
+    if (scope !== 'once' && scope !== 'conversation_directory') throw new Error('审批范围无效')
+    if (decision !== 'approved' && scope !== 'once') throw new Error('拒绝不能授予目录权限')
     if (decision !== 'approved' && decision !== 'rejected') throw new Error('审批决定无效')
-    return service.decide(id(approvalId), decision)
+    return service.decide(id(approvalId), decision, scope)
   })
+  handle(IPC_CHANNELS.listDirectoryGrants, 2, (conversationId, offset) =>
+    service.directories(id(conversationId), integer(offset)),
+  )
+  handle(IPC_CHANNELS.revokeDirectoryGrant, 2, (conversationId, grantId) =>
+    service.revokeDirectory(id(conversationId), id(grantId)),
+  )
   const unsubscribe = service.subscribe((event) => {
     const window = getWindow()
     if (

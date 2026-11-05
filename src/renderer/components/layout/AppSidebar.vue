@@ -10,15 +10,15 @@ import {
   SquarePenIcon,
 } from '@lucide/vue'
 import type { AppInfo } from '@shared/desktop-api'
-import type { Conversation, Workspace } from '@shared/chat'
+import type { Conversation, Workspace, WorkspaceInput } from '@shared/chat'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import { useConversations } from '@/features/conversation/useConversations'
-import { getDesktopApi } from '@/lib/desktop'
 import ConversationList from './ConversationList.vue'
 import SidebarItemMenu from './SidebarItemMenu.vue'
 import SidebarManagementDialog from './SidebarManagementDialog.vue'
 import type { ManagementTarget } from './SidebarManagementDialog.vue'
+import CreateProjectDialog from './CreateProjectDialog.vue'
 
 defineProps<{
   collapsed: boolean
@@ -48,8 +48,7 @@ const {
 const managementTarget = ref<ManagementTarget | null>(null)
 const managementReturnFocus = ref<HTMLElement | null>(null)
 const managementError = ref('')
-const choosing = ref(false)
-const chooseError = ref('')
+const creatingProject = ref(false)
 function startConversation(workspaceId: string | null = null): void {
   if (workspaceId) expandWorkspace(workspaceId)
   newConversation(workspaceId)
@@ -85,29 +84,22 @@ function manageWorkspace(item: Workspace, deleting: boolean, trigger: HTMLElemen
     deleting,
   }
 }
-async function addWorkspace(): Promise<void> {
-  if (choosing.value || state.managing) return
-  choosing.value = true
+function addWorkspace(): void {
+  if (state.managing) return
   managementReturnFocus.value =
     document.activeElement instanceof HTMLElement ? document.activeElement : null
-  chooseError.value = ''
+  managementError.value = ''
+  creatingProject.value = true
+}
+async function createProject(input: WorkspaceInput): Promise<void> {
+  if (state.managing) return
+  managementError.value = ''
   try {
-    const result = await getDesktopApi().chooseWorkspaceDirectory()
-    if (!result.ok) throw new Error(result.error)
-    if (result.value) {
-      managementError.value = ''
-      managementTarget.value = {
-        kind: 'workspace',
-        id: null,
-        name: result.value.name,
-        rootPath: result.value.path,
-        deleting: false,
-      }
-    }
+    const workspace = await createWorkspace(input)
+    creatingProject.value = false
+    startConversation(workspace.id)
   } catch (error) {
-    chooseError.value = error instanceof Error ? error.message : '无法选择文件夹。'
-  } finally {
-    choosing.value = false
+    managementError.value = error instanceof Error ? error.message : '无法创建项目，请重试。'
   }
 }
 async function confirmManagement(name: string): Promise<void> {
@@ -121,9 +113,6 @@ async function confirmManagement(name: string): Promise<void> {
     } else if (target.id) {
       if (target.deleting) await deleteWorkspace(target.id)
       else await renameWorkspace(target.id, name)
-    } else {
-      const workspace = await createWorkspace({ name, rootPath: target.rootPath })
-      startConversation(workspace.id)
     }
     managementTarget.value = null
   } catch (error) {
@@ -177,7 +166,7 @@ async function confirmManagement(name: string): Promise<void> {
               class="text-xs font-medium text-muted-foreground"
               :class="collapsed ? 'sr-only' : ''"
             >
-              工作区
+              项目
             </h2>
             <span v-if="!collapsed" class="ml-auto">
               <Button
@@ -185,8 +174,8 @@ async function confirmManagement(name: string): Promise<void> {
                 variant="ghost"
                 size="icon"
                 class="size-6 text-muted-foreground"
-                :disabled="choosing || state.managing || !!state.serviceError"
-                aria-label="添加工作区"
+                :disabled="state.managing || !!state.serviceError"
+                aria-label="添加项目"
                 @click="addWorkspace"
               >
                 <PlusIcon class="size-3.5" aria-hidden="true" />
@@ -198,22 +187,22 @@ async function confirmManagement(name: string): Promise<void> {
             class="px-3 text-xs text-muted-foreground"
             :class="collapsed ? 'sr-only' : ''"
           >
-            正在加载工作区…
+            正在加载项目…
           </p>
           <p
             v-else-if="!state.workspaces.length && !state.workspacesError"
             class="px-3 text-xs leading-6 text-muted-foreground/80"
             :class="collapsed ? 'sr-only' : ''"
           >
-            暂无工作区
+            暂无项目
           </p>
           <div
-            v-if="state.workspacesError || chooseError"
+            v-if="state.workspacesError"
             class="px-3 text-xs"
             :class="collapsed ? 'sr-only' : ''"
           >
             <p role="alert" class="break-words text-destructive">
-              {{ state.workspacesError || chooseError }}
+              {{ state.workspacesError }}
             </p>
             <Button
               v-if="state.workspacesError"
@@ -221,7 +210,7 @@ async function confirmManagement(name: string): Promise<void> {
               size="sm"
               :disabled="state.workspacesLoading"
               @click="refreshWorkspaces()"
-              >重新加载工作区</Button
+              >重新加载项目</Button
             >
           </div>
           <section
@@ -323,7 +312,7 @@ async function confirmManagement(name: string): Promise<void> {
             class="w-full text-xs text-muted-foreground"
             :disabled="state.workspacesLoading"
             @click="refreshWorkspaces(true)"
-            >加载更多工作区</Button
+            >加载更多项目</Button
           >
         </section>
 
@@ -401,6 +390,14 @@ async function confirmManagement(name: string): Promise<void> {
       </div>
     </div>
   </aside>
+  <CreateProjectDialog
+    v-if="creatingProject"
+    :busy="state.managing"
+    :error="managementError"
+    :return-focus="managementReturnFocus"
+    @close="creatingProject = false"
+    @create="createProject"
+  />
   <SidebarManagementDialog
     v-if="managementTarget"
     :target="managementTarget"

@@ -14,10 +14,14 @@ import {
 } from '../../shared/chat.ts'
 import type {
   ChatChange,
+  ApprovalScope,
+  DirectoryGrant,
   ChatEvent,
   ChatMessage,
   ChatOverview,
   ChatRun,
+  ChatUserInput,
+  UserInputAnswer,
   Conversation,
   ConversationPage,
   ConversationDetail,
@@ -30,10 +34,12 @@ import type {
 import {
   appendDelta,
   approvalFromRpc,
+  directoryGrantFromRpc,
   conversationFromRpc,
   messageFromRpc,
   runFromRpc,
   workspaceFromRpc,
+  userInputFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
@@ -140,7 +146,7 @@ export class ChatService {
       this.request('workspace.get', { id: workspaceId }),
       this.request('conversation.list', { workspace_id: workspaceId, limit: PAGE_SIZE, offset }),
     ])
-    if (!isVisible(workspaceFromRpc(workspace))) throw new Error('工作区已被删除或归档。')
+    if (!isVisible(workspaceFromRpc(workspace))) throw new Error('项目已被删除或归档。')
     let conversations = array(rows ?? [], conversationFromRpc)
     const hasMore = conversations.length === PAGE_SIZE
     for (const { change } of this.since(start)) {
@@ -150,7 +156,7 @@ export class ChatService {
         change.value.id === workspaceId &&
         !isVisible(change.value)
       )
-        throw new Error('工作区已被删除或归档。')
+        throw new Error('项目已被删除或归档。')
       if (
         change.kind === 'conversation' &&
         (offset === 0 || conversations.some((item) => item.id === change.value.id))
@@ -194,9 +200,9 @@ export class ChatService {
   }
   async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
     const parsed = parseWorkspaceInput(input)
-    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择工作区的绝对路径。')
+    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择项目的绝对路径。')
     const rootPath = await realpath(parsed.rootPath)
-    if (!(await stat(rootPath)).isDirectory()) throw new Error('工作区必须是文件夹。')
+    if (!(await stat(rootPath)).isDirectory()) throw new Error('项目必须是文件夹。')
     return this.mutate(`path:${rootPath}`, async () => {
       const value = workspaceFromRpc(
         await this.request('workspace.create', { name: parsed.name, root_path: rootPath }),
@@ -259,6 +265,13 @@ export class ChatService {
           this.request('approval.list', { run_id: run.id, status: 'pending', limit: 200 }),
         ),
     )
+    const inputs = await Promise.all(
+      parsedRuns
+        .filter((run) => run.status === 'awaiting_user_input')
+        .map((run) =>
+          this.request('user_input.list', { run_id: run.id, status: 'pending', limit: 200 }),
+        ),
+    )
     const result: ConversationDetail = {
       conversation: conversationFromRpc(conversation),
       messages: array(messages ?? [], messageFromRpc),
@@ -266,6 +279,8 @@ export class ChatService {
       approvals: pending.flatMap((rows) =>
         array(rows ?? [], (row) => approvalFromRpc(row, conversationId)),
       ),
+      directoryGrants: await this.directories(conversationId, 0),
+      userInputs: inputs.flatMap((rows) => array(rows ?? [], userInputFromRpc)),
       revision: 0,
       warning: this.persistenceFailures.has(conversationId)
         ? '本次执行状态未能完整保存，请重新打开应用后核对历史。'
@@ -309,9 +324,52 @@ export class ChatService {
     if (typeof value.cancel_requested !== 'boolean') throw new Error('取消响应无效')
     return value.cancel_requested
   }
-  async decide(approvalId: string, decision: 'approved' | 'rejected'): Promise<boolean> {
-    await this.request('approval.decide', { approval_id: approvalId, decision })
+  async submitUserInput(
+    inputId: string,
+    runId: string,
+    answer: UserInputAnswer,
+  ): Promise<ChatUserInput> {
+    const value = userInputFromRpc(
+      await this.request('user_input.submit', {
+        input_id: inputId,
+        run_id: runId,
+        answer: { option_index: answer.optionIndex, text: answer.text, skipped: answer.skipped },
+      }),
+    )
+    if (value.id !== inputId || value.runId !== runId) throw new Error('回复归属不匹配')
+    return value
+  }
+  async decide(
+    approvalId: string,
+    decision: 'approved' | 'rejected',
+    scope: ApprovalScope = 'once',
+  ): Promise<boolean> {
+    await this.request('approval.decide', { approval_id: approvalId, decision, scope })
     return true
+  }
+  async directories(conversationId: string, offset: number): Promise<DirectoryGrant[]> {
+    const grants = array(
+      await this.request('approval.directory.list', {
+        conversation_id: id(conversationId),
+        limit: 200,
+        offset,
+      }),
+      directoryGrantFromRpc,
+    )
+    if (grants.some((grant) => grant.conversationId !== conversationId))
+      throw new Error('目录授权归属不匹配')
+    return grants
+  }
+  async revokeDirectory(conversationId: string, grantId: string): Promise<DirectoryGrant> {
+    const value = directoryGrantFromRpc(
+      await this.request('approval.directory.revoke', {
+        conversation_id: id(conversationId),
+        id: id(grantId),
+      }),
+    )
+    if (value.conversationId !== conversationId || value.id !== grantId)
+      throw new Error('目录授权归属不匹配')
+    return value
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
@@ -330,7 +388,7 @@ export class ChatService {
       const message = appendDelta(previous, p)
       this.messages.set(message.id, message)
       this.dirty.set(message.id, message)
-      this.flushTimer ??= setTimeout(() => this.flush(), 40)
+      this.flushTimer ??= setTimeout(() => this.flush(), 16)
     } else if (method.startsWith('run.') && p.run !== undefined) {
       const run = runFromRpc(p.run)
       if (id(p.conversation_id) !== run.conversationId || id(p.run_id) !== run.id)
@@ -352,6 +410,20 @@ export class ChatService {
       if (approval.runId !== id(p.run_id) || approval.id !== id(p.approval_id))
         throw new Error('审批归属不匹配')
       this.publish({ kind: 'approval', value: approval })
+    } else if (method === 'directory_grant.updated') {
+      const grant = directoryGrantFromRpc(p.directory_grant)
+      if (grant.conversationId !== id(p.conversation_id)) throw new Error('目录授权归属不匹配')
+      this.publish({ kind: 'directory-grant', value: grant })
+    } else if (method === 'user_input.requested' || method === 'user_input.updated') {
+      const input = userInputFromRpc(p.user_input)
+      if (
+        input.id !== id(p.input_id) ||
+        input.runId !== id(p.run_id) ||
+        input.conversationId !== id(p.conversation_id) ||
+        input.stepId !== id(p.step_id)
+      )
+        throw new Error('问题归属不匹配')
+      this.publish({ kind: 'user-input', value: input })
     }
     if (this.messages.size > 32 || this.runs.size > 64) throw new Error('活动消息超出限制')
   }
@@ -392,7 +464,7 @@ export class ChatService {
     if (change.kind === 'service') throw new Error(change.error)
     if (change.kind === 'workspace') {
       if (change.value.id === detail.conversation.workspaceId && !isVisible(change.value))
-        throw new Error('工作区已被删除或归档。')
+        throw new Error('项目已被删除或归档。')
       return
     }
     if (change.kind === 'conversation') {
@@ -405,7 +477,10 @@ export class ChatService {
       detail.runs = upsert(detail.runs, change.value)
       if (!change.persisted) detail.warning = '本次执行状态未能完整保存，请重新打开应用后核对历史。'
     }
+    if (change.kind === 'directory-grant')
+      detail.directoryGrants = upsert(detail.directoryGrants, change.value).slice(-200)
     if (change.kind === 'approval') detail.approvals = upsert(detail.approvals, change.value)
+    if (change.kind === 'user-input') detail.userInputs = upsert(detail.userInputs, change.value)
   }
   close(): Promise<void> {
     this.closeTask ??= this.shutdown()
@@ -441,7 +516,7 @@ export function resolveBackendExecutable(resourceRoot: string): string {
   return join(resourceRoot, 'backend', `${process.platform}-${process.arch}`, 'callum')
 }
 export function publicChatError(error: unknown): string {
-  if (error instanceof RpcError) return error.message
+  if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')
   if (error instanceof Error && !/ENOENT|EACCES|JSON|格式|无效|不匹配/.test(error.message))
     return error.message
   return '无法完成对话操作，请重试。'

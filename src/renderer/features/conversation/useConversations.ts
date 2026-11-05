@@ -3,6 +3,7 @@ import type { InjectionKey } from 'vue'
 import { isActiveRun, isVisible } from '@shared/chat'
 import type {
   ChatEvent,
+  ApprovalScope,
   ChatMessage,
   ChatModel,
   ChatResult,
@@ -10,6 +11,7 @@ import type {
   ConversationDetail,
   Workspace,
   WorkspaceInput,
+  UserInputAnswer,
 } from '@shared/chat'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
@@ -68,6 +70,13 @@ function createConversations() {
     sending: false,
     cancelling: false,
     deciding: '',
+    revokingDirectory: '',
+    directoriesLoading: false,
+    directoriesOffset: 0,
+    directoriesError: '',
+    replying: '',
+    inputReplies: {} as Record<string, UserInputAnswer>,
+    collapsedCards: {} as Record<string, boolean>,
     error: '',
     serviceError: '',
     modelsLoading: false,
@@ -115,6 +124,24 @@ function createConversations() {
   const pendingApprovals = computed(
     () => state.detail?.approvals.filter((item) => item.status === 'pending') ?? [],
   )
+  const pendingInputs = computed(
+    () => state.detail?.userInputs.filter((item) => item.status === 'pending') ?? [],
+  )
+  function setCardCollapsed(id: string, value: boolean): void {
+    if (value) state.collapsedCards[id] = true
+    else delete state.collapsedCards[id]
+    const keys = Object.keys(state.collapsedCards)
+    if (keys.length > 100 && keys[0]) delete state.collapsedCards[keys[0]]
+  }
+  function inputReply(id: string): UserInputAnswer {
+    return state.inputReplies[id] ?? { optionIndex: null, text: '', skipped: false }
+  }
+  function setInputReply(id: string, value: UserInputAnswer): void {
+    if (!pendingInputs.value.some((item) => item.id === id)) return
+    state.inputReplies[id] = value
+    const keys = Object.keys(state.inputReplies)
+    if (keys.length > 100 && keys[0]) delete state.inputReplies[keys[0]]
+  }
   const workspace = computed(
     () => state.workspaces.find((item) => item.id === state.workspaceId) ?? null,
   )
@@ -253,8 +280,17 @@ function createConversations() {
         .slice(-200)
       if (!change.persisted) state.error = '本次执行状态未能完整保存，请重新打开应用后核对历史。'
     }
+    if (change.kind === 'directory-grant')
+      state.detail.directoryGrants = upsert(state.detail.directoryGrants, change.value).slice(-200)
     if (change.kind === 'approval')
       state.detail.approvals = upsert(state.detail.approvals, change.value).slice(-200)
+    if (change.kind === 'user-input') {
+      state.detail.userInputs = upsert(state.detail.userInputs, change.value).slice(-200)
+      if (change.value.status !== 'pending') {
+        delete state.inputReplies[change.value.id]
+        delete state.collapsedCards[change.value.id]
+      }
+    }
   }
   function receive(event: ChatEvent): void {
     const change = event.change
@@ -273,7 +309,7 @@ function createConversations() {
         workspaceGeneration++
         workspaceEvents.clear()
         state.workspacesLoading = false
-        state.workspacesError = '工作区变化较快，请重新加载。'
+        state.workspacesError = '项目变化较快，请重新加载。'
       }
     }
     if (
@@ -592,17 +628,93 @@ function createConversations() {
       if (run.conversationId === state.selectedId) state.cancelling = false
     }
   }
-  async function decide(approvalId: string, decision: 'approved' | 'rejected'): Promise<void> {
+  async function decide(
+    approvalId: string,
+    decision: 'approved' | 'rejected',
+    scope: ApprovalScope = 'once',
+  ): Promise<void> {
     if (state.deciding) return
     state.deciding = approvalId
     state.error = ''
     const conversationId = state.selectedId
     try {
-      unwrap(await getDesktopApi().decideApproval(approvalId, decision))
+      unwrap(await getDesktopApi().decideApproval(approvalId, decision, scope))
     } catch (error) {
       if (conversationId === state.selectedId) state.error = message(error)
     } finally {
       state.deciding = ''
+    }
+  }
+  async function loadDirectories(offset = 0): Promise<void> {
+    const conversationId = state.selectedId
+    if (!conversationId || state.directoriesLoading) return
+    const currentSelection = selection
+    state.directoriesLoading = true
+    state.directoriesError = ''
+    try {
+      const values = unwrap(await getDesktopApi().listDirectoryGrants(conversationId, offset))
+      if (
+        !disposed &&
+        selection === currentSelection &&
+        state.detail?.conversation.id === conversationId
+      ) {
+        state.detail.directoryGrants = values
+        state.directoriesOffset = offset
+      }
+    } catch (error) {
+      if (conversationId === state.selectedId) state.directoriesError = message(error)
+    } finally {
+      state.directoriesLoading = false
+    }
+  }
+  async function revokeDirectory(grantId: string): Promise<void> {
+    const conversationId = state.selectedId
+    if (!conversationId || state.revokingDirectory) return
+    state.revokingDirectory = grantId
+    state.directoriesError = ''
+    try {
+      const value = unwrap(await getDesktopApi().revokeDirectoryGrant(conversationId, grantId))
+      if (state.detail?.conversation.id === conversationId)
+        state.detail.directoryGrants = upsert(state.detail.directoryGrants, value)
+    } catch (error) {
+      if (conversationId === state.selectedId) state.directoriesError = message(error)
+    } finally {
+      state.revokingDirectory = ''
+    }
+  }
+  async function submitInput(inputId: string, skipped: boolean): Promise<void> {
+    const input = pendingInputs.value.find((item) => item.id === inputId)
+    const run = activeRun.value
+    if (
+      !input ||
+      !run ||
+      run.id !== input.runId ||
+      input.conversationId !== state.selectedId ||
+      state.replying ||
+      state.loading ||
+      state.serviceError ||
+      state.cancelling
+    )
+      return
+    state.replying = inputId
+    state.error = ''
+    try {
+      const reply = inputReply(inputId)
+      // 跨进程只发送普通快照，不能把 Vue 的响应式代理交给 structured clone。
+      const answer: UserInputAnswer = skipped
+        ? { optionIndex: null, text: '', skipped: true }
+        : { optionIndex: reply.optionIndex, text: reply.text, skipped: false }
+      const result = unwrap(await getDesktopApi().submitUserInput(inputId, run.id, answer))
+      if (!disposed) {
+        delete state.inputReplies[inputId]
+        delete state.collapsedCards[inputId]
+        if (state.detail?.conversation.id === input.conversationId)
+          state.detail.userInputs = upsert(state.detail.userInputs, result).slice(-200)
+      }
+    } catch (error) {
+      if (!disposed && state.selectedId === input.conversationId) state.error = message(error)
+    } finally {
+      if (state.replying === inputId) state.replying = ''
     }
   }
   async function earlier(): Promise<void> {
@@ -652,6 +764,11 @@ function createConversations() {
     draft,
     activeRun,
     pendingApprovals,
+    pendingInputs,
+    inputReply,
+    setInputReply,
+    submitInput,
+    setCardCollapsed,
     title,
     workspace,
     refreshWorkspaces,
@@ -671,6 +788,8 @@ function createConversations() {
     send,
     cancel,
     decide,
+    loadDirectories,
+    revokeDirectory,
     earlier,
   }
 }

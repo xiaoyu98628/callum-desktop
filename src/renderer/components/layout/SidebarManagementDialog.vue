@@ -41,15 +41,15 @@ const title = computed(() =>
       ? '删除会话'
       : '重命名会话'
     : props.target.deleting
-      ? '删除工作区'
+      ? '删除项目'
       : props.target.id
-        ? '编辑工作区'
-        : '添加工作区',
+        ? '编辑项目'
+        : '编辑项目',
 )
 const description = computed(() =>
   props.target.deleting
     ? props.target.kind === 'workspace'
-      ? '工作区及其对话将从列表移除，磁盘文件保留。重新添加同一文件夹可恢复工作区及对话。'
+      ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一文件夹可恢复项目及对话。'
       : '此会话将从列表移除，当前窗口中的对应草稿也会清除。'
     : props.target.kind === 'workspace'
       ? '为这个文件夹设置一个便于识别的名称。'
@@ -97,7 +97,7 @@ function restoreFocus(event: Event): void {
           </p>
           <div v-else>
             <label for="management-name" class="text-sm font-medium">{{
-              target.kind === 'workspace' ? '工作区名称' : '会话标题'
+              target.kind === 'workspace' ? '项目名称' : '会话标题'
             }}</label>
             <input
               id="management-name"

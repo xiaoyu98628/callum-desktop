@@ -30,6 +30,7 @@ export async function seedModel(profile: string, baseUrl: string): Promise<strin
         display_name: '受控文本模型',
         remote_model_id: 'local-fixture',
         enabled: true,
+        context_window: 1_000_000,
         model_type: [],
       }),
     )

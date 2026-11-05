@@ -56,7 +56,7 @@ const itemClass =
         >
         <DropdownMenuItem :class="itemClass" @select="choose('rename')"
           ><PencilIcon class="size-3.5" aria-hidden="true" />{{
-            workspace ? '编辑工作区' : '重命名'
+            workspace ? '编辑项目' : '重命名'
           }}</DropdownMenuItem
         >
         <DropdownMenuSeparator class="my-1 border-t" />
@@ -64,7 +64,7 @@ const itemClass =
           :class="[itemClass, 'text-destructive focus:text-destructive']"
           @select="choose('delete')"
           ><Trash2Icon class="size-3.5" aria-hidden="true" />{{
-            workspace ? '删除工作区' : '删除会话'
+            workspace ? '删除项目' : '删除会话'
           }}</DropdownMenuItem
         >
       </DropdownMenuContent>

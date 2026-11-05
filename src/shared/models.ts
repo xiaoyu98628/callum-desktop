@@ -1,4 +1,4 @@
-import { array, id, record, string } from './chat.ts'
+import { array, id, integer, record, string } from './chat.ts'
 import type { ChatModel } from './chat.ts'
 
 /** 可配置的服务类型；增加选项时须同时核对 Go 服务的协议支持。 */
@@ -18,6 +18,7 @@ export interface ConfiguredModel {
   name: string
   remoteModelId: string
   enabled: boolean
+  contextWindow: number | null
 }
 export interface ModelCatalog {
   providers: ModelProvider[]
@@ -37,6 +38,7 @@ export interface ModelInput {
   name: string
   remoteModelId: string
   enabled: boolean
+  contextWindow?: number | null
 }
 
 function text(value: unknown, label: string, limit: number): string {
@@ -93,7 +95,7 @@ export function parseProviderInput(value: unknown): ProviderInput {
 }
 export function parseModelInput(value: unknown): ModelInput {
   const v = record(value)
-  keys(v, ['id', 'providerId', 'name', 'remoteModelId', 'enabled'])
+  keys(v, ['id', 'providerId', 'name', 'remoteModelId', 'enabled', 'contextWindow'])
   if (typeof v.enabled !== 'boolean') throw new Error('模型启用状态无效')
   return {
     id: v.id === null ? null : id(v.id),
@@ -101,6 +103,7 @@ export function parseModelInput(value: unknown): ModelInput {
     name: text(v.name, '模型名称', 120),
     remoteModelId: text(v.remoteModelId, '模型 ID', 256),
     enabled: v.enabled,
+    ...('contextWindow' in v ? { contextWindow: parseContextWindow(v.contextWindow) } : {}),
   }
 }
 export function parseProvider(value: unknown): ModelProvider {
@@ -114,6 +117,12 @@ export function parseProvider(value: unknown): ModelProvider {
     hasApiKey: v.hasApiKey,
   }
 }
+function parseContextWindow(value: unknown): number | null {
+  if (value === null) return null
+  const size = integer(value, 1)
+  if (size > 1_000_000_000) throw new Error('上下文容量超出范围')
+  return size
+}
 export function parseConfiguredModel(value: unknown): ConfiguredModel {
   const v = record(value)
   if (typeof v.enabled !== 'boolean') throw new Error('模型启用状态无效')
@@ -123,6 +132,7 @@ export function parseConfiguredModel(value: unknown): ConfiguredModel {
     name: string(v.name),
     remoteModelId: string(v.remoteModelId),
     enabled: v.enabled,
+    contextWindow: v.contextWindow == null ? null : parseContextWindow(v.contextWindow),
   }
 }
 export function parseCatalog(value: unknown): ModelCatalog {

@@ -2,13 +2,14 @@
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { ArrowUpIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
-import type { ChatRun } from '@shared/chat'
+import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
 import ModelSelector from './ModelSelector.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 import RunStatus from './RunStatus.vue'
 import ApprovalComposer from './ApprovalComposer.vue'
+import UserInputCard from './UserInputCard.vue'
 defineEmits<{ configureModels: [] }>()
 
 const {
@@ -17,11 +18,18 @@ const {
   workspace,
   activeRun,
   pendingApprovals,
+  pendingInputs,
+  inputReply,
+  setInputReply,
+  submitInput,
+  setCardCollapsed,
   refreshOverview,
   refreshModels,
   send,
   cancel,
   decide,
+  loadDirectories,
+  revokeDirectory,
   openConversation,
   earlier,
 } = useConversations()
@@ -30,6 +38,29 @@ const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
 )
 const currentApproval = computed(() => approvals.value[0] ?? null)
+const currentInput = computed(
+  () => pendingInputs.value.find((item) => item.conversationId === state.selectedId) ?? null,
+)
+const currentInteraction = computed(
+  () => currentApproval.value?.id ?? currentInput.value?.id ?? null,
+)
+const inputUnavailable = computed(
+  () =>
+    state.loading ||
+    state.loadingList ||
+    !!state.serviceError ||
+    !activeRun.value ||
+    activeRun.value.id !== currentInput.value?.runId,
+)
+const inputError = computed(
+  () =>
+    state.serviceError ||
+    state.modelError ||
+    state.error ||
+    (currentInput.value && !state.loading && activeRun.value?.id !== currentInput.value.runId
+      ? '执行状态已变化，请重新加载问题后核对。'
+      : ''),
+)
 const approvalUnavailable = computed(
   () =>
     state.loading ||
@@ -78,7 +109,7 @@ const canSend = computed(
     !state.loadingList &&
     !state.sending &&
     !activeRun.value &&
-    !currentApproval.value &&
+    !currentInteraction.value &&
     !state.serviceError &&
     !state.modelsLoading &&
     !state.modelError &&
@@ -110,14 +141,19 @@ function showLatest(): void {
   follow.value = true
   if (state.selectedId) void openConversation(state.selectedId)
 }
-async function scrollToBottom(): Promise<void> {
-  await nextTick()
-  if (follow.value && !state.historical && scroller.value)
-    scroller.value.scrollTop = scroller.value.scrollHeight
+let scrollFrame: number | undefined
+function scrollToBottom(): void {
+  if (scrollFrame !== undefined) return
+  // 消息通知与 Worker 回调可能在同一帧到达，只在布局更新后读写一次滚动位置。
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = undefined
+    if (follow.value && !state.historical && scroller.value)
+      scroller.value.scrollTop = scroller.value.scrollHeight
+  })
 }
 function resizeMessageInput(): void {
   const input = messageInput.value
-  if (!input || currentApproval.value) return
+  if (!input) return
   // 先恢复单行测量高度，使删除内容、发送或切换草稿时也能收缩；上限由 CSS 管理。
   input.style.overflowY = 'hidden'
   input.style.height = 'auto'
@@ -127,11 +163,11 @@ function resizeMessageInput(): void {
 }
 watch(draft, resizeMessageInput, { flush: 'post' })
 watch(
-  () => currentApproval.value?.id,
+  () => currentInteraction.value,
   async (id, previous) => {
     if (id) return
     await nextTick()
-    if (currentApproval.value) return
+    if (currentInteraction.value) return
     resizeMessageInput()
     const input = messageInput.value
     // 审批面板移除时恢复输入；切换会话或设置时不抢走其他控件的焦点。
@@ -140,7 +176,7 @@ watch(
   },
   { flush: 'post' },
 )
-function decideCurrent(id: string, decision: 'approved' | 'rejected'): void {
+function decideCurrent(id: string, decision: 'approved' | 'rejected', scope: ApprovalScope): void {
   if (
     id !== currentApproval.value?.id ||
     approvalUnavailable.value ||
@@ -148,17 +184,12 @@ function decideCurrent(id: string, decision: 'approved' | 'rejected'): void {
     state.cancelling
   )
     return
-  void decide(id, decision)
+  void decide(id, decision, scope)
 }
-function stopApproval(id: string): void {
-  if (
-    id !== currentApproval.value?.id ||
-    approvalUnavailable.value ||
-    state.deciding ||
-    state.cancelling
-  )
+function submitCurrentInput(id: string, skipped: boolean): void {
+  if (id !== currentInput.value?.id || inputUnavailable.value || state.replying || state.cancelling)
     return
-  void cancel()
+  void submitInput(id, skipped)
 }
 function reloadApproval(): void {
   if (state.serviceError) void refreshOverview()
@@ -175,6 +206,8 @@ watch(
   () => state.selectedId,
   () => {
     follow.value = true
+    state.directoriesOffset = 0
+    state.directoriesError = ''
   },
 )
 onMounted(() => {
@@ -195,6 +228,7 @@ onMounted(() => {
   void scrollToBottom()
 })
 onScopeDispose(() => {
+  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   inputResizeObserver?.disconnect()
   if (inputResizeFrame !== undefined) cancelAnimationFrame(inputResizeFrame)
 })
@@ -220,6 +254,75 @@ onScopeDispose(() => {
           </p>
         </div>
         <h1 v-else class="sr-only">{{ state.detail?.conversation.title || '对话' }}</h1>
+        <details
+          v-if="state.selectedId && state.detail && !state.loading"
+          class="mb-4 rounded-lg border p-3 text-xs"
+          aria-label="会话目录授权"
+        >
+          <summary class="cursor-pointer">目录授权（当前会话）</summary>
+          <p class="mt-2 text-muted-foreground">
+            授权覆盖子目录，重启后保留。撤销后，依赖目录授权的后续操作会重新判断，已批准或开始的操作不会撤回。
+          </p>
+          <p v-if="state.directoriesError" role="alert" class="mt-2 text-destructive">
+            {{ state.directoriesError }}
+          </p>
+          <p v-if="state.directoriesLoading" role="status" class="mt-2">正在读取目录授权…</p>
+          <p v-else-if="!state.detail.directoryGrants.length" class="mt-2 text-muted-foreground">
+            暂无目录授权。
+          </p>
+          <ul class="mt-2 space-y-2">
+            <li
+              v-for="grant in state.detail.directoryGrants"
+              :key="grant.id"
+              class="flex items-center gap-2"
+            >
+              <span class="min-w-0 flex-1 break-all"
+                >{{ grant.scope.rootPath }} ·
+                {{ grant.scope.access === 'read' ? '只读' : '读取和普通修改'
+                }}{{ grant.revokedAt === null ? '' : ' · 已撤销' }}</span
+              >
+              <Button
+                v-if="grant.revokedAt === null"
+                type="button"
+                variant="outline"
+                size="xs"
+                :disabled="
+                  !!state.revokingDirectory || state.directoriesLoading || !!state.serviceError
+                "
+                @click="revokeDirectory(grant.id)"
+                >{{ state.revokingDirectory === grant.id ? '正在撤销…' : '撤销授权' }}</Button
+              >
+            </li>
+          </ul>
+          <div class="mt-2 flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              :disabled="state.directoriesLoading || !!state.serviceError"
+              @click="loadDirectories(state.directoriesOffset)"
+              >刷新授权</Button
+            >
+            <Button
+              v-if="state.directoriesOffset > 0"
+              type="button"
+              variant="ghost"
+              size="xs"
+              :disabled="state.directoriesLoading"
+              @click="loadDirectories(Math.max(0, state.directoriesOffset - 200))"
+              >上一页授权</Button
+            >
+            <Button
+              v-if="state.detail.directoryGrants.length === 200"
+              type="button"
+              variant="ghost"
+              size="xs"
+              :disabled="state.directoriesLoading"
+              @click="loadDirectories(state.directoriesOffset + 200)"
+              >下一页授权</Button
+            >
+          </div>
+        </details>
         <div
           v-if="state.loading"
           role="status"
@@ -315,7 +418,7 @@ onScopeDispose(() => {
           {{ latestRun.error || runLabels[latestRun.status] }}
         </p>
         <div
-          v-if="!currentApproval && (state.error || state.serviceError || state.modelError)"
+          v-if="!currentInteraction && (state.error || state.serviceError || state.modelError)"
           role="alert"
           class="mt-5 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm leading-6"
         >
@@ -358,12 +461,27 @@ onScopeDispose(() => {
         :cancelling="state.cancelling"
         :unavailable="approvalUnavailable"
         :error="approvalError"
+        :collapsed="!!state.collapsedCards[currentApproval.id]"
         @decide="decideCurrent"
-        @stop="stopApproval"
+        @update:collapsed="setCardCollapsed(currentApproval.id, $event)"
+        @reload="reloadApproval"
+      />
+      <UserInputCard
+        v-else-if="currentInput"
+        :key="currentInput.id"
+        :input="currentInput"
+        :reply="inputReply(currentInput.id)"
+        :collapsed="!!state.collapsedCards[currentInput.id]"
+        :submitting="state.replying === currentInput.id"
+        :cancelling="state.cancelling"
+        :unavailable="inputUnavailable"
+        :error="inputError"
+        @update:collapsed="setCardCollapsed(currentInput.id, $event)"
+        @update:reply="setInputReply(currentInput.id, $event)"
+        @submit="submitCurrentInput"
         @reload="reloadApproval"
       />
       <form
-        v-show="!currentApproval"
         class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-1.5 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="send"
       >
@@ -375,7 +493,7 @@ onScopeDispose(() => {
           rows="1"
           :maxlength="MAX_MESSAGE_LENGTH"
           :disabled="
-            !!currentApproval ||
+            !!currentInteraction ||
             state.loading ||
             state.sending ||
             state.modelsLoading ||
@@ -423,7 +541,9 @@ onScopeDispose(() => {
             aria-label="停止生成"
             :title="state.cancelling ? '正在停止…' : '停止生成'"
             :aria-busy="state.cancelling"
-            :disabled="state.cancelling || !!state.serviceError"
+            :disabled="
+              state.cancelling || !!state.deciding || !!state.replying || !!state.serviceError
+            "
             @click="cancel"
             ><LoaderCircleIcon
               v-if="state.cancelling"
@@ -446,7 +566,6 @@ onScopeDispose(() => {
         </div>
       </form>
       <p
-        v-if="!currentApproval"
         id="conversation-hint"
         :class="
           !activeRun && composerNotice

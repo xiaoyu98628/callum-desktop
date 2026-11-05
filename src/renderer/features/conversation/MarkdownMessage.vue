@@ -21,8 +21,9 @@ const texts = computed(() =>
   props.content.map((block) => (block.type === 'text' ? block.text : '')),
 )
 let client: ReturnType<typeof renderer.register> | undefined
-let timer: ReturnType<typeof setTimeout> | undefined
+let renderFrame: number | undefined
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
+let rawDocument: MarkdownDocument | null = null
 let disposed = false,
   previous: string[] = []
 function captureView() {
@@ -73,30 +74,35 @@ function syncCodeButtons(): void {
   root.value?.querySelectorAll<HTMLButtonElement>('button[data-copy-code]').forEach((button) => {
     const index = Number(button.dataset.copyCode)
     const copied = copiedCodes.has(index)
-    button.setAttribute('aria-disabled', String(busyCopies.has(index)))
-    button.textContent = copied ? '已复制' : '复制'
-    button.setAttribute('aria-label', copied ? '代码已复制' : '复制代码')
+    const disabled = String(busyCopies.has(index))
+    const text = copied ? '已复制' : '复制'
+    const label = copied ? '代码已复制' : '复制代码'
+    if (button.getAttribute('aria-disabled') !== disabled)
+      button.setAttribute('aria-disabled', disabled)
+    if (button.textContent !== text) button.textContent = text
+    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)
   })
 }
 function render(): void {
-  clearTimeout(timer)
-  timer = undefined
+  if (renderFrame !== undefined) cancelAnimationFrame(renderFrame)
+  renderFrame = undefined
   client?.render(texts.value)
 }
 function update(): void {
-  // 立即废弃旧任务，即使下一次解析因流式节流而延后，迟到结果也不能恢复被替换的正文。
-  client?.invalidate()
   const current = texts.value
   // 内容回滚、工具轮次替换或块结构变化时立即清除旧排版，不能把旧回答当成新内容。
   if (
     current.length !== previous.length ||
     current.some((text, index) => !text.startsWith(previous[index] ?? ''))
-  )
+  ) {
+    client?.invalidate()
     rendered.value = null
+    rawDocument = null
+  }
   previous = [...current]
   notice.value = ''
   if (!props.streaming) render()
-  else if (timer === undefined) timer = setTimeout(render, 100)
+  else if (renderFrame === undefined) renderFrame = requestAnimationFrame(render)
 }
 onMounted(() => {
   try {
@@ -106,12 +112,25 @@ onMounted(() => {
       try {
         if ('error' in result) {
           rendered.value = null
+          rawDocument = null
           notice.value = result.error
         } else {
+          if (
+            result.texts.length !== texts.value.length ||
+            result.texts.some((text, index) => !texts.value[index]?.startsWith(text))
+          )
+            return
           rendered.value = {
-            html: result.document.html.map(sanitizeMarkdown),
+            html: result.document.html.map((parts, index) =>
+              parts.map((html, part) =>
+                rawDocument?.html[index]?.[part] === html
+                  ? (rendered.value?.html[index]?.[part] ?? sanitizeMarkdown(html))
+                  : sanitizeMarkdown(html),
+              ),
+            ),
             codes: result.document.codes,
           }
+          rawDocument = result.document
           notice.value = ''
         }
       } catch {
@@ -176,7 +195,7 @@ async function act(event: MouseEvent): Promise<void> {
 }
 onScopeDispose(() => {
   disposed = true
-  clearTimeout(timer)
+  if (renderFrame !== undefined) cancelAnimationFrame(renderFrame)
   clearTimeout(copiedTimer)
   client?.dispose()
   busyCopies.clear()
@@ -189,11 +208,14 @@ onScopeDispose(() => {
     <template v-for="(block, index) in content" :key="index">
       <!-- HTML 已经过严格允许列表清理；原始模型 HTML 在解析阶段也被禁用。 -->
       <!-- eslint-disable vue/no-v-html -->
-      <div
-        v-if="block.type === 'text' && rendered?.html[index]"
-        class="message-markdown"
-        v-html="rendered.html[index]"
-      />
+      <div v-if="block.type === 'text' && rendered?.html[index]?.length" class="message-markdown">
+        <div
+          v-for="(html, part) in rendered.html[index]"
+          :key="part"
+          class="markdown-part"
+          v-html="html"
+        />
+      </div>
       <!-- eslint-enable vue/no-v-html -->
       <p v-else-if="block.type === 'text'" class="markdown-plain-text">
         {{ block.text }}

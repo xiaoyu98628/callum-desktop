@@ -10,6 +10,8 @@ resources/backend/
 
 目前只有 macOS Apple Silicon 产物，使用 Go 1.27.3、`CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建，包含编译时服务端工作区的未提交改动。该目录不存放数据库、配置、凭据或其他用户数据。
 
+随附程序支持 `request_user_input` 模型提问工具及 `user_input.get/list/submit` 接口，提问沿用现有执行步骤表存储；本次合并构建也包含会话目录授权接口。当前服务包含 Token 预算要求，模型应配置真实的上下文容量；客户端模型设置已提供该入口。用旧随附程序创建的独立临时数据已验证可保留模型配置并从结构版本 4 升级至 6，验证未访问真实用户目录。
+
 ## 打包资源约定
 
 当前仓库只有 electron-vite 的源码构建流程，尚未配置安装包打包工具。放入本目录不等于已经纳入安装包；`npm run build` 不会自动复制此程序。

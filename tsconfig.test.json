@@ -14,6 +14,7 @@
     "src/main/ipc/chat-event-delivery.ts",
     "src/renderer/features/conversation/markdown/render.ts",
     "src/renderer/features/conversation/markdown/contract.ts",
+    "src/renderer/features/conversation/markdown/renderer.ts",
     "src/renderer/env.d.ts"
   ]
 }

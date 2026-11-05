@@ -40,6 +40,7 @@ function modelFromRpc(value: unknown): ConfiguredModel {
     name: v.display_name,
     remoteModelId: v.remote_model_id,
     enabled: v.enabled,
+    contextWindow: v.context_window ?? null,
   })
 }
 
@@ -92,7 +93,10 @@ export class ModelCatalog {
         display_name: input.name,
         remote_model_id: input.remoteModelId,
         enabled: input.enabled,
-        context_window: current?.context_window ?? null,
+        context_window:
+          input.contextWindow === undefined
+            ? (current?.context_window ?? null)
+            : input.contextWindow,
         max_output_tokens: current?.max_output_tokens ?? null,
         capabilities: current?.capabilities ?? null,
         model_type: current?.model_type ?? [],

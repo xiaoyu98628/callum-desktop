@@ -16,6 +16,8 @@ import {
   parseSelectedDirectory,
   parseWorkspace,
   parseWorkspacePage,
+  parseUserInput,
+  parseDirectoryGrant,
 } from '../shared/chat'
 import { parseCatalog } from '../shared/models'
 
@@ -126,10 +128,28 @@ const desktopApi: DesktopApi = {
   async cancelRun(runId) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.cancelRun, runId), boolean)
   },
-  async decideApproval(approvalId, decision) {
+  async submitUserInput(inputId, runId, answer) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.decideApproval, approvalId, decision),
+      await ipcRenderer.invoke(IPC_CHANNELS.submitUserInput, inputId, runId, answer),
+      parseUserInput,
+    )
+  },
+  async decideApproval(approvalId, decision, scope = 'once') {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.decideApproval, approvalId, decision, scope),
       boolean,
+    )
+  },
+  async listDirectoryGrants(conversationId, offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listDirectoryGrants, conversationId, offset),
+      (value) => array(value, parseDirectoryGrant),
+    )
+  },
+  async revokeDirectoryGrant(conversationId, grantId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.revokeDirectoryGrant, conversationId, grantId),
+      parseDirectoryGrant,
     )
   },
   onChatEvent(listener) {

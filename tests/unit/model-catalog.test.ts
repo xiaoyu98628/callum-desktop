@@ -54,6 +54,9 @@ test('模型配置边界拒绝非 HTTP 地址、URL 凭据、意外清空和无�
   assert.throws(() => parseModelInput({ ...basic, enabled: 'true' }))
   assert.throws(() => parseModelInput({ ...basic, remoteModelId: ' ' }))
   assert.throws(() => parseModelInput({ ...basic, providerId: '../../file' }))
+  for (const contextWindow of [0, -1, 1.5, 1_000_000_001, '100000'])
+    assert.throws(() => parseModelInput({ ...basic, contextWindow }))
+  assert.equal(parseModelInput({ ...basic, contextWindow: 128000 }).contextWindow, 128000)
 })
 
 test('编辑模型保留后端已有元数据，读取列表剔除非公开字段', async () => {
@@ -98,6 +101,10 @@ test('编辑模型保留后端已有元数据，读取列表剔除非公开字�
   await catalog.saveModel(basic)
   assert.ok(saved)
   for (const [key, value] of Object.entries(metadata)) assert.deepEqual(saved[key], value)
+  await catalog.saveModel({ ...basic, contextWindow: 256000 })
+  assert.equal(saved.context_window, 256000)
+  for (const [key, value] of Object.entries(metadata))
+    if (key !== 'context_window') assert.deepEqual(saved[key], value)
   assert.ok(!JSON.stringify(await catalog.list()).includes('must-not-return'))
 })
 
@@ -188,7 +195,12 @@ test(
         keyMode: 'replace',
         apiKey: 'fixture-catalog-key',
       })
-      const modelId = await service.catalog.saveModel({ ...basic, id: null, providerId })
+      const modelId = await service.catalog.saveModel({
+        ...basic,
+        id: null,
+        providerId,
+        contextWindow: 1_000_000,
+      })
       await service.catalog.saveProvider({
         id: providerId,
         protocol: 'chatcompletions',

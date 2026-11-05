@@ -17,6 +17,7 @@ const providerId = ref(props.model?.providerId ?? props.providerId)
 const name = ref(props.model?.name ?? '')
 const remoteModelId = ref(props.model?.remoteModelId ?? '')
 const enabled = ref(props.model?.enabled ?? true)
+const contextWindow = ref<number | string>(props.model?.contextWindow ?? '')
 const validationError = ref('')
 const inputClass =
   'mt-2 block w-full rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50'
@@ -31,6 +32,7 @@ function save(): void {
         name: name.value,
         remoteModelId: remoteModelId.value,
         enabled: enabled.value,
+        contextWindow: Number(contextWindow.value),
       }),
     )
   } catch (error) {
@@ -85,6 +87,25 @@ function save(): void {
           placeholder="供应商提供的模型标识"
           spellcheck="false"
         />
+      </div>
+      <div>
+        <label for="model-context-window" class="text-sm font-medium">上下文容量（Token）</label>
+        <input
+          id="model-context-window"
+          v-model="contextWindow"
+          :class="inputClass"
+          type="number"
+          inputmode="numeric"
+          min="1"
+          max="1000000000"
+          step="1"
+          :disabled="busy"
+          required
+          placeholder="填写供应商声明的上下文容量"
+        />
+        <p class="mt-2 text-xs leading-5 text-muted-foreground">
+          填写模型实际支持的 Token 数，服务据此计算上下文预算。已有模型未配置时请补充。
+        </p>
       </div>
       <label class="flex items-center gap-2 text-sm"
         ><input

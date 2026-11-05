@@ -1,8 +1,10 @@
 export const MAX_MARKDOWN_TEXT = 256 * 1024
 export const MAX_MARKDOWN_HTML = 2 * 1024 * 1024
 export const MAX_MARKDOWN_BLOCKS = 500
+export const MAX_MARKDOWN_PARTS = 8192
 export interface MarkdownDocument {
-  html: string[]
+  /** 每个内容块按顶层 Markdown 节点拆分，未变的节点可以保留 DOM。 */
+  html: string[][]
   codes: string[]
 }
 export interface MarkdownRequest {
@@ -40,12 +42,20 @@ export function validateDocument(value: unknown): MarkdownDocument {
   )
     throw new Error('消息排版失败，已按文本显示。')
   let length = 0
-  const html: string[] = [],
+  let parts = 0
+  const html: string[][] = [],
     codes: string[] = []
-  for (const item of value.html) {
-    if (typeof item !== 'string') throw new Error('消息排版失败，已按文本显示。')
-    length += item.length
-    html.push(item)
+  for (const block of value.html) {
+    if (!Array.isArray(block)) throw new Error('消息排版失败，已按文本显示。')
+    const items: string[] = []
+    for (const item of block) {
+      if (typeof item !== 'string') throw new Error('消息排版失败，已按文本显示。')
+      length += item.length
+      parts++
+      if (parts > MAX_MARKDOWN_PARTS) throw new Error('排版段落较多，已按文本显示。')
+      items.push(item)
+    }
+    html.push(items)
   }
   if (length > MAX_MARKDOWN_HTML) throw new Error('排版内容较长，已按文本显示。')
   length = 0
