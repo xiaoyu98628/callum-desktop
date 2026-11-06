@@ -236,11 +236,7 @@ async function confirmManagement(name: string): Promise<void> {
               <Button
                 variant="ghost"
                 class="h-8 min-w-0 flex-1 justify-start gap-2 text-[13px] font-normal hover:bg-transparent"
-                :class="
-                  collapsed
-                    ? 'justify-center px-0'
-                    : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
-                "
+                :class="collapsed ? 'justify-center px-0' : 'pl-3 pr-16 has-[>svg]:pr-16'"
                 :title="workspace.name"
                 :aria-expanded="
                   collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
@@ -259,17 +255,7 @@ async function confirmManagement(name: string): Promise<void> {
                 />
                 <span :class="collapsed ? 'sr-only' : 'truncate'">{{ workspace.name }}</span>
               </Button>
-              <div v-if="!collapsed" class="absolute right-0 flex items-center">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                  :aria-label="`在${workspace.name}中新建对话`"
-                  :disabled="state.managing || !!state.serviceError"
-                  @click="startConversation(workspace.id)"
-                >
-                  <PlusIcon class="size-3.5" aria-hidden="true" />
-                </Button>
+              <div v-if="!collapsed" class="absolute right-3 flex items-center">
                 <SidebarItemMenu
                   :label="workspace.name"
                   workspace
@@ -278,6 +264,18 @@ async function confirmManagement(name: string): Promise<void> {
                   @delete="manageWorkspace(workspace, true, $event)"
                   @new-conversation="startConversation(workspace.id)"
                 />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  :aria-label="`在${workspace.name}中新建对话`"
+                  title="新建对话"
+                  :disabled="state.managing || !!state.serviceError"
+                  @click="startConversation(workspace.id)"
+                >
+                  <SquarePenIcon class="size-3.5" aria-hidden="true" />
+                </Button>
               </div>
             </div>
             <div
@@ -338,7 +336,7 @@ async function confirmManagement(name: string): Promise<void> {
 
         <section aria-labelledby="conversations-heading">
           <div
-            class="mb-2 flex h-7 items-center"
+            class="group/recent mb-2 flex h-7 items-center"
             :class="collapsed ? 'justify-center' : 'gap-2 px-3'"
           >
             <MessageSquareIcon
@@ -358,7 +356,7 @@ async function confirmManagement(name: string): Promise<void> {
               type="button"
               variant="ghost"
               size="icon"
-              class="ml-auto size-6 text-muted-foreground"
+              class="ml-auto size-6 text-muted-foreground opacity-0 group-hover/recent:opacity-100 group-focus-within/recent:opacity-100"
               aria-label="最近中新建对话"
               title="新建对话"
               @click="startConversation()"

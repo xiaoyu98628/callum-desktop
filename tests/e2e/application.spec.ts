@@ -75,11 +75,21 @@ const test = base.extend<{
     try {
       application = await playwright._electron.launch({
         args: [projectRoot],
-        env: { ...process.env, CALLUM_USER_DATA_DIR: profile },
+        env: { ...process.env, CALLUM_USER_DATA_DIR: profile, CALLUM_TEST_BACKGROUND: '1' },
       })
       application.on('close', () => {
         closed = true
       })
+      // 元素获得 DOM 焦点不应激活原生窗口；后台回归保持窗口隐藏。
+      await expect
+        .poll(() =>
+          application!.evaluate(({ BrowserWindow }) =>
+            BrowserWindow.getAllWindows().some(
+              (window) => window.isVisible() || window.isFocused(),
+            ),
+          ),
+        )
+        .toBe(false)
       await use(application)
     } finally {
       if (!closed) await application?.close()
@@ -829,8 +839,9 @@ test.describe('真实 Go 对话交互', () => {
       )
       await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
+      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
       await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
-      await timeline.locator(':scope > div > details > summary').click()
+      await timeline.getByRole('button', { name: '工具详情：已读取文件', exact: true }).click()
       await expect(timeline.getByText('已保存的结果', { exact: true })).toBeVisible()
       await expect(timeline.getByLabel('工具结果', { exact: true })).toContainText(
         'controlled-file',
@@ -846,6 +857,7 @@ test.describe('真实 Go 对话交互', () => {
       )
       await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
+      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
       await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: '仅本次允许' })).not.toBeVisible()
       await expect(input).toBeVisible()
@@ -2257,6 +2269,14 @@ test.describe('Markdown 回答展示', () => {
       modelEndpoint.appendStream('\n\n阅读期间的新段落。'.repeat(15))
       await expect(answer).toContainText('阅读期间的新段落。')
       await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(120)
+      await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
+      await expect
+        .poll(() =>
+          scroller.evaluate(
+            (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+          ),
+        )
+        .toBeLessThan(3)
       modelEndpoint.finishStream()
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
       await expect(answer.locator('pre')).toHaveCount(12)
@@ -2348,7 +2368,7 @@ test.describe('Markdown 回答展示', () => {
       Reflect.get(globalThis, 'callumMarkdownTest').linkFails = false
     })
     const sidebar = page.getByRole('region', { name: '最近', exact: true })
-    const conversation = sidebar.getByRole('button').first()
+    const conversation = sidebar.locator('button[aria-current="page"]')
     const title = await conversation.getAttribute('title')
     if (!title) throw new Error('会话标题不存在')
     await page.getByRole('button', { name: '设置', exact: true }).click()
@@ -2392,7 +2412,9 @@ test.describe('Markdown 回答展示', () => {
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
     await expect(answer.getByRole('heading', { name: '安全展示', exact: true })).toBeVisible()
     await expect(
-      answer.locator('script, img, iframe, svg, style, form, [onclick], [onerror]'),
+      answer
+        .locator('.markdown-message')
+        .locator('script, img, iframe, svg, style, form, [onclick], [onerror]'),
     ).toHaveCount(0)
     await expect(answer.getByRole('link', { name: '网页', exact: true })).toBeVisible()
     expect(
@@ -2482,11 +2504,11 @@ test.describe('Markdown 回答展示', () => {
   })
 })
 
-test.describe('调用过程两层折叠', () => {
+test.describe('Codex 风格过程展示', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
 
-  test('执行自动展开、终态自动收起，重新展开只显示概述，命令详情由用户单独打开', async ({
+  test('运行中显示思考与操作分组，结束收起，标题支持键盘展开', async ({
     desktop,
     modelEndpoint,
   }) => {
@@ -2500,31 +2522,704 @@ test.describe('调用过程两层折叠', () => {
     await input.fill('分阶段过程命令')
     await input.press('Enter')
     await expect(answer).toContainText('我会先运行检查命令')
-    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    // 运行中不要求先打开外层过程，也不提供可折叠的“思考中”按钮。
+    await expect(toggle).toHaveCount(0)
+    await expect(overview.getByLabel('思考内容')).toBeVisible()
+    await expect(overview.getByLabel('思考内容')).toContainText('核对调用结果，再决定下一步。')
+    await expect(overview.getByRole('button', { name: '思考过程', exact: true })).toHaveCount(0)
+    await expect(overview.locator('.activity-shimmer')).toHaveText('思考中')
+    await expect(overview).toHaveCSS('border-left-width', '0px')
+    await expect(overview).toHaveCSS('font-size', '14px')
+    await page.screenshot({
+      path: '.artifacts/screenshots/activity-thinking-light.png',
+      animations: 'disabled',
+    })
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(answer).toContainText('命令检查已完成')
-    await expect(overview).toContainText('已运行命令')
-    await expect(overview).not.toContainText('controlled-fold-output')
-    const command = overview.locator('details[data-step-id]').first()
-    await command.locator(':scope > summary').focus()
-    await command.locator(':scope > summary').press('Enter')
-    await expect(command).toContainText('controlled-fold-output')
-    await command.getByRole('button', { name: '刷新结果', exact: true }).focus()
+    const thinking = overview.getByRole('button', { name: '思考过程', exact: true }).first()
+    await expect(thinking).toHaveAttribute('aria-expanded', 'false')
+    await thinking.focus()
+    await thinking.press('Enter')
+    await expect(thinking).toHaveAttribute('aria-expanded', 'true')
+    await expect(thinking.locator('svg')).toHaveCSS('opacity', '1')
+    await thinking.press('Space')
+    await expect(thinking).toHaveAttribute('aria-expanded', 'false')
+    const group = overview.getByRole('button', { name: /^操作分组：/ })
+    await expect(group).toHaveAttribute('aria-expanded', 'false')
+    await group.press('Enter')
+    const command = overview.getByRole('button', { name: '工具详情：已运行命令', exact: true })
+    await expect(command).toBeVisible()
+    await command.focus()
+    await command.press('Enter')
+    await expect(overview).toContainText('controlled-fold-output')
+    await overview.getByRole('button', { name: '刷新结果', exact: true }).focus()
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(answer).toContainText('已完成项目检查')
+    expect(modelEndpoint!.requests.some((request) => request.reasoningReturned)).toBe(true)
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(toggle).toBeFocused()
     await expect(overview).toHaveCount(0)
+    await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(1)
     await toggle.press('Enter')
     await expect(overview).toContainText('命令检查已完成')
-    await expect(overview.locator('details[open]')).toHaveCount(0)
-    await expect(overview).not.toContainText('controlled-fold-output')
-    for (const name of ['较早步骤', '后续步骤', '从头查看'])
-      await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+    await expect(
+      overview.getByRole('button', { name: '思考过程', exact: true }).first(),
+    ).toContainText('已思考')
+    await expect(overview.locator('[data-tool-details]')).toHaveCount(0)
+    await toggle.click()
+    await expect(overview).toHaveCount(0)
+    await input.focus()
+    await page.mouse.move(1, 1)
+    // 收起且无悬停/焦点时隐藏箭头；标题的完整区域可点击。
+    await expect(toggle.locator('svg')).toHaveCSS('opacity', '0')
+    await toggle.hover()
+    await expect(toggle.locator('svg')).toHaveCSS('opacity', '1')
+    await page.screenshot({
+      path: '.artifacts/screenshots/activity-collapsed-light.png',
+      animations: 'disabled',
+    })
     await toggle.click()
     await toggle.click()
-    await expect(overview.locator('details[open]')).toHaveCount(0)
+    await toggle.click()
+    await expect(overview).toContainText('命令检查已完成')
+    await expect(timeline.locator('.activity-body').first()).toHaveJSProperty('inert', false)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '分阶段过程命令', exact: true })
+      .click()
+    await toggle.click()
+    await overview.getByRole('button', { name: '思考过程', exact: true }).first().click()
+    await expect(overview.getByLabel('思考内容').first()).toBeVisible()
+    await expect(
+      overview.locator('.activity-reveal-enter-active, .activity-reveal-leave-active'),
+    ).toHaveCount(0)
+    await expect
+      .poll(() =>
+        overview
+          .getByLabel('思考文本')
+          .first()
+          .evaluate((element) => element.clientHeight),
+      )
+      .toBeGreaterThan(20)
+    await page.screenshot({
+      path: '.artifacts/screenshots/activity-expanded-dark.png',
+      animations: 'disabled',
+    })
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
   })
+
+  test('概述间合并多项操作，阶段结束自动收起，审批和失败始终可见', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const groups = answer.locator('[data-operation-group]')
+    const firstGroup = groups.first()
+    const firstToggle = firstGroup.getByRole('button', { name: /^操作分组：/ })
+    await expect(input).toBeEnabled()
+    await input.fill('操作分组')
+    await input.press('Enter')
+    await expect(answer).toContainText('我会先核对目录和文件')
+    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
+    modelEndpoint!.continueProcess()
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(answer).toContainText('第一组检查已完成')
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(firstToggle).toContainText('已查看目录 1 次、读取文件 1 次、运行命令 2 次')
+    await expect(firstGroup.getByRole('region', { name: '本组操作', exact: true })).toHaveCount(0)
+    await firstToggle.focus()
+    await firstToggle.press('Enter')
+    const command = firstGroup
+      .getByRole('button', { name: '工具详情：已运行命令', exact: true })
+      .first()
+    await expect(command).toHaveAttribute('aria-expanded', 'false')
+    await expect(firstGroup).not.toContainText('controlled-group-output')
+    await command.press('Enter')
+    await expect(firstGroup).toContainText('controlled-group-output')
+    await firstToggle.press('Space')
+    await firstToggle.press('Enter')
+    await expect(command).toHaveAttribute('aria-expanded', 'false')
+    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
+    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
+    modelEndpoint!.continueProcess()
+    const lastGroup = groups.last()
+    const lastToggle = lastGroup.getByRole('button', { name: /^操作分组：/ })
+    await expect(groups).toHaveCount(2)
+    await expect(lastToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(lastToggle).toContainText('1 项等待审批')
+    await expect(lastToggle).toContainText('1 项失败')
+    await lastToggle.click()
+    await expect(lastToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(lastToggle).toContainText('1 项等待审批')
+    await expect(lastToggle.locator('.text-destructive')).toContainText('1 项失败')
+    await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    await expect(answer).toContainText('操作分组检查已完成。')
+    const toggle = answer.getByRole('button', { name: '调用过程', exact: true })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    await expect(groups).toHaveCount(2)
+    for (const group of await groups.all())
+      await expect(group.getByRole('button', { name: /^操作分组：/ })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      )
+    await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '操作分组', exact: true })
+      .click()
+    await toggle.click()
+    await expect(groups).toHaveCount(2)
+    await expect(lastToggle).toContainText('1 项失败')
+    await expect(lastToggle).not.toContainText('等待审批')
+    await input.fill('操作分组')
+    await input.press('Enter')
+    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
+    modelEndpoint!.continueProcess()
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await firstToggle.click()
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(answer).toContainText('第一组检查已完成')
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(input).toBeEnabled()
+  })
+})
+
+test.describe('独立推理取消与恢复', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test('只有推理时实时展示，停止后保留部分内容，重载后可展开', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('思考等待')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    await expect(answer.getByLabel('思考内容')).toBeVisible()
+    await expect(answer.getByLabel('思考内容')).toContainText('这是独立推理，等待后续结果。')
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(page.getByLabel('思考内容')).toHaveCount(0)
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '思考等待', exact: true })
+      .click()
+    await expect(answer.getByLabel('思考内容')).toContainText('这是独立推理，等待后续结果。')
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(answer.getByRole('button', { name: '调用过程', exact: true })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await page.reload()
+    await expect(input).toBeEnabled()
+    // 重新选择持久化会话，验证内容不是依赖内存中的增量缓存。
+    await page.getByRole('button', { name: '思考等待', exact: true }).click()
+    await answer.getByRole('button', { name: '调用过程', exact: true }).click()
+    await answer.getByRole('button', { name: '思考过程', exact: true }).click()
+    await expect(answer.getByLabel('思考内容')).toContainText('这是独立推理，等待后续结果。')
+    await expect(answer.getByLabel('思考内容')).toContainText('执行未完成')
+  })
+})
+
+test.describe('思考滚动与减少动态效果', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test('长思考限制高度并渐隐，结束默认收起，减少动态效果时无动画', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('思考长内容')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const viewport = answer.getByLabel('思考文本', { exact: true })
+    await expect(viewport).toHaveCSS('max-height', '140px')
+    await expect(viewport).toHaveAttribute('data-overflow', 'true')
+    await expect(viewport).toHaveAttribute('data-at-end', 'true')
+    expect(
+      await viewport.evaluate((element) => element.getBoundingClientRect().height),
+    ).toBeLessThanOrEqual(140)
+    expect(await viewport.evaluate((element) => getComputedStyle(element).maskImage)).toContain(
+      'linear-gradient',
+    )
+    await viewport.hover()
+    await page.mouse.wheel(0, -10000)
+    await expect(viewport).toHaveAttribute('data-at-start', 'true')
+    await expect(viewport).toHaveAttribute('data-at-end', 'false')
+    modelEndpoint!.appendReasoning('\n\n阅读期间收到的新思考。')
+    await expect(viewport).toContainText('阅读期间收到的新思考。')
+    await expect(viewport).toHaveAttribute('data-at-start', 'true')
+    await page.screenshot({
+      path: '.artifacts/screenshots/reasoning-long-preview.png',
+      animations: 'disabled',
+    })
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    const toggle = answer.getByRole('button', { name: '调用过程', exact: true })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await toggle.click()
+    const thinking = answer.getByRole('button', { name: '思考过程', exact: true })
+    await expect(thinking).toHaveAttribute('aria-expanded', 'false')
+    await thinking.click()
+    await expect(viewport).toBeVisible()
+    await expect(thinking.locator('svg')).toHaveCSS('transition-duration', '0s')
+    await expect(thinking).toContainText('已思考')
+    await thinking.press('Space')
+    await expect(viewport).toHaveCount(0)
+  })
+})
+
+test.describe('过程自动读取与固定分隔线', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('长过程自动双向读取，无分页提示，展开和收起都保留标题下的分隔线', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('长过程折叠')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    await expect(answer).toContainText('长过程检查已完成。')
+    const timeline = answer.getByRole('region', { name: '调用过程', exact: true })
+    const toggle = timeline.getByRole('button', { name: '调用过程', exact: true })
+    const divider = timeline.locator(':scope > .activity-disclosure > .activity-separator')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(timeline.getByRole('region', { name: '过程概述', exact: true })).toHaveCount(0)
+    await toggle.scrollIntoViewIfNeeded()
+    await expect(divider).toHaveCSS('border-top-width', '1px')
+    const collapsedHeader = await toggle.boundingBox()
+    const collapsed = await divider.boundingBox()
+    expect(collapsed).not.toBeNull()
+    await toggle.click()
+    const overview = timeline.getByRole('region', { name: '过程概述', exact: true })
+    await expect(overview).toBeVisible()
+    await expect(timeline.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    const expanded = await divider.boundingBox()
+    expect(expanded).not.toBeNull()
+    expect(expanded!.width).toBe(collapsed!.width)
+    const header = await toggle.boundingBox()
+    const collapsedGap = collapsed!.y - (collapsedHeader!.y + collapsedHeader!.height)
+    const expandedGap = expanded!.y - (header!.y + header!.height)
+    expect(Math.abs(expandedGap - collapsedGap)).toBeLessThan(1)
+    expect(expandedGap).toBeGreaterThanOrEqual(0)
+    expect(expandedGap).toBeLessThanOrEqual(8)
+    await page.screenshot({
+      path: '.artifacts/screenshots/process-divider-expanded.png',
+      animations: 'disabled',
+    })
+    await expect(
+      timeline.getByRole('button', { name: /更多过程|更早的过程|后续步骤|较早步骤|从头查看/ }),
+    ).toHaveCount(0)
+    await expect(timeline).not.toContainText('部分记录')
+    await expect(timeline).not.toContainText('过程分页')
+
+    const conversation = await page.evaluate(async () => {
+      const result = await window.callum.getChatOverview(0)
+      if (!result.ok || !result.value.conversations[0]) throw new Error('会话不存在')
+      return result.value.conversations[0].id
+    })
+    const expected = await page.evaluate(async (conversationId) => {
+      const detail = await window.callum.getConversation(conversationId)
+      if (!detail.ok || !detail.value.runs[0]) throw new Error('执行不存在')
+      const runId = detail.value.runs[0].id
+      const ids: string[] = []
+      let after = 0
+      for (;;) {
+        const result = await window.callum.listRunSteps(conversationId, runId, after)
+        if (!result.ok) throw new Error(result.error)
+        ids.push(
+          ...result.value.steps.filter((step) => step.type === 'tool_call').map((step) => step.id),
+        )
+        if (!result.value.hasMore) return ids
+        after = result.value.nextSequence
+      }
+    }, conversation)
+    expect(expected).toHaveLength(220)
+    const group = timeline.locator('[data-operation-group]').first()
+    const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+    // 超过一个窗口的长组不把局部数量伪装成整组次数。
+    await expect(groupToggle).toContainText('操作记录')
+    await expect(groupToggle).not.toContainText('次')
+    await groupToggle.click()
+    await expect(
+      group.getByRole('button', { name: '工具详情：已读取文件', exact: true }).first(),
+    ).toBeVisible()
+    await expect(group.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    const seen = new Set<string>()
+    const loaded = async () =>
+      overview
+        .locator('[data-step-id]')
+        .evaluateAll((elements) =>
+          elements
+            .filter((element) => !element.querySelector('[data-step-id]'))
+            .map((element) => element.getAttribute('data-step-id')!),
+        )
+    ;(await loaded()).forEach((id) => seen.add(id))
+    const scroller = page.locator('[data-conversation-scroll]')
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
+    await expect
+      .poll(async () => {
+        await scroller.evaluate((element) => {
+          element.scrollTop = element.scrollHeight
+        })
+        const ids = await loaded()
+        ids.forEach((id) => seen.add(id))
+        expect(ids.length).toBeLessThanOrEqual(150)
+        return ids.includes(expected.at(-1)!)
+      })
+      .toBe(true)
+    ;(await loaded()).forEach((id) => seen.add(id))
+    expect((await loaded()).length).toBeLessThanOrEqual(150)
+    // 到顶后即使没有更大的滚动空间，向上滚轮仍能触发前一批读取。
+    await scroller.evaluate((element) => {
+      element.scrollTop = 0
+    })
+    await groupToggle.hover()
+    await page.mouse.wheel(0, -10000)
+    await expect
+      .poll(async () => {
+        await scroller.evaluate((element) => {
+          element.scrollTop = 0
+        })
+        const ids = await loaded()
+        ids.forEach((id) => seen.add(id))
+        expect(ids.length).toBeLessThanOrEqual(150)
+        return ids.includes(expected[0]!)
+      })
+      .toBe(true)
+    ;(await loaded()).forEach((id) => seen.add(id))
+    expect((await loaded()).length).toBeLessThanOrEqual(150)
+    expect(expected.every((id) => seen.has(id))).toBe(true)
+    await expect(overview.getByRole('alert')).toHaveCount(0)
+    await toggle.click()
+    await expect(overview).toHaveCount(0)
+    await expect(divider).toBeVisible()
+    await page.screenshot({
+      path: '.artifacts/screenshots/process-divider-collapsed.png',
+      animations: 'disabled',
+    })
+    expect(errors).toEqual([])
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused()),
+      ),
+    ).toBe(false)
+  })
+})
+
+test.describe('运行中状态分隔线', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('已停止的上一轮和正在处理的下一轮都显示横线，完成后不重复', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    async function expectLiveLine(): Promise<void> {
+      const status = answers.last().getByRole('group', { name: '执行状态', exact: true })
+      await expect(status).toContainText('正在处理')
+      await expect(status).toHaveCount(1)
+      const timeline = answers.last().getByRole('region', { name: '调用过程', exact: true })
+      const header = timeline.locator(':scope > .activity-disclosure > .activity-heading')
+      const divider = timeline.locator(':scope > .activity-disclosure > .activity-separator')
+      await expect(header.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(1)
+      await expect(divider).toHaveCSS('border-top-width', '1px')
+      const position = await timeline.evaluate((element) => {
+        const header = element
+          .querySelector(':scope > .activity-disclosure > .activity-heading')!
+          .getBoundingClientRect()
+        const divider = element
+          .querySelector(':scope > .activity-disclosure > .activity-separator')!
+          .getBoundingClientRect()
+        const rows = element.querySelector('.activity-rows')!.getBoundingClientRect()
+        return {
+          headerBottom: header.bottom,
+          dividerY: divider.y,
+          dividerBottom: divider.bottom,
+          rowsY: rows.y,
+          dividerWidth: divider.width,
+          width: element.getBoundingClientRect().width,
+        }
+      })
+      expect(position.headerBottom).toBeLessThanOrEqual(position.dividerY)
+      expect(position.dividerBottom).toBeLessThanOrEqual(position.rowsY)
+      expect(Math.abs(position.dividerWidth - position.width)).toBeLessThan(1)
+    }
+    await expect(input).toBeEnabled()
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(answers.last().getByLabel('思考内容')).toBeVisible()
+    await expectLiveLine()
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(
+      answers.first().getByRole('group', { name: '执行状态', exact: true }),
+    ).toContainText('生成已停止')
+    const previousLine = answers.first().locator('.activity-separator')
+    await expect(previousLine).toBeVisible()
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(answers).toHaveCount(2)
+    await expect(answers.last().getByLabel('思考内容')).toBeVisible()
+    await expectLiveLine()
+    await expect(previousLine).toBeVisible()
+    // 上一轮展开后，当前运行中的横线和历史分隔线均继续存在。
+    await answers.first().getByRole('button', { name: '调用过程', exact: true }).click()
+    await expect(
+      answers.first().getByRole('region', { name: '过程概述', exact: true }),
+    ).toBeVisible()
+    await expect(previousLine).toBeVisible()
+    await expectLiveLine()
+    await answers
+      .last()
+      .getByRole('group', { name: '执行状态', exact: true })
+      .scrollIntoViewIfNeeded()
+    await page.screenshot({
+      path: '.artifacts/screenshots/process-running-divider.png',
+      animations: 'disabled',
+    })
+    const liveOffset = await answers
+      .last()
+      .evaluate(
+        (element) =>
+          element.querySelector('.activity-heading')!.getBoundingClientRect().y -
+          element.getBoundingClientRect().y,
+      )
+    modelEndpoint!.finishStream()
+    await expect(
+      answers.last().getByRole('group', { name: '执行状态', exact: true }),
+    ).toContainText('已处理')
+    const finishedOffset = await answers
+      .last()
+      .evaluate(
+        (element) =>
+          element.querySelector('.activity-heading')!.getBoundingClientRect().y -
+          element.getBoundingClientRect().y,
+      )
+    expect(Math.abs(finishedOffset - liveOffset)).toBeLessThan(1)
+    await expect(answers.last().locator('.activity-live-status')).toHaveCount(0)
+    await expect(answers.last().locator('.activity-separator')).toHaveCount(1)
+    await expect(answers.last().locator('.activity-separator')).toBeVisible()
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused()),
+      ),
+    ).toBe(false)
+  })
+})
+
+test.describe('长任务自动压缩', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('跨过请求消息边界后自动压缩并继续，原始工具结果与分隔线保留', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    modelEndpoint!.pauseCompaction()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('自动压缩长任务')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const compression = answer.locator('[data-compaction-status]')
+    await expect.poll(() => modelEndpoint!.pendingCompaction, { timeout: 20_000 }).toBe(1)
+    await expect(compression).toHaveCount(1)
+    await expect(compression).toHaveText('正在压缩上下文 · 可能需要几分钟')
+    await expect(compression.getByRole('button')).toHaveCount(0)
+    await expect(compression.locator('.animate-spin, .activity-chevron')).toHaveCount(0)
+    expect(
+      await compression.evaluate((element) => element.closest('[data-operation-group]') === null),
+    ).toBe(true)
+    const aligned = await answer.evaluate((element) => ({
+      row: element.querySelector('[data-compaction-status]')!.getBoundingClientRect().x,
+      content: element.querySelector('.activity-rows')!.getBoundingClientRect().x,
+      status: element.querySelector('.activity-heading')!.getBoundingClientRect().y,
+      body: element.querySelector('.activity-rows')!.getBoundingClientRect().y,
+    }))
+    expect(Math.abs(aligned.row - aligned.content)).toBeLessThan(1)
+    expect(aligned.status).toBeLessThan(aligned.body)
+    await compression.scrollIntoViewIfNeeded()
+    await page.screenshot({
+      path: '.artifacts/screenshots/compaction-running-light.png',
+      animations: 'disabled',
+    })
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '自动压缩长任务', exact: true })
+      .click()
+    await expect(compression).toHaveText('正在压缩上下文 · 可能需要几分钟')
+    modelEndpoint!.finishCompaction()
+    await expect.poll(() => modelEndpoint!.pendingCompactionAnswer).toBe(1)
+    await expect(compression).toHaveText('上下文已自动压缩')
+    await expect(compression.locator('.activity-shimmer')).toHaveCount(0)
+    await compression.scrollIntoViewIfNeeded()
+    await page.screenshot({
+      path: '.artifacts/screenshots/compaction-completed-dark.png',
+      animations: 'disabled',
+    })
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+    modelEndpoint!.finishCompactionTask()
+    await expect(answer).toContainText('长任务自动压缩完成。', { timeout: 20_000 })
+    await expect(answer.locator('.activity-separator')).toHaveCount(1)
+    const toggle = answer.getByRole('button', { name: '调用过程', exact: true })
+    await toggle.click()
+    const scroller = page.locator('[data-conversation-scroll]')
+    // 压缩记录可能处于历史分页之后，滚动时再读取，原始窗口仍保持有界。
+    await expect
+      .poll(async () => {
+        await scroller.evaluate((element) => {
+          element.scrollTop = element.scrollHeight
+        })
+        if (!(await compression.count())) {
+          await scroller.hover()
+          await page.mouse.wheel(0, 10000)
+        }
+        return compression.count()
+      })
+      .toBe(1)
+    await expect(compression).toHaveText('上下文已自动压缩')
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '自动压缩长任务', exact: true })
+      .click()
+    await toggle.click()
+    await expect
+      .poll(async () => {
+        await scroller.evaluate((element) => {
+          element.scrollTop = element.scrollHeight
+        })
+        if (!(await compression.count())) {
+          await scroller.hover()
+          await page.mouse.wheel(0, 10000)
+        }
+        return compression.count()
+      })
+      .toBe(1)
+    await expect(compression).toHaveText('上下文已自动压缩')
+    const requests = modelEndpoint!.requests
+    expect(requests.some((request) => request.summaryRequest)).toBe(true)
+    expect(requests.some((request) => request.stream && request.contextSummary)).toBe(true)
+    expect(requests.every((request) => request.messageCount <= 256)).toBe(true)
+    const audit = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.conversations[0]) throw new Error('会话不存在')
+      const conversationId = overview.value.conversations[0].id
+      const detail = await window.callum.getConversation(conversationId)
+      if (!detail.ok || !detail.value.runs[0]) throw new Error('执行不存在')
+      const runId = detail.value.runs[0].id
+      let after = 0,
+        tools = 0,
+        checkpoints = 0
+      for (;;) {
+        const result = await window.callum.listRunSteps(conversationId, runId, after)
+        if (!result.ok) throw new Error(result.error)
+        tools += result.value.steps.filter(
+          (step) => step.type === 'tool_call' && step.status === 'completed',
+        ).length
+        checkpoints += result.value.steps.filter(
+          (step) => step.type === 'context_compression' && step.status === 'completed',
+        ).length
+        if (!result.value.hasMore) return { tools, checkpoints }
+        after = result.value.nextSequence
+      }
+    })
+    expect(audit.tools).toBe(280)
+    expect(audit.checkpoints).toBeGreaterThan(0)
+    expect(errors).toEqual([])
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused()),
+      ),
+    ).toBe(false)
+  })
+})
+
+test.describe('上下文压缩异常状态', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  for (const outcome of ['failure', 'cancel', 'disconnect'] as const) {
+    test(`压缩${outcome}保留实际状态，不显示成功或普通操作分组`, async ({
+      desktop,
+      modelEndpoint,
+    }) => {
+      const page = await desktop.firstWindow()
+      modelEndpoint!.pauseCompaction()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('自动压缩长任务')
+      await input.press('Enter')
+      const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+      const compression = answer.locator('[data-compaction-status]')
+      await expect.poll(() => modelEndpoint!.pendingCompaction, { timeout: 20_000 }).toBe(1)
+      await expect(compression).toHaveText('正在压缩上下文 · 可能需要几分钟')
+      if (outcome === 'disconnect') {
+        await interruptTestBackend(desktop)
+        await expect(compression).toContainText('连接已断开 · 上下文压缩状态待确认')
+      } else {
+        if (outcome === 'failure') modelEndpoint!.finishCompaction(false)
+        else await page.getByRole('button', { name: '停止生成', exact: true }).click()
+        await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+          outcome === 'failure' ? '回答失败' : '生成已停止',
+        )
+        await answer.getByRole('button', { name: '调用过程', exact: true }).click()
+        await expect
+          .poll(async () => {
+            await page.locator('[data-conversation-scroll]').evaluate((element) => {
+              element.scrollTop = element.scrollHeight
+            })
+            if (!(await compression.count())) {
+              await page.locator('[data-conversation-scroll]').hover()
+              await page.mouse.wheel(0, 10000)
+            }
+            return compression.count()
+          })
+          .toBe(1)
+        await expect(compression).toContainText(
+          outcome === 'failure' ? '上下文压缩失败' : '上下文压缩已取消',
+        )
+      }
+      await expect(compression).not.toContainText('上下文已自动压缩')
+      await expect(compression.locator('.activity-shimmer, .animate-spin')).toHaveCount(0)
+      await expect(compression.getByRole('button')).toHaveCount(0)
+      expect(
+        await desktop.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused()),
+        ),
+      ).toBe(false)
+    })
+  }
 })

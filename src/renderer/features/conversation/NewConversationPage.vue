@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
-import { ArrowUpIcon, LaptopIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  LaptopIcon,
+  LoaderCircleIcon,
+  SparklesIcon,
+  SquareIcon,
+} from '@lucide/vue'
 import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
@@ -8,7 +15,6 @@ import { useConversations } from './useConversations'
 import ModelSelector from './ModelSelector.vue'
 import ProjectSelector from './ProjectSelector.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
-import RunStatus from './RunStatus.vue'
 import RunTimeline from './RunTimeline.vue'
 import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
@@ -102,6 +108,7 @@ const messageInput = ref<HTMLTextAreaElement | null>(null)
 let inputResizeObserver: ResizeObserver | undefined
 let inputResizeFrame: number | undefined
 const follow = ref(true)
+const awayFromLatest = ref(false)
 const availableModel = computed(() => state.models.some((item) => item.id === state.modelId))
 const composerNotice = computed(() =>
   state.loadingList || state.modelsLoading
@@ -158,23 +165,84 @@ function keydown(event: KeyboardEvent): void {
     if (canSend.value) void send()
   }
 }
-function trackScroll(): void {
+function updateDistance(): void {
   const element = scroller.value
-  if (element) follow.value = element.scrollHeight - element.scrollTop - element.clientHeight < 100
+  awayFromLatest.value =
+    !!element && element.scrollHeight - element.scrollTop - element.clientHeight > 24
+}
+function trackScroll(): void {
+  updateDistance()
+  const element = scroller.value
+  if (!element) return
+  if (scrollFrame !== undefined) {
+    if (
+      lastScrollTop !== undefined &&
+      element.scrollHeight === lastScrollHeight &&
+      Math.abs(element.scrollTop - lastScrollTop) > 2
+    )
+      pauseFollowing()
+    return
+  }
+  follow.value = element.scrollHeight - element.scrollTop - element.clientHeight < 24
+}
+function stopFollowing(event: WheelEvent): void {
+  if (event.deltaY < 0) pauseFollowing()
+}
+function pauseFollowing(): void {
+  follow.value = false
+  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
+  scrollFrame = undefined
+}
+function scrollKey(event: KeyboardEvent): void {
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) pauseFollowing()
 }
 function showLatest(): void {
   follow.value = true
-  if (state.selectedId) void openConversation(state.selectedId)
+  if (state.historical && state.selectedId) void openConversation(state.selectedId)
+  else scrollToBottom()
 }
 let scrollFrame: number | undefined
+let previousFrame = 0
+let lastScrollTop: number | undefined
+// 排版改变高度或浏览器夹紧滚动位置时不视为用户操作；输入事件可立即停止跟随。
+let lastScrollHeight = 0
 function scrollToBottom(): void {
-  if (scrollFrame !== undefined) return
-  // 消息通知与 Worker 回调可能在同一帧到达，只在布局更新后读写一次滚动位置。
-  scrollFrame = requestAnimationFrame(() => {
-    scrollFrame = undefined
-    if (follow.value && !state.historical && scroller.value)
-      scroller.value.scrollTop = scroller.value.scrollHeight
-  })
+  updateDistance()
+  if (scrollFrame !== undefined || !follow.value || state.historical) return
+  previousFrame = 0
+  lastScrollTop = scroller.value?.scrollTop
+  lastScrollHeight = scroller.value?.scrollHeight ?? 0
+  const advance = (time: number): void => {
+    const element = scroller.value
+    if (!element || !follow.value || state.historical) {
+      scrollFrame = undefined
+      return
+    }
+    if (
+      lastScrollTop !== undefined &&
+      element.scrollHeight === lastScrollHeight &&
+      Math.abs(element.scrollTop - lastScrollTop) > 2
+    ) {
+      pauseFollowing()
+      return
+    }
+    const target = element.scrollHeight - element.clientHeight
+    const distance = target - element.scrollTop
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const elapsed = previousFrame ? Math.min(time - previousFrame, 64) : 16
+    previousFrame = time
+    element.scrollTop =
+      reduced || Math.abs(distance) < 1
+        ? target
+        : element.scrollTop + distance * (1 - Math.exp(-elapsed / 65))
+    lastScrollTop = element.scrollTop
+    lastScrollHeight = element.scrollHeight
+    updateDistance()
+    if (!reduced && Math.abs(target - element.scrollTop) >= 1)
+      scrollFrame = requestAnimationFrame(advance)
+    else scrollFrame = undefined
+  }
+  scrollFrame = requestAnimationFrame(advance)
 }
 function resizeMessageInput(): void {
   const input = messageInput.value
@@ -242,6 +310,7 @@ watch(
   () => state.selectedId,
   () => {
     follow.value = true
+    awayFromLatest.value = false
     state.directoriesOffset = 0
     state.directoriesError = ''
   },
@@ -271,11 +340,26 @@ onScopeDispose(() => {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col" aria-label="对话内容">
+  <section class="relative flex h-full min-h-0 flex-col" aria-label="对话内容">
+    <Button
+      v-if="state.selectedId && !follow && awayFromLatest && !state.historical"
+      variant="outline"
+      size="sm"
+      class="absolute right-8 top-3 z-10 gap-1.5 rounded-full shadow-sm"
+      aria-label="回到最新消息"
+      @click="showLatest"
+    >
+      <ArrowDownIcon class="size-4" aria-hidden="true" />回到最新消息
+    </Button>
     <div
       ref="scroller"
-      class="min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-6 lg:px-12"
+      data-conversation-scroll
+      class="min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-6 [overflow-anchor:none] lg:px-12"
       @scroll="trackScroll"
+      @wheel.passive="stopFollowing"
+      @touchstart.passive="pauseFollowing"
+      @pointerdown="pauseFollowing"
+      @keydown="scrollKey"
     >
       <div class="mx-auto w-full max-w-3xl">
         <div v-if="!state.selectedId" class="flex flex-col items-center pb-8 pt-[min(16vh,140px)]">
@@ -331,13 +415,9 @@ onScopeDispose(() => {
                 : 'py-1'
             "
           >
-            <RunStatus
-              v-if="item.role === 'assistant'"
-              :run="messageRuns.get(item.id) ?? null"
-              :connected="!state.serviceError"
-            />
             <RunTimeline
-              v-if="item.role === 'assistant'"
+              v-if="item.role === 'assistant' && messageRuns.has(item.id)"
+              :run="messageRuns.get(item.id) ?? null"
               :conversation-id="item.conversationId"
               :run-id="item.runId"
               :snapshots="state.detail?.steps ?? []"
@@ -345,7 +425,7 @@ onScopeDispose(() => {
               :expanded="expandedRunId === item.runId"
               :active="activeRun?.id === item.runId"
               @expand="expandedRunId = $event ? item.runId : null"
-              @inspect="follow = false"
+              @inspect="pauseFollowing"
               @changed="scrollToBottom"
             />
             <MarkdownMessage

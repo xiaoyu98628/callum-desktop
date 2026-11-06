@@ -28,3 +28,7 @@ resources/backend/
 本目录是主进程需要的独立程序资源，不是渲染界面的 `public` 目录。当前渲染界面根目录为 `src/renderer`，其默认公共目录为 `src/renderer/public`。
 
 关于可执行程序在 ASAR 外分发的原因，参见 [electron-vite 分发说明](https://electron-vite.org/guide/distribution)。
+
+随附程序已接入独立推理：Chat Completions 的 `reasoning_content` 映射为模型步骤的 `reasoning.delta` 与统一 `output.reasoning`，支持取消和历史恢复，以及工具循环中的字段回传。推理计入内容与输入预算边界；不改写实际 usage，不增加数据库表或迁移。旧记录缺少统一字段时保持缺失。
+
+随附程序已接入长工具链自动压缩：统一预检 Token、消息数量、上下文 JSON 和实际请求字节，在模型请求前及工具结果追加后尝试压缩较早完整批次。当前问题与正在执行的批次保留原文，步骤摘要携带来源范围、批次指纹及父检查点，校验后事务生效；失败保留原记录和旧摘要。旧长轨迹及历史消息支持有界恢复和分批压缩，重启继续时不重放工具，未知操作事实仍独立保留。复用现有步骤表，不增加迁移；验证使用受控模型及独立临时数据目录。

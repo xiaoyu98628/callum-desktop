@@ -32,7 +32,16 @@ export async function startApplication(): Promise<void> {
     app.setPath('sessionData', canonicalDirectory)
   }
 
+  // 后台模式只用于显式隔离数据目录的开发测试，不改变发布应用行为。
+  const backgroundTest =
+    !app.isPackaged && !!isolatedUserDataDirectory && process.env.CALLUM_TEST_BACKGROUND === '1'
+  if (backgroundTest) {
+    app.commandLine.appendSwitch('disable-renderer-backgrounding')
+    app.commandLine.appendSwitch('disable-background-timer-throttling')
+  }
+
   await app.whenReady()
+  if (backgroundTest && process.platform === 'darwin') app.dock?.hide()
   const rendererUrl = resolveRendererUrl(
     app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL,
   )
@@ -76,8 +85,10 @@ export async function startApplication(): Promise<void> {
 
   const openWindow = async (): Promise<void> => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-      mainWindow.focus()
+      if (!backgroundTest) {
+        mainWindow.show()
+        mainWindow.focus()
+      }
       return
     }
     // 在 loadURL 发起前即可通过 IPC 校验来源，避免界面启动时的竞态。
@@ -88,7 +99,7 @@ export async function startApplication(): Promise<void> {
     })
     try {
       await window.loadURL(rendererUrl)
-      if (!window.isDestroyed()) window.show()
+      if (!window.isDestroyed() && !backgroundTest) window.show()
     } catch (error) {
       // 用户在页面载入时关闭窗口会中断导航，不应因此退出整个 macOS 应用。
       if (window.isDestroyed()) return

@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue'
-import {
-  ChevronDownIcon,
-  FileTextIcon,
-  LoaderCircleIcon,
-  PencilIcon,
-  TerminalIcon,
-} from '@lucide/vue'
-import type { ChatStep, StepDetails } from '@shared/chat'
+import { FileTextIcon, LoaderCircleIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
+import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
 import { STEP_PAGE_SIZE, stepLabel, stepParameters, stepResult } from '@shared/steps'
 import { TimelineWindow } from '@shared/timeline-window'
 import type { TimelineStep } from '@shared/timeline-window'
+import { currentOperationGroup, groupTimeline } from '@shared/timeline-groups'
 import { getDesktopApi } from '@/lib/desktop'
 import MarkdownMessage from './MarkdownMessage.vue'
+import ActivityDisclosure from './ActivityDisclosure.vue'
+import ReasoningItem from './ReasoningItem.vue'
+import OperationGroup from './OperationGroup.vue'
+import RunStatus from './RunStatus.vue'
+import CompactionStatus from './CompactionStatus.vue'
 
 const props = defineProps<{
+  run: ChatRun | null
   conversationId: string
   runId: string
   snapshots: ChatStep[]
@@ -23,8 +24,10 @@ const props = defineProps<{
   active: boolean
 }>()
 const emit = defineEmits<{ changed: []; inspect: []; expand: [value: boolean] }>()
-const trigger = ref<HTMLButtonElement | null>(null)
+const showContent = computed(() => props.active || props.expanded)
 const viewport = ref<HTMLElement | null>(null)
+const beforeRows = ref<HTMLElement | null>(null),
+  afterRows = ref<HTMLElement | null>(null)
 const rows = shallowRef<TimelineStep[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -43,13 +46,28 @@ const visible = computed(() =>
     (step) =>
       step.type !== 'model_call' ||
       (step.purpose === 'answer' &&
-        step.commentary &&
-        (step.text ||
-          step.textTruncated ||
-          commentVersions.get(step.id) !== version(step) ||
+        (step.reasoning ||
+          step.reasoningTruncated ||
+          (step.commentary && step.text) ||
           failures.value[step.id])),
   ),
 )
+const items = computed(() => groupTimeline(visible.value))
+const currentGroupId = computed(() => {
+  if (!props.active) return null
+  const latest = [...rows.value, ...props.snapshots]
+    .filter(
+      (step) =>
+        step.runId === props.runId &&
+        step.conversationId === props.conversationId &&
+        (step.type !== 'model_call' || step.purpose === 'answer'),
+    )
+    .reduce<ChatStep | undefined>(
+      (last, step) => (!last || step.sequence > last.sequence ? step : last),
+      undefined,
+    )
+  return currentOperationGroup(items.value, latest)
+})
 const live = computed(() =>
   props.snapshots.find(
     (step) =>
@@ -65,15 +83,23 @@ let generation = 0,
   readingComments = false,
   readingDetail = false
 let scrollFrame: number | undefined
-let lastTop = 0,
-  direction: 'up' | 'down' = 'down'
 let lastAction: 'start' | 'next' | 'previous' = 'start'
+let browsingHistory = false
+let navigationRoot: HTMLElement | null = null
+let edgeObserver: IntersectionObserver | undefined
+let sizeObserver: ResizeObserver | undefined
+let nearStart = false,
+  nearEnd = false,
+  userNavigated = false
+let direction: 'previous' | 'next' = 'next'
+let lastScrollTop = 0
+let lastScrollHeight = 0
 
 function fail(value: unknown): string {
   return value instanceof Error ? value.message : '调用记录读取失败，请重试。'
 }
 function alive(token: number): boolean {
-  return !disposed && props.expanded && token === generation
+  return !disposed && showContent.value && token === generation
 }
 function current(step: ChatStep): boolean {
   return rows.value.some((row) => row.id === step.id && version(row) === version(step))
@@ -82,14 +108,8 @@ function data(step: ChatStep): StepDetails | undefined {
   const entry = detail.value
   return entry?.id === step.id && entry.version === version(step) ? entry.value : undefined
 }
-function setScroll(top: number): void {
-  if (!viewport.value) return
-  viewport.value.scrollTop = top
-  lastTop = viewport.value.scrollTop
-}
-function focusBeforeHiding(): void {
-  if (viewport.value?.contains(document.activeElement))
-    trigger.value?.focus({ preventScroll: true })
+function scroller(): HTMLElement | null {
+  return viewport.value?.closest<HTMLElement>('[data-conversation-scroll]') ?? null
 }
 function updateRows(): void {
   if (!records) return
@@ -118,11 +138,13 @@ function updateRows(): void {
   emit('changed')
 }
 function anchor(): { id: string; top: number; height: number; scroll: number } | null {
-  const root = viewport.value
-  if (!root) return null
+  const root = scroller()
+  if (!root || !viewport.value) return null
   const bounds = root.getBoundingClientRect()
-  const row = [...root.querySelectorAll<HTMLElement>('[data-step-id]')].find(
-    (element) => element.getBoundingClientRect().bottom > bounds.top,
+  const row = [...viewport.value.querySelectorAll<HTMLElement>('[data-step-id]')].find(
+    (element) =>
+      !element.querySelector('[data-step-id]') &&
+      element.getBoundingClientRect().bottom > bounds.top,
   )
   return row
     ? {
@@ -135,34 +157,135 @@ function anchor(): { id: string; top: number; height: number; scroll: number } |
 }
 async function restore(saved: ReturnType<typeof anchor>, action: string): Promise<void> {
   await nextTick()
-  const root = viewport.value
+  const root = scroller()
   if (!root) return
-  if (props.active && followTail.value) setScroll(root.scrollHeight)
+  if (props.active && followTail.value) emit('changed')
   else if (saved) {
     const element = [...root.querySelectorAll<HTMLElement>('[data-step-id]')].find(
       (row) => row.dataset.stepId === saved.id,
     )
-    if (element) setScroll(root.scrollTop + element.getBoundingClientRect().top - saved.top)
-    else if (action === 'previous') setScroll(saved.scroll + root.scrollHeight - saved.height)
+    if (element) root.scrollTop += element.getBoundingClientRect().top - saved.top
+    else if (action === 'previous') root.scrollTop = saved.scroll + root.scrollHeight - saved.height
+    lastScrollTop = root.scrollTop
+    lastScrollHeight = root.scrollHeight
   }
 }
+// 由主消息区滚动和不可见边缘触发读取；方向用于防止有界窗口在两端反复切换。
 function schedule(): void {
-  if (scrollFrame !== undefined || !props.expanded || disposed) return
+  if (scrollFrame !== undefined || !showContent.value || disposed) return
   scrollFrame = requestAnimationFrame(() => {
     scrollFrame = undefined
-    const root = viewport.value
-    if (!root || loading.value || error.value || !props.connected) return
-    const bottom = root.scrollHeight - root.scrollTop - root.clientHeight
-    if (props.active && followTail.value && hasMore.value) void load('next')
-    else if (
-      root.scrollTop < 60 &&
-      hasPrevious.value &&
-      (direction === 'up' || root.scrollHeight <= root.clientHeight + 2)
-    )
+    if (loading.value || error.value || !props.connected) return
+    if (props.active && !browsingHistory && hasMore.value) {
+      void load('next')
+      return
+    }
+    if (direction === 'previous' && userNavigated && nearStart && hasPrevious.value) {
       void load('previous')
-    else if (bottom < 80 && hasMore.value) void load('next')
+      return
+    }
+    // 折叠的长组最多预取一个窗口，展开或实际滚动后再继续，避免后台扫完整段历史。
+    const readingGroup = !!viewport.value?.querySelector(
+      '[data-operation-group][data-expanded="true"]',
+    )
+    const canAdvance =
+      rows.value.length < STEP_PAGE_SIZE * 3 ||
+      userNavigated ||
+      readingGroup ||
+      !items.value.some((item) => item.kind === 'operations')
+    if (direction === 'next' && nearEnd && hasMore.value && canAdvance) void load('next')
   })
 }
+function scroll(): void {
+  const root = navigationRoot
+  if (!root) return
+  // 操作组收起会夹紧 scrollTop；布局引起的滚动不能触发历史回读。
+  if (
+    root.scrollHeight === lastScrollHeight &&
+    (!props.active || !followTail.value || browsingHistory)
+  ) {
+    if (root.scrollTop < lastScrollTop - 1) {
+      direction = 'previous'
+      userNavigated = true
+    } else if (root.scrollTop > lastScrollTop + 1) direction = 'next'
+  }
+  lastScrollTop = root.scrollTop
+  lastScrollHeight = root.scrollHeight
+  schedule()
+}
+function pointerNavigation(): void {
+  // 滚动条拖动和触屏阅读同样属于显式用户操作，允许据后续滚动定位历史。
+  followTail.value = false
+  userNavigated = true
+}
+function wheel(event: WheelEvent): void {
+  if (
+    event.target instanceof Element &&
+    event.target.closest('.reasoning-scroll, [data-tool-details]')
+  )
+    return
+  if (!event.deltaY) return
+  direction = event.deltaY < 0 ? 'previous' : 'next'
+  userNavigated = true
+  schedule()
+}
+function key(event: KeyboardEvent): void {
+  if (
+    event.target instanceof Element &&
+    event.target.closest(
+      'input, textarea, [contenteditable="true"], .reasoning-scroll, [data-tool-details]',
+    )
+  )
+    return
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) direction = 'previous'
+  else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) direction = 'next'
+  else return
+  userNavigated = true
+  schedule()
+}
+function disconnectNavigation(): void {
+  edgeObserver?.disconnect()
+  sizeObserver?.disconnect()
+  navigationRoot?.removeEventListener('scroll', scroll)
+  navigationRoot?.removeEventListener('wheel', wheel)
+  navigationRoot?.removeEventListener('pointerdown', pointerNavigation)
+  navigationRoot?.removeEventListener('keydown', key)
+  navigationRoot = null
+  nearStart = nearEnd = false
+}
+function connectNavigation(): void {
+  disconnectNavigation()
+  if (!showContent.value || disposed) return
+  const root = scroller()
+  if (!root || !viewport.value || !beforeRows.value || !afterRows.value) return
+  navigationRoot = root
+  lastScrollTop = root.scrollTop
+  lastScrollHeight = root.scrollHeight
+  root.addEventListener('scroll', scroll, { passive: true })
+  root.addEventListener('wheel', wheel, { passive: true })
+  root.addEventListener('pointerdown', pointerNavigation, { passive: true })
+  root.addEventListener('keydown', key)
+  edgeObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.target === beforeRows.value) nearStart = entry.isIntersecting
+        if (entry.target === afterRows.value) nearEnd = entry.isIntersecting
+      }
+      schedule()
+    },
+    { root, rootMargin: '120px 0px' },
+  )
+  edgeObserver.observe(beforeRows.value)
+  edgeObserver.observe(afterRows.value)
+  sizeObserver = new ResizeObserver(schedule)
+  sizeObserver.observe(viewport.value)
+  sizeObserver.observe(root)
+}
+function changed(): void {
+  schedule()
+  emit('changed')
+}
+watch([viewport, beforeRows, afterRows], connectNavigation, { flush: 'post' })
 async function start(): Promise<void> {
   const token = ++generation
   rows.value = []
@@ -175,8 +298,9 @@ async function start(): Promise<void> {
   error.value = ''
   lastAction = 'start'
   followTail.value = props.active
-  direction = 'down'
-  lastTop = 0
+  browsingHistory = false
+  direction = 'next'
+  userNavigated = false
   records = new TimelineWindow(props.conversationId, props.runId, async (cursor) => {
     if (!alive(token)) throw new Error('调用过程已收起')
     const result = await getDesktopApi().listRunSteps(props.conversationId, props.runId, cursor)
@@ -208,7 +332,8 @@ async function start(): Promise<void> {
   }
 }
 async function load(action: 'next' | 'previous'): Promise<void> {
-  if (loading.value || !records || !props.expanded || !props.connected) return
+  if (loading.value || !records || !showContent.value || !props.connected) return
+  if (action === 'previous') browsingHistory = true
   const token = generation
   loading.value = true
   error.value = ''
@@ -221,6 +346,14 @@ async function load(action: 'next' | 'previous'): Promise<void> {
       throw new Error('调用记录尚未同步，请重试')
     const saved = anchor()
     updateRows()
+    if (action === 'next' && !hasMore.value) browsingHistory = false
+    // 历史工具组全部收起时，每次导航只推进一批，避免短页面连续预取越过压缩标记。
+    if (
+      action === 'next' &&
+      (!props.active || browsingHistory) &&
+      !viewport.value?.querySelector('[data-operation-group][data-expanded="true"]')
+    )
+      userNavigated = false
     await restore(saved, action)
   } catch (value) {
     if (alive(token)) error.value = fail(value)
@@ -236,7 +369,7 @@ function retry(): void {
   else void load(lastAction)
 }
 async function hydrateComments(): Promise<void> {
-  if (readingComments || !props.expanded || !props.connected) return
+  if (readingComments || !showContent.value || !props.connected) return
   readingComments = true
   const token = generation
   try {
@@ -245,9 +378,7 @@ async function hydrateComments(): Promise<void> {
       const step = rows.value.find(
         (row) =>
           row.type === 'model_call' &&
-          row.commentary &&
           row.purpose === 'answer' &&
-          !row.text &&
           commentVersions.get(row.id) !== version(row) &&
           !failures.value[row.id],
       )
@@ -269,6 +400,11 @@ async function hydrateComments(): Promise<void> {
           throw new Error('步骤详情归属不匹配')
         commentVersions.set(step.id, version(step))
         records?.setText(step.id, result.value.text ?? '', result.value.textTruncated)
+        records?.setReasoning(
+          step.id,
+          result.value.reasoning ?? '',
+          result.value.reasoningTruncated ?? false,
+        )
         updateRows()
       } catch (value) {
         if (alive(token) && current(step)) failures.value[step.id] = fail(value)
@@ -277,7 +413,7 @@ async function hydrateComments(): Promise<void> {
   } finally {
     readingComments = false
     commentPending.value = null
-    if (!disposed && props.expanded && token !== generation) void hydrateComments()
+    if (!disposed && showContent.value && token !== generation) void hydrateComments()
   }
 }
 async function readOpened(): Promise<void> {
@@ -285,7 +421,7 @@ async function readOpened(): Promise<void> {
   if (
     !step ||
     disposed ||
-    !props.expanded ||
+    !showContent.value ||
     readingDetail ||
     !props.connected ||
     data(step) ||
@@ -313,7 +449,7 @@ async function readOpened(): Promise<void> {
   } finally {
     readingDetail = false
     detailPending.value = null
-    if (!disposed && props.expanded) void readOpened()
+    if (!disposed && showContent.value) void readOpened()
   }
 }
 function refresh(step: ChatStep): void {
@@ -327,21 +463,16 @@ function refresh(step: ChatStep): void {
   }
 }
 function toggleExpanded(): void {
-  emit('inspect')
+  inspect()
   emit('expand', !props.expanded)
 }
-function toggle(step: ChatStep, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLDetailsElement) || target !== event.currentTarget) return
-  if (target.open) {
+function toggle(step: ChatStep): void {
+  inspect()
+  if (opened.value === step.id) opened.value = null
+  else {
     opened.value = step.id
     detail.value = null
-    followTail.value = false
-    emit('inspect')
     void readOpened()
-  } else if (opened.value === step.id) {
-    opened.value = null
-    detail.value = null
   }
   emit('changed')
 }
@@ -349,50 +480,49 @@ function inspect(): void {
   followTail.value = false
   emit('inspect')
 }
-function scroll(): void {
-  const root = viewport.value
-  if (!root) return
-  if (root.scrollTop !== lastTop) {
-    direction = root.scrollTop < lastTop ? 'up' : 'down'
-    lastTop = root.scrollTop
-    followTail.value = props.active && root.scrollHeight - root.scrollTop - root.clientHeight < 60
-    emit('inspect')
-  }
-  schedule()
+function clearToolDetail(step: ChatStep): void {
+  if (opened.value !== step.id && detail.value?.id === step.id) detail.value = null
 }
-function wheel(event: WheelEvent): void {
-  inspect()
-  direction = event.deltaY < 0 ? 'up' : 'down'
-  schedule()
+function closeGroup(steps: ChatStep[]): void {
+  if (steps.some((step) => step.id === opened.value)) {
+    opened.value = null
+    detail.value = null
+  }
+}
+function release(): void {
+  if (showContent.value) return
+  records = undefined
+  rows.value = []
+  detail.value = null
+  opened.value = null
+  failures.value = {}
+  commentVersions.clear()
+  hasMore.value = false
+  hasPrevious.value = false
 }
 watch(
   () => props.snapshots,
   () => {
-    if (!props.expanded || !records) return
+    if (!showContent.value || !records) return
     updateRows()
     if (props.active && followTail.value)
       void nextTick(() => {
-        if (viewport.value) setScroll(viewport.value.scrollHeight)
+        emit('changed')
       })
     schedule()
   },
 )
 watch(
-  () => props.expanded,
-  (expanded) => {
-    if (expanded) void start()
-    else {
-      focusBeforeHiding()
+  showContent,
+  (visible) => {
+    if (visible) {
+      void start()
+      void nextTick(connectNavigation)
+    } else {
+      // 立即废弃异步回调，但把当前视图保留到收起动画结束后再释放。
       generation++
       loading.value = false
-      records = undefined
-      rows.value = []
-      detail.value = null
-      opened.value = null
-      failures.value = {}
-      commentVersions.clear()
-      hasMore.value = false
-      hasPrevious.value = false
+      disconnectNavigation()
     }
   },
   { immediate: true },
@@ -400,208 +530,240 @@ watch(
 watch(
   () => props.connected,
   (connected) => {
-    if (connected && props.expanded) void start()
+    if (connected && showContent.value) void start()
   },
 )
 onScopeDispose(() => {
   disposed = true
+  disconnectNavigation()
   generation++
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
 })
 </script>
 
 <template>
-  <section class="mb-3 text-sm" aria-label="调用过程">
-    <button
-      ref="trigger"
+  <section
+    class="activity-run mb-3"
+    :class="{ 'activity-run-ended': !active }"
+    aria-label="调用过程"
+  >
+    <ActivityDisclosure
+      :expanded="showContent"
+      :collapsible="!active"
+      :header-separator="true"
       aria-label="调用过程"
-      class="inline-flex items-center gap-1.5 rounded py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2"
-      :aria-expanded="expanded"
-      @click="toggleExpanded"
+      content-label="过程概述"
+      @toggle="toggleExpanded"
+      @changed="changed"
+      @collapsed="release"
     >
-      <ChevronDownIcon
-        class="size-3.5 transition-transform"
-        :class="expanded ? '' : '-rotate-90'"
-      />
-      调用过程
-    </button>
-    <div
-      v-if="expanded"
-      ref="viewport"
-      role="region"
-      aria-label="过程概述"
-      tabindex="0"
-      class="mt-2 max-h-[min(32rem,60vh)] space-y-3 overflow-y-auto overscroll-contain pr-2 focus-visible:outline-2"
-      :aria-busy="loading"
-      @scroll="scroll"
-      @wheel.passive="wheel"
-      @pointerdown="inspect"
-      @keydown="inspect"
-    >
-      <p v-if="!connected" class="text-xs text-muted-foreground">
-        连接已断开，暂时无法读取更多记录。
-      </p>
-      <p
-        v-if="loading && (!rows.length || lastAction === 'previous')"
-        role="status"
-        class="text-xs text-muted-foreground"
-      >
-        正在读取调用记录…
-      </p>
-      <p v-if="error" role="alert" class="text-xs text-destructive">
-        {{ error }}
-        <button class="ml-2 underline" :disabled="!connected || loading" @click="retry">
-          重试
-        </button>
-      </p>
-      <template v-for="step in visible" :key="step.id">
-        <div v-if="step.type === 'model_call'" :data-step-id="step.id">
-          <MarkdownMessage
-            v-if="step.text"
-            :content="[{ type: 'text', text: step.text, path: '' }]"
-            :streaming="false"
-            @rendered="emit('changed')"
-          />
-          <p v-else-if="commentPending === step.id" class="text-xs text-muted-foreground">
-            正在读取过程说明…
-          </p>
-          <p v-if="step.textTruncated" class="text-xs text-muted-foreground">
-            {{
-              step.text
-                ? '概述较长，已截取；完整记录保留在服务中。'
-                : '原始结果超过读取范围，过程说明暂无法恢复。'
-            }}
-          </p>
-          <p v-if="failures[step.id]" role="alert" class="text-xs text-destructive">
-            {{ failures[step.id] }}
-            <button class="ml-2 underline" :disabled="!connected" @click="refresh(step)">
-              重试
-            </button>
-          </p>
-        </div>
-        <details
-          v-else
-          :data-step-id="step.id"
-          :open="opened === step.id"
-          class="group min-w-0"
-          @toggle="toggle(step, $event)"
-        >
-          <summary
-            class="flex cursor-pointer list-none items-center gap-1.5 rounded py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2"
-          >
-            <ChevronDownIcon
-              class="size-3 shrink-0 transition-transform"
-              :class="opened === step.id ? '' : '-rotate-90'"
-              aria-hidden="true"
-            />
-            <LoaderCircleIcon
-              v-if="['running', 'pending'].includes(step.status) && connected"
-              class="size-3.5 shrink-0 animate-spin"
-            />
-            <TerminalIcon v-else-if="step.name === 'run_command'" class="size-3.5 shrink-0" />
-            <PencilIcon v-else-if="step.name === 'apply_patch'" class="size-3.5 shrink-0" />
-            <FileTextIcon v-else class="size-3.5 shrink-0" />
-            <span class="shrink-0" :class="step.status === 'failed' ? 'text-destructive' : ''">{{
-              stepLabel(step)
-            }}</span>
-            <span v-if="step.targetLabel" class="min-w-0 truncate" :title="step.targetLabel">{{
-              step.targetLabel
-            }}</span>
-          </summary>
-          <div
-            v-if="opened === step.id"
-            data-tool-details
-            class="mt-2 min-w-0 space-y-2 rounded-lg border bg-muted/20 p-3 text-xs"
-          >
-            <p
-              v-if="
-                !connected &&
-                ['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(
-                  step.status,
-                )
-              "
-              class="text-muted-foreground"
-            >
-              连接已断开，步骤状态待核对。
-            </p>
-            <p v-if="step.error" class="text-destructive">{{ step.error }}</p>
-            <p v-if="data(step)" class="font-medium">目标与参数</p>
-            <pre
-              v-if="data(step)"
-              class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-              >{{ stepParameters(data(step)!.input) }}</pre>
-            <p v-if="data(step)?.inputTruncated" class="text-muted-foreground">
-              参数超过展示范围，已截取；完整记录保留在服务中。
-            </p>
-            <template v-if="live?.output">
-              <p class="font-medium">实时输出</p>
-              <pre
-                class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                >{{ live?.output }}</pre>
-              <p v-if="live?.outputTruncated" class="text-muted-foreground">
-                实时输出有截取或缺失，请核对最终结果。
-              </p>
-            </template>
-            <p v-if="detailPending === step.id" role="status" class="text-muted-foreground">
-              正在读取结果…
-            </p>
-            <p v-if="failures[step.id]" role="alert" class="text-destructive">
-              {{ failures[step.id] }}
-            </p>
-            <template v-if="data(step)">
-              <p class="font-medium">已保存的结果</p>
-              <p v-if="savedResult.outcome" class="text-muted-foreground">
-                {{ savedResult.outcome }}
-              </p>
-              <p
-                v-if="savedResult.exitCode !== null"
-                :class="savedResult.exitCode ? 'text-destructive' : 'text-muted-foreground'"
-              >
-                退出码：{{ savedResult.exitCode }}
-              </p>
-              <pre
-                v-if="data(step)?.output"
-                aria-label="工具结果"
-                class="max-h-80 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                >{{ savedResult.text }}</pre>
-              <p v-else class="text-muted-foreground">尚无已保存的结果。</p>
-              <p v-if="data(step)?.outputTruncated" class="text-muted-foreground">
-                结果超过展示范围，已截取；完整记录保留在服务中。
-              </p>
-            </template>
-            <details v-if="data(step)" class="text-muted-foreground">
-              <summary class="cursor-pointer py-1">原始记录</summary>
-              <pre
-                class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                >{{ data(step)?.input }}</pre>
-              <pre
-                v-if="data(step)?.output"
-                class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                >{{ data(step)?.output }}</pre>
-            </details>
-            <button
-              class="underline disabled:opacity-50"
-              :disabled="!connected || detailPending === step.id"
-              @click="refresh(step)"
-            >
-              刷新结果
-            </button>
-          </div>
-        </details>
+      <template #label>
+        <RunStatus v-if="run" :run="run" :connected="connected" />
+        <span v-else>处理过程</span>
       </template>
-      <p
-        v-if="connected && !active && !loading && !error && !visible.length"
-        class="text-xs text-muted-foreground"
+      <div
+        ref="viewport"
+        tabindex="-1"
+        class="activity-rows"
+        :aria-busy="loading"
+        @pointerdown="inspect"
+        @keydown="inspect"
       >
-        当前没有工具调用记录。
-      </p>
-      <p
-        v-if="loading && rows.length && lastAction === 'next'"
-        role="status"
-        class="text-xs text-muted-foreground"
-      >
-        正在读取调用记录…
-      </p>
-    </div>
+        <p v-if="!connected" class="text-xs text-muted-foreground">
+          连接已断开，暂时无法读取更多记录。
+        </p>
+        <p
+          v-if="loading && (!rows.length || lastAction === 'previous')"
+          role="status"
+          class="text-xs text-muted-foreground"
+        >
+          正在读取调用记录…
+        </p>
+        <p v-if="error" role="alert" class="text-xs text-destructive">
+          {{ error }}
+          <button class="ml-2 underline" :disabled="!connected || loading" @click="retry">
+            重试
+          </button>
+        </p>
+        <div ref="beforeRows" class="activity-load-edge" aria-hidden="true" />
+        <template v-for="(item, index) in items" :key="item.id">
+          <div v-if="item.kind === 'model'" :data-step-id="item.step.id">
+            <ReasoningItem
+              v-if="item.step.reasoning || item.step.reasoningTruncated"
+              :step="item.step"
+              :active="active"
+              :connected="connected"
+              @inspect="inspect"
+              @changed="changed"
+            />
+            <MarkdownMessage
+              v-if="item.step.commentary && item.step.text"
+              class="activity-commentary"
+              :content="[{ type: 'text', text: item.step.text, path: '' }]"
+              :streaming="false"
+              @rendered="emit('changed')"
+            />
+            <p v-else-if="commentPending === item.step.id" class="text-xs text-muted-foreground">
+              正在读取过程说明…
+            </p>
+            <p v-if="item.step.textTruncated" class="text-xs text-muted-foreground">
+              {{
+                item.step.text
+                  ? '概述较长，已截取；完整记录保留在服务中。'
+                  : '原始结果超过读取范围，过程说明暂无法恢复。'
+              }}
+            </p>
+            <p v-if="failures[item.step.id]" role="alert" class="text-xs text-destructive">
+              {{ failures[item.step.id] }}
+              <button class="ml-2 underline" :disabled="!connected" @click="refresh(item.step)">
+                重试
+              </button>
+            </p>
+          </div>
+          <CompactionStatus
+            v-else-if="item.kind === 'compaction'"
+            :group="item"
+            :data-step-id="item.steps[0]?.id"
+            :connected="connected"
+            :run-status="run?.status ?? null"
+          />
+          <OperationGroup
+            v-else
+            :group="item"
+            :data-step-id="item.steps[0]?.id"
+            :current="item.id === currentGroupId"
+            :connected="connected"
+            :partial="(index === 0 && hasPrevious) || (index === items.length - 1 && hasMore)"
+            @inspect="inspect"
+            @changed="changed"
+            @closing="closeGroup(item.steps)"
+          >
+            <ActivityDisclosure
+              v-for="step in item.steps"
+              :key="step.id"
+              :data-step-id="step.id"
+              :expanded="opened === step.id"
+              :aria-label="`工具详情：${stepLabel(step)}`"
+              @toggle="toggle(step)"
+              @changed="changed"
+              @collapsed="clearToolDetail(step)"
+            >
+              <template #label>
+                <span class="activity-tool-label">
+                  <LoaderCircleIcon
+                    v-if="['running', 'pending'].includes(step.status) && connected"
+                    class="animate-spin"
+                    aria-hidden="true"
+                  />
+                  <TerminalIcon v-else-if="step.name === 'run_command'" aria-hidden="true" />
+                  <PencilIcon v-else-if="step.name === 'apply_patch'" aria-hidden="true" />
+                  <FileTextIcon v-else aria-hidden="true" />
+                  <span
+                    class="shrink-0"
+                    :class="step.status === 'failed' ? 'text-destructive' : ''"
+                    >{{ stepLabel(step) }}</span
+                  >
+                  <span
+                    v-if="step.targetLabel"
+                    class="activity-tool-target"
+                    :title="step.targetLabel"
+                    >{{ step.targetLabel }}</span
+                  >
+                </span>
+              </template>
+              <div data-tool-details class="activity-tool-details space-y-2">
+                <p
+                  v-if="
+                    !connected &&
+                    ['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(
+                      step.status,
+                    )
+                  "
+                  class="text-muted-foreground"
+                >
+                  连接已断开，步骤状态待核对。
+                </p>
+                <p v-if="step.error" class="text-destructive">{{ step.error }}</p>
+                <p v-if="data(step)" class="font-medium">目标与参数</p>
+                <pre
+                  v-if="data(step)"
+                  class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                  >{{ stepParameters(data(step)!.input) }}</pre>
+                <p v-if="data(step)?.inputTruncated" class="text-muted-foreground">
+                  参数超过展示范围，已截取；完整记录保留在服务中。
+                </p>
+                <template v-if="live?.output">
+                  <p class="font-medium">实时输出</p>
+                  <pre
+                    class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                    >{{ live?.output }}</pre>
+                  <p v-if="live?.outputTruncated" class="text-muted-foreground">
+                    实时输出有截取或缺失，请核对最终结果。
+                  </p>
+                </template>
+                <p v-if="detailPending === step.id" role="status" class="text-muted-foreground">
+                  正在读取结果…
+                </p>
+                <p v-if="failures[step.id]" role="alert" class="text-destructive">
+                  {{ failures[step.id] }}
+                </p>
+                <template v-if="data(step)">
+                  <p class="font-medium">已保存的结果</p>
+                  <p v-if="savedResult.outcome" class="text-muted-foreground">
+                    {{ savedResult.outcome }}
+                  </p>
+                  <p
+                    v-if="savedResult.exitCode !== null"
+                    :class="savedResult.exitCode ? 'text-destructive' : 'text-muted-foreground'"
+                  >
+                    退出码：{{ savedResult.exitCode }}
+                  </p>
+                  <pre
+                    v-if="data(step)?.output"
+                    aria-label="工具结果"
+                    class="max-h-80 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                    >{{ savedResult.text }}</pre>
+                  <p v-else class="text-muted-foreground">尚无已保存的结果。</p>
+                  <p v-if="data(step)?.outputTruncated" class="text-muted-foreground">
+                    结果超过展示范围，已截取；完整记录保留在服务中。
+                  </p>
+                </template>
+                <details v-if="data(step)" class="text-muted-foreground">
+                  <summary class="cursor-pointer py-1">原始记录</summary>
+                  <pre
+                    class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                    >{{ data(step)?.input }}</pre>
+                  <pre
+                    v-if="data(step)?.output"
+                    class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                    >{{ data(step)?.output }}</pre>
+                </details>
+                <button
+                  class="underline disabled:opacity-50"
+                  :disabled="!connected || detailPending === step.id"
+                  @click="refresh(step)"
+                >
+                  刷新结果
+                </button>
+              </div>
+            </ActivityDisclosure>
+          </OperationGroup>
+        </template>
+        <div ref="afterRows" class="activity-load-edge" aria-hidden="true" />
+        <p
+          v-if="connected && !active && !loading && !error && !visible.length"
+          class="text-xs text-muted-foreground"
+        >
+          当前没有工具调用记录。
+        </p>
+        <p
+          v-if="loading && rows.length && lastAction === 'next'"
+          role="status"
+          class="text-xs text-muted-foreground"
+        >
+          正在读取调用记录…
+        </p>
+      </div>
+    </ActivityDisclosure>
   </section>
 </template>

@@ -169,3 +169,90 @@ test('读取失败保留当前窗口，拒绝错误归属及不推进的游标',
       /归属|游标/,
     )
 })
+
+test('运行中逐条增长先补满尾批，短过程不提前丢失概述，文字恢复结果保留', async () => {
+  const source: ChatStep[] = [{ ...step(1), type: 'model_call', purpose: 'answer', text: '' }]
+  const { window, reads } = fixture(source)
+  await window.start()
+  window.setText('step-1', '开始核对文件。', false)
+  window.setReasoning('step-1', '独立推理。', false)
+  for (let sequence = 2; sequence <= 151; sequence++) {
+    source.push({ ...step(sequence), parentStepId: 'step-1' })
+    await window.next()
+    assert.ok(window.steps.length <= 150)
+    if (sequence <= 150) {
+      assert.equal(window.steps[0]?.id, 'step-1')
+      assert.equal(window.steps[0]?.text, '开始核对文件。')
+      assert.equal(window.steps[0]?.reasoning, '独立推理。')
+      assert.equal(window.steps[0]?.commentary, true)
+      assert.equal(window.hasPrevious, false)
+      assert.equal(window.steps.length, sequence)
+    }
+  }
+  assert.equal(window.steps[0]?.sequence, 51)
+  assert.equal(window.hasPrevious, true)
+  assert.ok(reads.filter((after) => after === 0).length > 40)
+  await window.previous()
+  assert.equal(window.steps[0]?.id, 'step-1')
+})
+
+test('补齐尾批拒绝倒退或替换旧记录，失败不丢弃缓存并可重试', async () => {
+  const source = [step(1), step(2)]
+  const fixtureValue = fixture(source)
+  let fault: 'none' | 'throw' | 'regress' | 'replace' = 'none'
+  const window = new TimelineWindow('conversation', 'run', async (after) => {
+    if (fault === 'throw') throw new Error('controlled refill failure')
+    const page = await fixtureValue.fetch(after)
+    if (fault === 'regress') return { ...page, steps: [step(1)], nextSequence: 1 }
+    if (fault === 'replace') return { ...page, steps: [{ ...step(1), id: 'replacement' }, step(2)] }
+    return page
+  })
+  await window.start()
+  window.setText('step-1', '保留已恢复内容', false)
+  const before = window.steps
+  for (const value of ['throw', 'regress', 'replace'] as const) {
+    fault = value
+    await assert.rejects(window.next(), /controlled|倒退/)
+    assert.deepEqual(window.steps, before)
+  }
+  fault = 'none'
+  source.push(step(3))
+  await window.next()
+  assert.equal(window.steps.length, 3)
+  assert.equal(window.steps[0]?.text, '保留已恢复内容')
+})
+
+test('压缩触发来源在轻量窗口和实时合并中保留，不持有完整参数或猜测旧记录来源', async () => {
+  const source: ChatStep[] = [
+    {
+      ...step(1),
+      type: 'context_compression',
+      status: 'running',
+      input: JSON.stringify({
+        trigger: { type: 'automatic' },
+        source_batches: [{ fingerprint: 'source' }],
+      }),
+    },
+  ]
+  const { window } = fixture(source)
+  await window.start()
+  assert.equal(window.steps[0]?.compactionTrigger, 'automatic')
+  assert.equal(window.steps[0]?.input, '')
+  window.merge([{ ...source[0]!, status: 'completed', updatedAt: 3 }])
+  assert.equal(window.steps[0]?.status, 'completed')
+  assert.equal(window.steps[0]?.compactionTrigger, 'automatic')
+  await window.next()
+  assert.equal(window.steps[0]?.status, 'completed')
+  assert.equal(window.steps[0]?.compactionTrigger, 'automatic')
+  for (const [input, expected] of [
+    ['{}', null],
+    ['{"trigger":', null],
+    ['{"trigger":{"type":"unexpected"}}', null],
+    ['{"trigger":{"type":"manual"}}', 'manual'],
+  ] as const) {
+    const another = fixture([{ ...step(1), type: 'context_compression', input }]).window
+    await another.start()
+    assert.equal(another.steps[0]?.compactionTrigger, expected)
+    assert.equal(another.steps[0]?.input, '')
+  }
+})

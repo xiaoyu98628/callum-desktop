@@ -87,9 +87,11 @@ export async function readStepDetails(request: Request, step: ChatStep): Promise
   const { raw, truncated } = await readOutput(request, step.id)
   let output = raw,
     text: string | null = null
+  let reasoning = ''
   if (!truncated && raw) {
     const v = record(JSON.parse(raw) as unknown)
     output = JSON.stringify(v, null, 2)
+    if (step.type === 'model_call' && v.reasoning !== undefined) reasoning = string(v.reasoning)
     if (step.type === 'model_call' && v.context_message !== undefined) {
       const message = record(v.context_message)
       if (message.role === 'assistant' && typeof message.content === 'string')
@@ -106,5 +108,7 @@ export async function readStepDetails(request: Request, step: ChatStep): Promise
     outputTruncated: truncated || output.length > DISPLAY_LIMIT,
     text: text === null ? null : truncateStepText(text, STEP_TEXT_LIMIT),
     textTruncated: truncated || (text?.length ?? 0) > STEP_TEXT_LIMIT,
+    reasoning: truncateStepText(reasoning, STEP_TEXT_LIMIT),
+    reasoningTruncated: truncated || reasoning.length > STEP_TEXT_LIMIT,
   }
 }

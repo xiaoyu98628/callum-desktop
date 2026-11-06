@@ -551,6 +551,8 @@ export class ChatService {
       if (previous)
         step = {
           ...step,
+          reasoning: previous.reasoning ?? '',
+          reasoningTruncated: previous.reasoningTruncated ?? false,
           text: previous.text,
           commentary: previous.commentary,
           textTruncated: previous.textTruncated,
@@ -586,6 +588,27 @@ export class ChatService {
         const decoder = this.stepOutputs.get(stepId) ?? new StepOutput()
         this.stepOutputs.set(stepId, decoder)
         const step = decoder.append(previous, p.output)
+        this.saveStep(step)
+        this.dirtySteps.set(step.id, step)
+        this.flushTimer ??= setTimeout(() => this.flush(), 16)
+      }
+    } else if (method === 'reasoning.delta') {
+      const previous = this.steps.get(id(p.step_id))
+      if (previous) {
+        if (
+          previous.type !== 'model_call' ||
+          previous.runId !== id(p.run_id) ||
+          previous.conversationId !== id(p.conversation_id)
+        )
+          throw new Error('思考内容归属不匹配')
+        const text = string(p.text)
+        if (text.length > 512 * 1024) throw new Error('思考增量过长')
+        const reasoning = (previous.reasoning ?? '') + text
+        const step = {
+          ...previous,
+          reasoning: truncateStepText(reasoning, STEP_TEXT_LIMIT),
+          reasoningTruncated: previous.reasoningTruncated || reasoning.length > STEP_TEXT_LIMIT,
+        }
         this.saveStep(step)
         this.dirtySteps.set(step.id, step)
         this.flushTimer ??= setTimeout(() => this.flush(), 16)

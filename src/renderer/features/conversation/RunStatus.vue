@@ -25,9 +25,7 @@ const elapsed = computed(() =>
   props.run && !disconnected.value ? elapsedRunTime(props.run, now.value) : null,
 )
 const duration = computed(() => (elapsed.value === null ? '' : formatRunTime(elapsed.value)))
-const prefix = computed(() =>
-  props.run && ['failed', 'cancelled'].includes(props.run.status) ? '· 用时 ' : '',
-)
+const prefix = computed(() => (props.run && !isActiveRun(props.run) ? '· 用时 ' : ''))
 function stopClock(): void {
   clearInterval(clock)
   clock = undefined
@@ -49,7 +47,7 @@ onScopeDispose(stopClock)
 </script>
 
 <template>
-  <div
+  <span
     v-if="run"
     role="group"
     aria-label="执行状态"
@@ -59,9 +57,14 @@ onScopeDispose(stopClock)
         ? '从本次请求创建起的总用时，包含等待审批；结束后固定。'
         : '缺少准确的执行时间，不显示推测用时。'
     "
-    class="mb-3 flex flex-wrap items-center gap-x-1 border-b pb-2 text-xs leading-5 text-muted-foreground"
+    class="activity-status"
   >
-    <span>{{ label }}</span>
+    <span
+      :class="
+        run && connected && ['pending', 'running'].includes(run.status) ? 'activity-shimmer' : ''
+      "
+      >{{ label }}</span
+    >
     <span v-if="duration" class="tabular-nums">{{ ' ' + prefix + duration }}</span>
-  </div>
+  </span>
 </template>

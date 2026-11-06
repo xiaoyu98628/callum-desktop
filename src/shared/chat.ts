@@ -90,6 +90,8 @@ export interface ChatStep {
   text: string
   commentary: boolean
   textTruncated: boolean
+  reasoning?: string
+  reasoningTruncated?: boolean
   output: string
   outputTruncated: boolean
   outputSequence: number
@@ -111,6 +113,8 @@ export interface StepDetails {
   outputTruncated: boolean
   text: string | null
   textTruncated: boolean
+  reasoning?: string
+  reasoningTruncated?: boolean
 }
 export interface DirectoryScope {
   rootPath: string
@@ -351,6 +355,16 @@ export function parseRun(value: unknown): ChatRun {
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
   }
 }
+function reasoningProjection(v: Record<string, unknown>): {
+  reasoning?: string
+  reasoningTruncated?: boolean
+} {
+  if (v.reasoning === undefined && v.reasoningTruncated === undefined) return {}
+  const reasoning = string(v.reasoning)
+  if (reasoning.length > 512 * 1024 || typeof v.reasoningTruncated !== 'boolean')
+    throw new Error('思考内容格式无效或过长')
+  return { reasoning, reasoningTruncated: v.reasoningTruncated }
+}
 export function parseStep(value: unknown): ChatStep {
   const v = record(value)
   const status = parseRun({
@@ -392,6 +406,7 @@ export function parseStep(value: unknown): ChatStep {
     text,
     commentary: v.commentary,
     textTruncated: v.textTruncated,
+    ...reasoningProjection(v),
     output,
     outputTruncated: v.outputTruncated,
     outputSequence: integer(v.outputSequence),
@@ -440,6 +455,7 @@ export function parseStepDetails(value: unknown): StepDetails {
     text,
     outputTruncated: v.outputTruncated,
     textTruncated: v.textTruncated,
+    ...reasoningProjection(v),
   }
 }
 export function parseDirectoryScope(value: unknown): DirectoryScope {

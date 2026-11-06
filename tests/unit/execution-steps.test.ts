@@ -126,6 +126,7 @@ test('步骤结果按服务端字节偏移拼接，只从统一消息恢复文�
   const raw = Buffer.from(
     JSON.stringify({
       context_message: { role: 'assistant', content: '过程文字。'.repeat(20_000) },
+      reasoning: '独立思考。'.repeat(20_000),
       result: 'x'.repeat(400_000),
     }),
   )
@@ -153,6 +154,8 @@ test('步骤结果按服务端字节偏移拼接，只从统一消息恢复文�
   )
   assert.ok(offsets.length > 1)
   assert.equal(details.text, '过程文字。'.repeat(20_000))
+  assert.equal(details.reasoning, '独立思考。'.repeat(20_000))
+  assert.equal(details.reasoningTruncated, false)
   assert.equal(details.output.length, 256 * 1024)
   assert.equal(details.outputTruncated, true)
 })
@@ -490,4 +493,33 @@ test('较大的步骤元数据截取后仍可接收，Unicode 展示边界不拆
   assert.ok(value.input.length <= 128 * 1024)
   assert.equal(truncateStepText('a😀b', 2), 'a')
   assert.equal(truncateStepText('a😀b', 3), 'a😀')
+})
+
+test('思考投影拒绝非字符串和越界内容，不从回答正文猜测推理', async () => {
+  for (const reasoning of [42, 'x'.repeat(512 * 1024 + 1)]) {
+    assert.throws(() =>
+      parseChatEvent({
+        revision: 1,
+        change: { kind: 'step', value: { ...step(), reasoning, reasoningTruncated: false } },
+      }),
+    )
+  }
+  const raw = JSON.stringify({
+    context_message: { role: 'assistant', content: '<think>正文里的标签</think>' },
+  })
+  const details = await readStepDetails(
+    async () => ({
+      step_id: uuid(),
+      field: 'output',
+      present: true,
+      offset: 0,
+      next_offset: Buffer.byteLength(raw),
+      total_bytes: Buffer.byteLength(raw),
+      done: true,
+      fragment: raw,
+    }),
+    { ...step(), type: 'model_call' },
+  )
+  assert.equal(details.reasoning, '')
+  assert.equal(details.text, '<think>正文里的标签</think>')
 })

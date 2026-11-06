@@ -7,6 +7,21 @@ const OVERVIEW_TEXT_LIMIT = 16 * 1024
 
 export interface TimelineStep extends ChatStep {
   targetLabel: string
+  compactionTrigger?: 'automatic' | 'manual' | null
+}
+
+function compactionTrigger(step: ChatStep): 'automatic' | 'manual' | null {
+  if (step.type !== 'context_compression') return null
+  try {
+    const input: unknown = JSON.parse(step.input)
+    if (typeof input !== 'object' || input === null || !('trigger' in input)) return null
+    const trigger = input.trigger
+    if (typeof trigger !== 'object' || trigger === null || !('type' in trigger)) return null
+    return trigger.type === 'automatic' || trigger.type === 'manual' ? trigger.type : null
+  } catch {
+    // 旧记录或截取的元数据不能被猜测为自动压缩。
+    return null
+  }
 }
 
 function overview(step: ChatStep): TimelineStep {
@@ -15,9 +30,28 @@ function overview(step: ChatStep): TimelineStep {
     // 概述不持有参数和输出原文；二次展开时通过专用详情接口读取。
     input: '',
     output: '',
+    compactionTrigger: compactionTrigger(step),
     targetLabel: step.name === 'run_command' ? '' : truncateStepText(stepTarget(step), 1024),
+    reasoning: truncateStepText(step.reasoning ?? '', OVERVIEW_TEXT_LIMIT),
+    reasoningTruncated:
+      step.reasoningTruncated || (step.reasoning?.length ?? 0) > OVERVIEW_TEXT_LIMIT,
     text: truncateStepText(step.text, OVERVIEW_TEXT_LIMIT),
     textTruncated: step.textTruncated || step.text.length > OVERVIEW_TEXT_LIMIT,
+  }
+}
+
+function mergeOverview(old: TimelineStep | undefined, next: TimelineStep): TimelineStep {
+  if (!old) return next
+  if (next.updatedAt < old.updatedAt) return old
+  return {
+    ...next,
+    targetLabel: next.targetLabel || old.targetLabel,
+    compactionTrigger: next.compactionTrigger ?? old.compactionTrigger ?? null,
+    reasoning: next.reasoning || old.reasoning || '',
+    reasoningTruncated: old.reasoningTruncated || next.reasoningTruncated || false,
+    text: next.text || old.text,
+    commentary: old.commentary || next.commentary,
+    textTruncated: old.textTruncated || next.textTruncated,
   }
 }
 
@@ -113,8 +147,23 @@ export class TimelineWindow {
 
   async next(): Promise<void> {
     const cursor = this.nextSequence
-    const page = await this.read(cursor)
     const previous = this.pages.at(-1)
+    // 活动执行常常一次只新增一两条记录。先补满尾批，避免几个小批次
+    // 就耗尽窗口并提前移除仍在阅读的概述；重新查询不清除已恢复的文字。
+    const refill = previous && previous.steps.length < STEP_PAGE_SIZE
+    const page = await this.read(refill ? previous.after : cursor)
+    if (refill) {
+      if (
+        page.next < cursor ||
+        previous.steps.some((step, index) => page.steps[index]?.id !== step.id)
+      )
+        throw new Error('调用记录的读取游标发生倒退')
+      const cached = new Map(previous.steps.map((step) => [step.id, step]))
+      page.steps = page.steps.map((step) => mergeOverview(cached.get(step.id), step))
+      this.pages = [...this.pages.slice(0, -1), page]
+      this.retainCommentary()
+      return
+    }
     if (!page.steps.length) {
       if (previous) previous.more = false
       return
@@ -169,13 +218,25 @@ export class TimelineWindow {
           return { ...old, commentary: old.commentary || parents.has(old.id) }
         const next = overview(latest)
         return {
-          ...next,
-          targetLabel: next.targetLabel || old.targetLabel,
-          text: next.text || old.text,
+          ...mergeOverview(old, next),
           commentary: old.commentary || next.commentary || parents.has(old.id),
-          textTruncated: old.textTruncated || next.textTruncated,
         }
       }),
+    }))
+  }
+
+  setReasoning(id: string, reasoning: string, truncated: boolean): void {
+    this.pages = this.pages.map((page) => ({
+      ...page,
+      steps: page.steps.map((step) =>
+        step.id === id
+          ? {
+              ...step,
+              reasoning: truncateStepText(reasoning, OVERVIEW_TEXT_LIMIT),
+              reasoningTruncated: truncated || reasoning.length > OVERVIEW_TEXT_LIMIT,
+            }
+          : step,
+      ),
     }))
   }
 

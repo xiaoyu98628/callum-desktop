@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon } from '@lucide/vue'
+import { EllipsisIcon, PencilIcon, SquarePenIcon, Trash2Icon } from '@lucide/vue'
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -47,12 +47,12 @@ const itemClass =
       <DropdownMenuContent
         align="start"
         side="right"
-        :side-offset="6"
+        :side-offset="workspace ? 34 : 6"
         class="z-40 min-w-36 rounded-xl border bg-popover p-1 text-popover-foreground shadow-md"
         @close-auto-focus="openingDialog && $event.preventDefault()"
       >
         <DropdownMenuItem v-if="workspace" :class="itemClass" @select="emit('newConversation')"
-          ><PlusIcon class="size-3.5" aria-hidden="true" />新建对话</DropdownMenuItem
+          ><SquarePenIcon class="size-3.5" aria-hidden="true" />新建对话</DropdownMenuItem
         >
         <DropdownMenuItem :class="itemClass" @select="choose('rename')"
           ><PencilIcon class="size-3.5" aria-hidden="true" />{{
