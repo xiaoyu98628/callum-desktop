@@ -10,6 +10,7 @@ export interface Conversation {
   modelId: string
   modelName: string
   updatedAt: number
+  pinnedAt: number | null
   deletedAt: number | null
   archivedAt: number | null
 }
@@ -18,6 +19,7 @@ export interface Workspace {
   name: string
   rootPath: string
   updatedAt: number
+  pinnedAt: number | null
   deletedAt: number | null
   archivedAt: number | null
 }
@@ -34,9 +36,19 @@ export interface ConversationPage {
   hasMore: boolean
   revision: number
 }
+/** 管理操作返回所发布快照的版本，用于丢弃迟到通知和查询。 */
+export interface ConversationUpdate {
+  conversation: Conversation
+  revision: number
+}
 export interface WorkspacePage {
   workspaces: Workspace[]
   hasMore: boolean
+  revision: number
+}
+/** 项目管理快照与其发布版本。 */
+export interface WorkspaceUpdate {
+  workspace: Workspace
   revision: number
 }
 export interface ContentBlock {
@@ -254,12 +266,30 @@ export function parseConversation(value: unknown): Conversation {
     modelId: id(v.modelId),
     modelName: string(v.modelName),
     updatedAt: integer(v.updatedAt),
+    pinnedAt: v.pinnedAt === null ? null : integer(v.pinnedAt),
     deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
     archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
   }
 }
 export function isVisible(value: { deletedAt: number | null; archivedAt: number | null }): boolean {
   return value.deletedAt === null && value.archivedAt === null
+}
+/** 与 Go 的 pinned_at、updated_at、id 倒序保持一致。 */
+export function comparePinnedItems(
+  a: { id: string; pinnedAt: number | null; updatedAt: number },
+  b: { id: string; pinnedAt: number | null; updatedAt: number },
+): number {
+  return (
+    (b.pinnedAt ?? -1) - (a.pinnedAt ?? -1) || b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)
+  )
+}
+export function parseConversationUpdate(value: unknown): ConversationUpdate {
+  const v = record(value)
+  return { conversation: parseConversation(v.conversation), revision: integer(v.revision, 1) }
+}
+export function parseWorkspaceUpdate(value: unknown): WorkspaceUpdate {
+  const v = record(value)
+  return { workspace: parseWorkspace(v.workspace), revision: integer(v.revision, 1) }
 }
 export function parseName(value: unknown): string {
   const name = string(value).trim()
@@ -287,6 +317,7 @@ export function parseWorkspace(value: unknown): Workspace {
     name: string(v.name),
     rootPath: string(v.rootPath),
     updatedAt: integer(v.updatedAt),
+    pinnedAt: v.pinnedAt === null ? null : integer(v.pinnedAt),
     deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
     archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
   }

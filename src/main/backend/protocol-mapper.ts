@@ -54,6 +54,7 @@ export function conversationFromRpc(value: unknown): Conversation {
     modelId: model.id,
     modelName: model.display_name,
     updatedAt: v.updated_at,
+    pinnedAt: v.pinned_at ?? null,
     deletedAt: v.deleted_at ?? null,
     archivedAt: v.archived_at ?? null,
   })
@@ -65,6 +66,7 @@ export function workspaceFromRpc(value: unknown): Workspace {
     name: v.name,
     rootPath: v.root_path,
     updatedAt: v.updated_at,
+    pinnedAt: v.pinned_at ?? null,
     deletedAt: v.deleted_at ?? null,
     archivedAt: v.archived_at ?? null,
   })

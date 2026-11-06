@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import {
+  ArchiveIcon,
   FolderIcon,
   FolderOpenIcon,
   MessageSquareIcon,
@@ -19,8 +20,9 @@ import SidebarItemMenu from './SidebarItemMenu.vue'
 import SidebarManagementDialog from './SidebarManagementDialog.vue'
 import type { ManagementTarget } from './SidebarManagementDialog.vue'
 import CreateProjectDialog from './CreateProjectDialog.vue'
+import ArchivedItemsDialog from './ArchivedItemsDialog.vue'
 
-defineProps<{
+const props = defineProps<{
   collapsed: boolean
   activePage: AppPage
   appInfo: AppInfo | null
@@ -44,11 +46,25 @@ const {
   deleteWorkspace,
   renameConversation,
   deleteConversation,
+  setConversationPinned,
+  setConversationArchived,
+  setWorkspacePinned,
+  setWorkspaceArchived,
+  changeArchiveKind,
+  openArchives,
+  closeArchives,
+  refreshArchives,
 } = useConversations()
 const managementTarget = ref<ManagementTarget | null>(null)
 const managementReturnFocus = ref<HTMLElement | null>(null)
 const managementError = ref('')
 const creatingProject = ref(false)
+const sidebarError = ref('')
+const archivesReturnFocus = ref<HTMLElement | null>(null)
+const restoreError = ref('')
+const restoreNotice = ref('')
+const restoringId = ref('')
+let workspaceClick: { id: string; expanded: boolean } | null = null
 function startConversation(workspaceId: string | null = null): void {
   if (workspaceId) expandWorkspace(workspaceId)
   newConversation(workspaceId)
@@ -58,11 +74,36 @@ function selectConversation(conversationId: string): void {
   void openConversation(conversationId)
   emit('navigate', 'conversation')
 }
+function selectWorkspace(item: Workspace, event: MouseEvent): void {
+  if (event.detail > 1) return
+  if (props.collapsed) {
+    startConversation(item.id)
+    return
+  }
+  workspaceClick = { id: item.id, expanded: !!state.workspaceGroups[item.id]?.expanded }
+  toggleWorkspace(item.id)
+}
+function editWorkspace(item: Workspace, event: MouseEvent): void {
+  if (props.collapsed || state.managing || state.serviceError) return
+  // 单击立即展开；双击编辑时恢复此前状态，不让编辑动作改变分组展示。
+  if (
+    workspaceClick?.id === item.id &&
+    workspaceClick.expanded !== !!state.workspaceGroups[item.id]?.expanded
+  )
+    toggleWorkspace(item.id)
+  workspaceClick = null
+  manageWorkspace(
+    item,
+    false,
+    event.currentTarget instanceof HTMLElement ? event.currentTarget : null,
+  )
+}
 function manageConversation(
   item: Conversation,
   deleting: boolean,
   trigger: HTMLElement | null,
 ): void {
+  if (state.managing || state.serviceError) return
   managementReturnFocus.value = trigger
   managementError.value = ''
   managementTarget.value = {
@@ -74,6 +115,7 @@ function manageConversation(
   }
 }
 function manageWorkspace(item: Workspace, deleting: boolean, trigger: HTMLElement | null): void {
+  if (state.managing || state.serviceError) return
   managementReturnFocus.value = trigger
   managementError.value = ''
   managementTarget.value = {
@@ -83,6 +125,12 @@ function manageWorkspace(item: Workspace, deleting: boolean, trigger: HTMLElemen
     rootPath: item.rootPath,
     deleting,
   }
+}
+function removeWorkspace(): void {
+  const target = managementTarget.value
+  if (!target || target.kind !== 'workspace' || state.managing || state.serviceError) return
+  managementError.value = ''
+  managementTarget.value = { ...target, deleting: true }
 }
 function addWorkspace(): void {
   if (state.managing) return
@@ -117,6 +165,99 @@ async function confirmManagement(name: string): Promise<void> {
     managementTarget.value = null
   } catch (error) {
     managementError.value = error instanceof Error ? error.message : '无法保存，请重试。'
+  }
+}
+async function pinConversation(item: Conversation): Promise<void> {
+  if (state.managing || state.serviceError) return
+  sidebarError.value = ''
+  try {
+    await setConversationPinned(item.id, item.pinnedAt === null)
+  } catch (error) {
+    sidebarError.value = error instanceof Error ? error.message : '无法更新置顶状态，请重试。'
+  }
+}
+async function archiveConversation(item: Conversation): Promise<void> {
+  if (state.managing || state.serviceError) return
+  const trigger = document.activeElement
+  sidebarError.value = ''
+  try {
+    await setConversationArchived(item.id, true)
+    if (document.activeElement === trigger || document.activeElement === document.body)
+      document.getElementById('archived-conversations')?.focus()
+  } catch (error) {
+    sidebarError.value = error instanceof Error ? error.message : '无法归档会话，请重试。'
+  }
+}
+function showArchives(event: MouseEvent): void {
+  archivesReturnFocus.value =
+    event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  restoreError.value = ''
+  restoreNotice.value = ''
+  openArchives()
+}
+function loadArchives(more: boolean): void {
+  restoreError.value = ''
+  restoreNotice.value = ''
+  void refreshArchives(more)
+}
+function changeArchivesView(kind: 'conversations' | 'workspaces'): void {
+  restoreError.value = ''
+  restoreNotice.value = ''
+  changeArchiveKind(kind)
+}
+async function pinWorkspace(item: Workspace): Promise<void> {
+  if (state.managing || state.serviceError) return
+  sidebarError.value = ''
+  try {
+    await setWorkspacePinned(item.id, item.pinnedAt === null)
+  } catch (error) {
+    sidebarError.value = error instanceof Error ? error.message : '无法更新项目置顶状态，请重试。'
+  }
+}
+async function archiveWorkspace(item: Workspace): Promise<void> {
+  if (state.managing || state.serviceError) return
+  const trigger = document.activeElement
+  sidebarError.value = ''
+  try {
+    await setWorkspaceArchived(item.id, true)
+    if (document.activeElement === trigger || document.activeElement === document.body)
+      document.getElementById('archived-conversations')?.focus()
+  } catch (error) {
+    sidebarError.value = error instanceof Error ? error.message : '无法归档项目，请重试。'
+  }
+}
+async function restoreWorkspace(item: Workspace): Promise<void> {
+  if (state.managing || state.serviceError || restoringId.value) return
+  restoringId.value = `workspace:${item.id}`
+  restoreError.value = ''
+  restoreNotice.value = ''
+  try {
+    await setWorkspaceArchived(item.id, false)
+    if (state.archivesOpen) {
+      restoreNotice.value = `已恢复项目“${item.name}”`
+      document.getElementById('archived-items-title')?.focus()
+    }
+  } catch (error) {
+    restoreError.value = error instanceof Error ? error.message : '无法恢复项目，请重试。'
+  } finally {
+    restoringId.value = ''
+  }
+}
+async function restoreConversation(item: Conversation): Promise<void> {
+  if (state.managing || state.serviceError || restoringId.value) return
+  restoringId.value = item.id
+  restoreError.value = ''
+  restoreNotice.value = ''
+  try {
+    await setConversationArchived(item.id, false)
+    if (state.archivesOpen) {
+      restoreNotice.value = `已恢复“${item.title}”`
+      document.getElementById('archived-items-title')?.focus()
+    }
+  } catch (error) {
+    restoreError.value = error instanceof Error ? error.message : '无法恢复会话，请重试。'
+  } finally {
+    restoringId.value = ''
   }
 }
 </script>
@@ -155,6 +296,9 @@ async function confirmManagement(name: string): Promise<void> {
       </Button>
 
       <div class="mt-7 min-h-0 flex-1 space-y-7 overflow-y-auto">
+        <p v-if="sidebarError" role="alert" class="break-words px-3 text-xs text-destructive">
+          {{ sidebarError }}
+        </p>
         <section aria-labelledby="workspace-heading">
           <div
             class="mb-2 flex h-7 items-center"
@@ -224,7 +368,7 @@ async function confirmManagement(name: string): Promise<void> {
             class="mb-1"
           >
             <div
-              class="group relative flex min-w-0 items-center rounded-lg"
+              class="group relative flex min-w-0 items-center rounded-lg has-[[data-state=open]]:bg-secondary"
               :class="
                 state.workspaceId === workspace.id &&
                 activePage === 'conversation' &&
@@ -241,7 +385,8 @@ async function confirmManagement(name: string): Promise<void> {
                 :aria-expanded="
                   collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
                 "
-                @click="collapsed ? startConversation(workspace.id) : toggleWorkspace(workspace.id)"
+                @click="selectWorkspace(workspace, $event)"
+                @dblclick="editWorkspace(workspace, $event)"
               >
                 <FolderOpenIcon
                   v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
@@ -259,16 +404,18 @@ async function confirmManagement(name: string): Promise<void> {
                 <SidebarItemMenu
                   :label="workspace.name"
                   workspace
+                  :pinned="workspace.pinnedAt !== null"
                   :disabled="state.managing || !!state.serviceError"
                   @rename="manageWorkspace(workspace, false, $event)"
                   @delete="manageWorkspace(workspace, true, $event)"
-                  @new-conversation="startConversation(workspace.id)"
+                  @pin="pinWorkspace(workspace)"
+                  @archive="archiveWorkspace(workspace)"
                 />
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100"
                   :aria-label="`在${workspace.name}中新建对话`"
                   title="新建对话"
                   :disabled="state.managing || !!state.serviceError"
@@ -291,6 +438,8 @@ async function confirmManagement(name: string): Promise<void> {
                 @select="selectConversation"
                 @rename="(item, trigger) => manageConversation(item, false, trigger)"
                 @delete="(item, trigger) => manageConversation(item, true, trigger)"
+                @pin="pinConversation"
+                @archive="archiveConversation"
               />
               <p
                 v-if="state.workspaceGroups[workspace.id]?.loading"
@@ -387,6 +536,8 @@ async function confirmManagement(name: string): Promise<void> {
             @select="selectConversation"
             @rename="(item, trigger) => manageConversation(item, false, trigger)"
             @delete="(item, trigger) => manageConversation(item, true, trigger)"
+            @pin="pinConversation"
+            @archive="archiveConversation"
           />
           <Button
             v-if="state.hasMore && !collapsed"
@@ -402,6 +553,18 @@ async function confirmManagement(name: string): Promise<void> {
     </nav>
 
     <div class="mt-5 shrink-0 space-y-4">
+      <Button
+        id="archived-conversations"
+        variant="ghost"
+        class="w-full gap-3 rounded-lg"
+        :class="collapsed ? 'px-0' : 'justify-start px-3'"
+        :title="collapsed ? '已归档' : undefined"
+        :disabled="state.managing"
+        @click="showArchives"
+      >
+        <ArchiveIcon class="size-4 shrink-0" aria-hidden="true" />
+        <span :class="collapsed ? 'sr-only' : ''">已归档</span>
+      </Button>
       <Button
         :variant="activePage === 'settings' ? 'secondary' : 'ghost'"
         class="w-full gap-3 rounded-lg"
@@ -424,6 +587,26 @@ async function confirmManagement(name: string): Promise<void> {
       </div>
     </div>
   </aside>
+  <ArchivedItemsDialog
+    v-if="state.archivesOpen"
+    :items="state.archivedConversations"
+    :projects="state.archivedWorkspaces"
+    :view="state.archiveKind"
+    :workspaces="state.workspaces"
+    :loading="state.archivesLoading"
+    :has-more="state.archivesHasMore"
+    :busy="state.managing || !!restoringId"
+    :disabled="state.managing || !!state.serviceError || !!restoringId"
+    :restoring-id="restoringId"
+    :error="restoreError || state.archivesError || state.serviceError"
+    :notice="restoreNotice"
+    :return-focus="archivesReturnFocus"
+    @close="closeArchives"
+    @load="loadArchives"
+    @restore="restoreConversation"
+    @restore-workspace="restoreWorkspace"
+    @view="changeArchivesView"
+  />
   <CreateProjectDialog
     v-if="creatingProject"
     :busy="state.managing"
@@ -440,5 +623,6 @@ async function confirmManagement(name: string): Promise<void> {
     :return-focus="managementReturnFocus"
     @close="managementTarget = null"
     @confirm="confirmManagement"
+    @remove="removeWorkspace"
   />
 </template>

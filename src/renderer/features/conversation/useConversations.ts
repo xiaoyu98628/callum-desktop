@@ -1,6 +1,6 @@
 import { computed, inject, onMounted, onScopeDispose, provide, reactive } from 'vue'
 import type { InjectionKey } from 'vue'
-import { isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
+import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
 import type {
@@ -11,8 +11,12 @@ import type {
   ChatResult,
   Conversation,
   ConversationDetail,
+  ConversationUpdate,
+  ConversationPage,
+  WorkspacePage,
   Workspace,
   WorkspaceInput,
+  WorkspaceUpdate,
   UserInputAnswer,
 } from '@shared/chat'
 import { getDesktopApi } from '@/lib/desktop'
@@ -65,6 +69,13 @@ function createConversations() {
     workspacesError: '',
     workspacesHasMore: false,
     managing: false,
+    archivesOpen: false,
+    archivedConversations: [] as Conversation[],
+    archivedWorkspaces: [] as Workspace[],
+    archiveKind: 'conversations' as 'conversations' | 'workspaces',
+    archivesLoading: false,
+    archivesError: '',
+    archivesHasMore: false,
     modelId: '',
     detail: null as ConversationDetail | null,
     loading: true,
@@ -108,6 +119,13 @@ function createConversations() {
     workspaceOffset = 0,
     workspaceRevision = 0
   const workspaceEvents = new Map<string, ChatEvent>()
+  const archiveEvents = new Map<string, ChatEvent>()
+  let archiveGeneration = 0,
+    archiveOffset = 0,
+    archiveRevision = 0
+  // 通知和管理快照有界保留，防止迟到通知或旧查询撤销已接受的用户操作。
+  const conversationUpdates = new Map<string, ConversationUpdate>()
+  const workspaceUpdates = new Map<string, WorkspaceUpdate>()
   const hiddenConversations = new Set<string>()
   const hiddenWorkspaces = new Set<string>()
   const draftWorkspaces = new Map<string, string | null>()
@@ -195,27 +213,85 @@ function createConversations() {
   ): Conversation[] {
     return upsert(items, item)
       .filter((row) => visibleConversation(row, workspaceId))
-      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))
+      .sort(comparePinnedItems)
       .slice(0, 1000)
   }
-  function removeConversation(conversationId: string): void {
+  function reconcileConversations(items: Conversation[], revision: number): Conversation[] {
+    const current = new Map(items.map((item) => [item.id, item]))
+    for (const update of conversationUpdates.values())
+      if (update.revision > revision) current.set(update.conversation.id, update.conversation)
+    const values = [...current.values()]
+    for (const item of values) {
+      const acceptedRevision = Math.max(revision, conversationUpdates.get(item.id)?.revision ?? 0)
+      rememberConversationUpdate({ conversation: item, revision: acceptedRevision })
+      if (isVisible(item)) hiddenConversations.delete(item.id)
+      else removeConversation(item.id, item.deletedAt !== null)
+    }
+    return values
+  }
+  function rememberConversationUpdate(update: ConversationUpdate): void {
+    conversationUpdates.delete(update.conversation.id)
+    conversationUpdates.set(update.conversation.id, update)
+    if (conversationUpdates.size > 1000) {
+      const oldest = conversationUpdates.keys().next().value
+      if (oldest) conversationUpdates.delete(oldest)
+    }
+  }
+  function reconcileWorkspaces(items: Workspace[], revision: number): Workspace[] {
+    const current = new Map(items.map((item) => [item.id, item]))
+    for (const update of workspaceUpdates.values())
+      if (update.revision > revision) current.set(update.workspace.id, update.workspace)
+    const values = [...current.values()]
+    // 查询快照也推进逐项版本；否则已被查询覆盖的旧归档通知仍可能隐藏已恢复项目。
+    for (const item of values) {
+      const acceptedRevision = Math.max(revision, workspaceUpdates.get(item.id)?.revision ?? 0)
+      rememberWorkspaceUpdate({ workspace: item, revision: acceptedRevision })
+      if (isVisible(item)) hiddenWorkspaces.delete(item.id)
+      else removeWorkspace(item.id, item.deletedAt !== null)
+    }
+    return values
+  }
+  function rememberWorkspaceUpdate(update: WorkspaceUpdate): void {
+    workspaceUpdates.delete(update.workspace.id)
+    workspaceUpdates.set(update.workspace.id, update)
+    if (workspaceUpdates.size > 1000) {
+      const oldest = workspaceUpdates.keys().next().value
+      if (oldest) workspaceUpdates.delete(oldest)
+    }
+  }
+  function archivedConversation(item: Conversation): boolean {
+    return (
+      item.archivedAt !== null &&
+      item.deletedAt === null &&
+      (!item.workspaceId ||
+        (workspaceUpdates.get(item.workspaceId)?.workspace.deletedAt ?? null) === null)
+    )
+  }
+  function removeConversation(conversationId: string, deleted = true): void {
     rememberHidden(hiddenConversations, conversationId)
-    delete state.drafts[conversationId]
-    draftWorkspaces.delete(conversationId)
+    if (deleted) {
+      delete state.drafts[conversationId]
+      draftWorkspaces.delete(conversationId)
+    }
     state.conversations = state.conversations.filter((item) => item.id !== conversationId)
     for (const group of Object.values(state.workspaceGroups))
       group.items = group.items.filter((item) => item.id !== conversationId)
     if (state.selectedId === conversationId) newConversation()
   }
-  function removeWorkspace(workspaceId: string): void {
+  function removeWorkspace(workspaceId: string, deleted = true): void {
     rememberHidden(hiddenWorkspaces, workspaceId)
-    for (const [key, owner] of draftWorkspaces) {
-      if (owner === workspaceId) {
-        delete state.drafts[key]
-        draftWorkspaces.delete(key)
+    if (deleted)
+      for (const [key, owner] of draftWorkspaces) {
+        if (owner === workspaceId) {
+          delete state.drafts[key]
+          draftWorkspaces.delete(key)
+        }
       }
-    }
     delete state.workspaceGroups[workspaceId]
+    if (deleted)
+      state.archivedConversations = state.archivedConversations.filter(
+        (item) => item.workspaceId !== workspaceId,
+      )
     state.workspaces = state.workspaces.filter((item) => item.id !== workspaceId)
     if (state.workspaceId === workspaceId) newConversation()
   }
@@ -253,16 +329,40 @@ function createConversations() {
       return
     }
     if (change.kind === 'workspace') {
-      if (event.revision <= workspaceRevision) return
-      if (!isVisible(change.value)) removeWorkspace(change.value.id)
-      else if (!hiddenWorkspaces.has(change.value.id))
+      if (event.revision <= (workspaceUpdates.get(change.value.id)?.revision ?? 0)) return
+      if (!isVisible(change.value))
+        removeWorkspace(change.value.id, change.value.deletedAt !== null)
+      else hiddenWorkspaces.delete(change.value.id)
+      if (isVisible(change.value) && event.revision > workspaceRevision)
         state.workspaces = upsert(state.workspaces, change.value)
-          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .sort(comparePinnedItems)
           .slice(0, 1000)
+      if (
+        state.archivesOpen &&
+        state.archiveKind === 'workspaces' &&
+        event.revision > archiveRevision
+      )
+        state.archivedWorkspaces = upsert(state.archivedWorkspaces, change.value)
+          .filter((item) => item.archivedAt !== null && item.deletedAt === null)
+          .sort(comparePinnedItems)
+          .slice(0, 1000)
+      rememberWorkspaceUpdate({ workspace: change.value, revision: event.revision })
       return
     }
     if (change.kind === 'conversation') {
-      if (!isVisible(change.value)) removeConversation(change.value.id)
+      if (event.revision <= (conversationUpdates.get(change.value.id)?.revision ?? 0)) return
+      if (!isVisible(change.value))
+        removeConversation(change.value.id, change.value.deletedAt !== null)
+      else hiddenConversations.delete(change.value.id)
+      if (
+        state.archivesOpen &&
+        state.archiveKind === 'conversations' &&
+        event.revision > archiveRevision
+      )
+        state.archivedConversations = upsert(state.archivedConversations, change.value)
+          .filter(archivedConversation)
+          .sort(comparePinnedItems)
+          .slice(0, 1000)
       if (event.revision > listRevision)
         state.conversations = mergeConversation(state.conversations, change.value, null)
       for (const [workspaceId, group] of Object.entries(state.workspaceGroups)) {
@@ -284,6 +384,7 @@ function createConversations() {
         visibleConversation(change.value, state.workspaceId)
       )
         state.detail.conversation = change.value
+      rememberConversationUpdate({ conversation: change.value, revision: event.revision })
       return
     }
     if (
@@ -325,6 +426,15 @@ function createConversations() {
   }
   function receive(event: ChatEvent): void {
     const change = event.change
+    if ((change.kind === 'conversation' || change.kind === 'workspace') && state.archivesLoading) {
+      archiveEvents.set(`${change.kind}:${change.value.id}`, event)
+      if (archiveEvents.size > 500) {
+        archiveGeneration++
+        archiveEvents.clear()
+        state.archivesLoading = false
+        state.archivesError = '对话变化较快，请重新加载。'
+      }
+    }
     if (change.kind === 'conversation' && state.loadingList) {
       listEvents.set(change.value.id, event)
       if (listEvents.size > 500) {
@@ -376,16 +486,18 @@ function createConversations() {
       // 配置页面可能在概览查询期间保存模型，不让迟到的旧列表覆盖已保存配置。
       if (generation === modelGeneration) setModels(result.models)
       listRevision = result.revision
-      state.conversations = (
+      state.conversations = reconcileConversations(
         more
           ? [
               ...new Map(
                 [...state.conversations, ...result.conversations].map((item) => [item.id, item]),
               ).values(),
             ]
-          : result.conversations
+          : result.conversations,
+        result.revision,
       )
         .filter((item) => visibleConversation(item, null))
+        .sort(comparePinnedItems)
         .slice(0, 1000)
       state.hasMore = result.hasMore && state.conversations.length < 1000
       listOffset = (more ? listOffset : 0) + 50
@@ -410,16 +522,18 @@ function createConversations() {
       const result = unwrap(await getDesktopApi().listWorkspaces(more ? workspaceOffset : 0))
       if (disposed || generation !== workspaceGeneration) return
       workspaceRevision = result.revision
-      state.workspaces = (
+      state.workspaces = reconcileWorkspaces(
         more
           ? [
               ...new Map(
                 [...state.workspaces, ...result.workspaces].map((item) => [item.id, item]),
               ).values(),
             ]
-          : result.workspaces
+          : result.workspaces,
+        result.revision,
       )
         .filter((item) => isVisible(item) && !hiddenWorkspaces.has(item.id))
+        .sort(comparePinnedItems)
         .slice(0, 1000)
       state.workspacesHasMore = result.hasMore && state.workspaces.length < 1000
       workspaceOffset = (more ? workspaceOffset : 0) + 50
@@ -451,16 +565,18 @@ function createConversations() {
         generation !== group.generation
       )
         return
-      group.items = (
+      group.items = reconcileConversations(
         more
           ? [
               ...new Map(
                 [...group.items, ...result.conversations].map((item) => [item.id, item]),
               ).values(),
             ]
-          : result.conversations
+          : result.conversations,
+        result.revision,
       )
         .filter((item) => visibleConversation(item, workspaceId))
+        .sort(comparePinnedItems)
         .slice(0, 1000)
       group.revision = result.revision
       group.offset = (more ? group.offset : 0) + 50
@@ -522,7 +638,7 @@ function createConversations() {
       hiddenWorkspaces.delete(result.id)
       state.workspaces = upsert(state.workspaces, result)
         .filter(isVisible)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .sort(comparePinnedItems)
         .slice(0, 1000)
       expandWorkspace(result.id)
     }
@@ -531,9 +647,7 @@ function createConversations() {
   async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
     const result = await manage(() => getDesktopApi().renameWorkspace(workspaceId, name))
     if (!disposed && !hiddenWorkspaces.has(workspaceId))
-      state.workspaces = upsert(state.workspaces, result)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 1000)
+      state.workspaces = upsert(state.workspaces, result).sort(comparePinnedItems).slice(0, 1000)
   }
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     await manage(() => getDesktopApi().deleteWorkspace(workspaceId))
@@ -550,12 +664,140 @@ function createConversations() {
       group.items = mergeConversation(group.items, result, workspaceId)
     if (state.detail?.conversation.id === result.id) state.detail.conversation = result
   }
+  async function updateWorkspaceFlag(
+    workspaceId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<void> {
+    const result = await manage(() =>
+      'pinned' in change
+        ? getDesktopApi().setWorkspacePinned(workspaceId, change.pinned)
+        : getDesktopApi().setWorkspaceArchived(workspaceId, change.archived),
+    )
+    if (disposed) return
+    apply({ revision: result.revision, change: { kind: 'workspace', value: result.workspace } })
+    if ('archived' in change && !change.archived) expandWorkspace(workspaceId)
+    void refreshWorkspaces()
+    if (state.archivesOpen) await refreshArchives()
+  }
+  function setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
+    return updateWorkspaceFlag(workspaceId, { pinned })
+  }
+  function setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<void> {
+    return updateWorkspaceFlag(workspaceId, { archived })
+  }
   async function deleteConversation(conversationId: string): Promise<void> {
     const result = await manage(() => getDesktopApi().deleteConversation(conversationId))
     if (!disposed) {
       removeConversation(conversationId)
       if (result.workspaceId) void loadWorkspaceConversations(result.workspaceId)
       else void refreshOverview()
+    }
+  }
+  async function updateConversationFlag(
+    conversationId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<void> {
+    const result = await manage(() =>
+      'pinned' in change
+        ? getDesktopApi().setConversationPinned(conversationId, change.pinned)
+        : getDesktopApi().setConversationArchived(conversationId, change.archived),
+    )
+    if (disposed) return
+    apply({
+      revision: result.revision,
+      change: { kind: 'conversation', value: result.conversation },
+    })
+    // 变更排序或过滤条件后从第一页重读，不能沿用之前的偏移跳过记录。
+    if (result.conversation.workspaceId)
+      void loadWorkspaceConversations(result.conversation.workspaceId)
+    else void refreshOverview()
+    if (state.archivesOpen) await refreshArchives()
+  }
+  function setConversationPinned(conversationId: string, pinned: boolean): Promise<void> {
+    return updateConversationFlag(conversationId, { pinned })
+  }
+  function setConversationArchived(conversationId: string, archived: boolean): Promise<void> {
+    return updateConversationFlag(conversationId, { archived })
+  }
+  function openArchives(): void {
+    state.archivesOpen = true
+    state.archiveKind = 'conversations'
+    void refreshArchives()
+  }
+  function changeArchiveKind(kind: 'conversations' | 'workspaces'): void {
+    if (kind === state.archiveKind || state.managing) return
+    state.archiveKind = kind
+    state.archivedConversations = []
+    state.archivedWorkspaces = []
+    state.archivesHasMore = false
+    void refreshArchives()
+  }
+  function closeArchives(): void {
+    state.archivesOpen = false
+    archiveGeneration++
+    archiveEvents.clear()
+    state.archivedConversations = []
+    state.archivedWorkspaces = []
+    state.archivesLoading = false
+    state.archivesError = ''
+    state.archivesHasMore = false
+  }
+  async function refreshArchives(more = false): Promise<void> {
+    if (!state.archivesOpen || (more && state.archivesLoading)) return
+    const generation = ++archiveGeneration
+    state.archivesLoading = true
+    state.archivesError = ''
+    archiveEvents.clear()
+    try {
+      const result = unwrap<WorkspacePage | ConversationPage>(
+        await (state.archiveKind === 'workspaces'
+          ? getDesktopApi().listArchivedWorkspaces(more ? archiveOffset : 0)
+          : getDesktopApi().listArchivedConversations(more ? archiveOffset : 0)),
+      )
+      if (disposed || generation !== archiveGeneration || !state.archivesOpen) return
+      if ('workspaces' in result) {
+        const items = more
+          ? [
+              ...new Map(
+                [...state.archivedWorkspaces, ...result.workspaces].map((item) => [item.id, item]),
+              ).values(),
+            ]
+          : result.workspaces
+        state.archivedWorkspaces = reconcileWorkspaces(items, result.revision)
+          .filter((item) => item.archivedAt !== null && item.deletedAt === null)
+          .sort(comparePinnedItems)
+          .slice(0, 1000)
+      } else {
+        const items = more
+          ? [
+              ...new Map(
+                [...state.archivedConversations, ...result.conversations].map((item) => [
+                  item.id,
+                  item,
+                ]),
+              ).values(),
+            ]
+          : result.conversations
+        state.archivedConversations = reconcileConversations(items, result.revision)
+          .filter(archivedConversation)
+          .sort(comparePinnedItems)
+          .slice(0, 1000)
+      }
+      archiveRevision = result.revision
+      archiveOffset = (more ? archiveOffset : 0) + 50
+      const count =
+        state.archiveKind === 'workspaces'
+          ? state.archivedWorkspaces.length
+          : state.archivedConversations.length
+      state.archivesHasMore = result.hasMore && count < 1000
+      for (const event of archiveEvents.values()) if (event.revision > result.revision) apply(event)
+    } catch (error) {
+      if (!disposed && generation === archiveGeneration) state.archivesError = message(error)
+    } finally {
+      if (generation === archiveGeneration) {
+        state.archivesLoading = false
+        archiveEvents.clear()
+      }
     }
   }
   function newConversation(workspaceId: string | null = null): void {
@@ -611,6 +853,12 @@ function createConversations() {
     try {
       const result = unwrap(await getDesktopApi().getConversation(conversationId))
       if (disposed || token !== selection) return
+      const update = conversationUpdates.get(conversationId)
+      if (update && update.revision > result.revision) result.conversation = update.conversation
+      if (!isVisible(result.conversation)) {
+        newConversation()
+        return
+      }
       state.detail = result
       state.workspaceId = result.conversation.workspaceId
       state.detail.messages = boundMessages(result.messages)
@@ -880,10 +1128,14 @@ function createConversations() {
     selection++
     overviewGeneration++
     workspaceGeneration++
+    archiveGeneration++
     unsubscribe?.()
     pendingEvents.clear()
     listEvents.clear()
     workspaceEvents.clear()
+    archiveEvents.clear()
+    conversationUpdates.clear()
+    workspaceUpdates.clear()
   })
   return {
     state,
@@ -911,6 +1163,14 @@ function createConversations() {
     deleteWorkspace,
     renameConversation,
     deleteConversation,
+    setConversationPinned,
+    setConversationArchived,
+    setWorkspacePinned,
+    setWorkspaceArchived,
+    changeArchiveKind,
+    openArchives,
+    closeArchives,
+    refreshArchives,
     newConversation,
     selectDraftProject,
     openConversation,

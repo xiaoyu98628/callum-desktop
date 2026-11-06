@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import {
   array,
+  comparePinnedItems,
   id,
   isActiveRun,
   isVisible,
@@ -27,10 +28,12 @@ import type {
   UserInputAnswer,
   Conversation,
   ConversationPage,
+  ConversationUpdate,
   ConversationDetail,
   Workspace,
   WorkspaceInput,
   WorkspacePage,
+  WorkspaceUpdate,
   SendMessageInput,
   SendMessageResult,
   ResendMessageInput,
@@ -154,7 +157,7 @@ export class ChatService {
       }),
       conversations: conversations
         .filter((item) => item.workspaceId === null && isVisible(item))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+        .sort(comparePinnedItems),
       hasMore,
       revision: this.revision,
     }
@@ -204,7 +207,7 @@ export class ChatService {
     return {
       conversations: conversations
         .filter((item) => item.workspaceId === workspaceId && isVisible(item))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+        .sort(comparePinnedItems),
       hasMore,
       revision: this.revision,
     }
@@ -224,7 +227,11 @@ export class ChatService {
       )
         workspaces = upsert(workspaces, change.value)
     }
-    return { workspaces: workspaces.filter(isVisible), hasMore, revision: this.revision }
+    return {
+      workspaces: workspaces.filter(isVisible).sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
   }
   private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
     if (this.mutations.has(key)) throw new Error('此操作正在提交，请稍候。')
@@ -267,6 +274,50 @@ export class ChatService {
       return value
     })
   }
+  async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<WorkspaceUpdate> {
+    if (typeof pinned !== 'boolean') throw new Error('项目置顶状态无效')
+    return this.updateWorkspaceFlag(workspaceId, { pinned })
+  }
+  async setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<WorkspaceUpdate> {
+    if (typeof archived !== 'boolean') throw new Error('项目归档状态无效')
+    return this.updateWorkspaceFlag(workspaceId, { archived })
+  }
+  private async updateWorkspaceFlag(
+    workspaceId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<WorkspaceUpdate> {
+    const identifier = id(workspaceId)
+    return this.mutate(`workspace:${identifier}`, async () => {
+      const workspace = workspaceFromRpc(
+        await this.request('workspace.update', { id: identifier, ...change }),
+      )
+      this.publish({ kind: 'workspace', value: workspace })
+      return { workspace, revision: this.revision }
+    })
+  }
+  async archivedWorkspaces(offset: number): Promise<WorkspacePage> {
+    const start = this.revision
+    let workspaces = array(
+      (await this.request('workspace.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
+      workspaceFromRpc,
+    )
+    const hasMore = workspaces.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        (offset === 0 || workspaces.some((item) => item.id === change.value.id))
+      )
+        workspaces = upsert(workspaces, change.value)
+    }
+    return {
+      workspaces: workspaces
+        .filter((item) => item.archivedAt !== null && item.deletedAt === null)
+        .sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
+  }
   async renameConversation(conversationId: string, title: string): Promise<Conversation> {
     return this.mutate(`conversation:${conversationId}`, async () => {
       const value = conversationFromRpc(
@@ -287,6 +338,75 @@ export class ChatService {
       this.publish({ kind: 'conversation', value })
       return value
     })
+  }
+  async setConversationPinned(
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<ConversationUpdate> {
+    if (typeof pinned !== 'boolean') throw new Error('置顶状态无效')
+    return this.updateConversationFlag(conversationId, { pinned })
+  }
+  async setConversationArchived(
+    conversationId: string,
+    archived: boolean,
+  ): Promise<ConversationUpdate> {
+    if (typeof archived !== 'boolean') throw new Error('归档状态无效')
+    return this.updateConversationFlag(conversationId, { archived })
+  }
+  private async updateConversationFlag(
+    conversationId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<ConversationUpdate> {
+    const identifier = id(conversationId)
+    return this.mutate(`conversation:${identifier}`, async () => {
+      if ('archived' in change && !change.archived) {
+        const conversation = conversationFromRpc(
+          await this.request('conversation.get', { id: identifier }),
+        )
+        if (conversation.workspaceId) {
+          const workspace = workspaceFromRpc(
+            await this.request('workspace.get', { id: conversation.workspaceId }),
+          )
+          if (!isVisible(workspace)) throw new Error('所属项目已被删除或归档，请先恢复项目。')
+        }
+      }
+      const conversation = conversationFromRpc(
+        await this.request('conversation.update', { id: identifier, ...change }),
+      )
+      this.publish({ kind: 'conversation', value: conversation })
+      return { conversation, revision: this.revision }
+    })
+  }
+  async archivedConversations(offset: number): Promise<ConversationPage> {
+    const start = this.revision
+    let conversations = array(
+      (await this.request('conversation.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
+      conversationFromRpc,
+    )
+    const hasMore = conversations.length === PAGE_SIZE
+    const hiddenWorkspaces = new Set<string>()
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (change.kind === 'workspace' && change.value.deletedAt !== null)
+        hiddenWorkspaces.add(change.value.id)
+      if (
+        change.kind === 'conversation' &&
+        (offset === 0 || conversations.some((item) => item.id === change.value.id))
+      )
+        conversations = upsert(conversations, change.value)
+    }
+    return {
+      conversations: conversations
+        .filter(
+          (item) =>
+            item.archivedAt !== null &&
+            item.deletedAt === null &&
+            (!item.workspaceId || !hiddenWorkspaces.has(item.workspaceId)),
+        )
+        .sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
   }
   async detail(conversationId: string): Promise<ConversationDetail> {
     const start = this.revision
@@ -325,8 +445,20 @@ export class ChatService {
         ? '本次执行状态未能完整保存，请重新打开应用后核对历史。'
         : null,
     }
-    for (const event of this.since(start)) this.mergeDetail(result, event.change)
+    let workspace = result.conversation.workspaceId
+      ? workspaceFromRpc(
+          await this.request('workspace.get', { id: result.conversation.workspaceId }),
+        )
+      : null
+    // 项目读取也属于详情快照，所有异步读取结束后再合并期间发生的事件。
+    for (const { change } of this.since(start)) {
+      this.mergeDetail(result, change)
+      if (change.kind === 'workspace' && change.value.id === workspace?.id) workspace = change.value
+    }
     if (!isVisible(result.conversation)) throw new Error('会话已被删除或归档。')
+    if (result.conversation.workspaceId !== (workspace?.id ?? null))
+      throw new Error('会话所属项目已变化，请重新打开会话。')
+    if (workspace && !isVisible(workspace)) throw new Error('所属项目已被删除或归档。')
     // 活动回答可能尚未落库；完整的内存消息优先于数据库及事件中的中间快照。
     for (const message of this.messages.values())
       if (message.conversationId === conversationId)

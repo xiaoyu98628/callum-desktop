@@ -16,9 +16,11 @@ import {
   parseResendResult,
   parseConversation,
   parseConversationPage,
+  parseConversationUpdate,
   parseSelectedDirectory,
   parseWorkspace,
   parseWorkspacePage,
+  parseWorkspaceUpdate,
   parseUserInput,
   parseDirectoryGrant,
 } from '../shared/chat'
@@ -123,6 +125,24 @@ const desktopApi: DesktopApi = {
       parseWorkspace,
     )
   },
+  async setWorkspacePinned(workspaceId, pinned) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setWorkspacePinned, workspaceId, pinned),
+      parseWorkspaceUpdate,
+    )
+  },
+  async setWorkspaceArchived(workspaceId, archived) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceArchived, workspaceId, archived),
+      parseWorkspaceUpdate,
+    )
+  },
+  async listArchivedWorkspaces(offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listArchivedWorkspaces, offset),
+      parseWorkspacePage,
+    )
+  },
   async renameConversation(conversationId, title) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.renameConversation, conversationId, title),
@@ -133,6 +153,24 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.deleteConversation, conversationId),
       parseConversation,
+    )
+  },
+  async setConversationPinned(conversationId, pinned) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setConversationPinned, conversationId, pinned),
+      parseConversationUpdate,
+    )
+  },
+  async setConversationArchived(conversationId, archived) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setConversationArchived, conversationId, archived),
+      parseConversationUpdate,
+    )
+  },
+  async listArchivedConversations(offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listArchivedConversations, offset),
+      parseConversationPage,
     )
   },
   async getEarlierMessages(conversationId, beforeSequence) {

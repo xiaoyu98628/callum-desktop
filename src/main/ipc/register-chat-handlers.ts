@@ -146,11 +146,33 @@ export function registerChatHandlers(
     service.renameWorkspace(id(workspaceId), parseName(name)),
   )
   handle(IPC_CHANNELS.deleteWorkspace, 1, (workspaceId) => service.deleteWorkspace(id(workspaceId)))
+  handle(IPC_CHANNELS.setWorkspacePinned, 2, (workspaceId, pinned) => {
+    if (typeof pinned !== 'boolean') throw new Error('项目置顶状态无效')
+    return service.setWorkspacePinned(id(workspaceId), pinned)
+  })
+  handle(IPC_CHANNELS.setWorkspaceArchived, 2, (workspaceId, archived) => {
+    if (typeof archived !== 'boolean') throw new Error('项目归档状态无效')
+    return service.setWorkspaceArchived(id(workspaceId), archived)
+  })
+  handle(IPC_CHANNELS.listArchivedWorkspaces, 1, (offset) =>
+    service.archivedWorkspaces(pageOffset(offset)),
+  )
   handle(IPC_CHANNELS.renameConversation, 2, (conversationId, title) =>
     service.renameConversation(id(conversationId), parseName(title)),
   )
   handle(IPC_CHANNELS.deleteConversation, 1, (conversationId) =>
     service.deleteConversation(id(conversationId)),
+  )
+  handle(IPC_CHANNELS.setConversationPinned, 2, (conversationId, pinned) => {
+    if (typeof pinned !== 'boolean') throw new Error('置顶状态无效')
+    return service.setConversationPinned(id(conversationId), pinned)
+  })
+  handle(IPC_CHANNELS.setConversationArchived, 2, (conversationId, archived) => {
+    if (typeof archived !== 'boolean') throw new Error('归档状态无效')
+    return service.setConversationArchived(id(conversationId), archived)
+  })
+  handle(IPC_CHANNELS.listArchivedConversations, 1, (offset) =>
+    service.archivedConversations(pageOffset(offset)),
   )
   handle(IPC_CHANNELS.getModelCatalog, 0, () => service.catalog.list())
   handle(IPC_CHANNELS.getExecutionSettings, 0, () => service.executionSettings())

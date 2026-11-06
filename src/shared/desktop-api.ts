@@ -12,9 +12,11 @@ import type {
   ConversationDetail,
   Conversation,
   ConversationPage,
+  ConversationUpdate,
   Workspace,
   WorkspaceInput,
   WorkspacePage,
+  WorkspaceUpdate,
   SelectedDirectory,
   SendMessageInput,
   SendMessageResult,
@@ -55,8 +57,20 @@ export interface DesktopApi {
   createWorkspace(input: WorkspaceInput): Promise<ChatResult<Workspace>>
   renameWorkspace(workspaceId: string, name: string): Promise<ChatResult<Workspace>>
   deleteWorkspace(workspaceId: string): Promise<ChatResult<Workspace>>
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<ChatResult<WorkspaceUpdate>>
+  setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<ChatResult<WorkspaceUpdate>>
+  listArchivedWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
   renameConversation(conversationId: string, title: string): Promise<ChatResult<Conversation>>
   deleteConversation(conversationId: string): Promise<ChatResult<Conversation>>
+  setConversationPinned(
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<ChatResult<ConversationUpdate>>
+  setConversationArchived(
+    conversationId: string,
+    archived: boolean,
+  ): Promise<ChatResult<ConversationUpdate>>
+  listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
   getEarlierMessages(
     conversationId: string,

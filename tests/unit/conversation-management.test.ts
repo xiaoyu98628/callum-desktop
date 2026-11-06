@@ -1,16 +1,70 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
 import { ChatService } from '../../src/main/backend/chat-service.ts'
-import { parseName, parseSendInput, parseWorkspaceInput } from '../../src/shared/chat.ts'
+import {
+  comparePinnedItems,
+  parseConversation,
+  parseConversationUpdate,
+  parseName,
+  parseSendInput,
+  parseWorkspaceInput,
+  parseWorkspace,
+  parseWorkspaceUpdate,
+} from '../../src/shared/chat.ts'
 import type { ChatEvent } from '../../src/shared/chat.ts'
 import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
 const uuid = '019a4f39-0000-7000-8000-000000000001'
+test('置顶快照按后端顺序排序，跨进程拒绝损坏的状态和版本', () => {
+  const item = parseConversation({
+    id: uuid,
+    workspaceId: null,
+    title: '会话',
+    modelId: uuid,
+    modelName: '模型',
+    updatedAt: 100,
+    pinnedAt: null,
+    deletedAt: null,
+    archivedAt: null,
+  })
+  const pinned = { ...item, id: '019a4f39-0000-7000-8000-000000000002', updatedAt: 1, pinnedAt: 10 }
+  assert.deepEqual(
+    [item, pinned].sort(comparePinnedItems).map((value) => value.id),
+    [pinned.id, item.id],
+  )
+  assert.ok(comparePinnedItems({ ...item, pinnedAt: 20 }, pinned) < 0)
+  assert.ok(comparePinnedItems({ ...pinned, updatedAt: 2 }, pinned) < 0)
+  assert.ok(
+    comparePinnedItems({ ...pinned, id: '019a4f39-0000-7000-8000-000000000003' }, pinned) < 0,
+  )
+  assert.equal(
+    parseConversationUpdate({ conversation: pinned, revision: 1 }).conversation.pinnedAt,
+    10,
+  )
+  for (const pinnedAt of [undefined, '10', -1, 1.5])
+    assert.throws(() => parseConversation({ ...item, pinnedAt }))
+  for (const revision of [undefined, 0, -1, '1', 1.5])
+    assert.throws(() => parseConversationUpdate({ conversation: item, revision }))
+  const workspace = parseWorkspace({
+    id: uuid,
+    name: '项目',
+    rootPath: '/tmp/project',
+    updatedAt: 10,
+    pinnedAt: null,
+    deletedAt: null,
+    archivedAt: null,
+  })
+  assert.equal(parseWorkspaceUpdate({ workspace, revision: 1 }).workspace.name, '项目')
+  for (const pinnedAt of [undefined, '1', -1, 1.5])
+    assert.throws(() => parseWorkspace({ ...workspace, pinnedAt }))
+  for (const revision of [0, -1, '1', 1.5])
+    assert.throws(() => parseWorkspaceUpdate({ workspace, revision }))
+})
 test('会话与工作区输入按 UTF-8 限制名称，拒绝未知字段及发送时改绑', () => {
   assert.equal(parseName(' 中文标题 '), '中文标题')
   assert.equal(parseName('中'.repeat(341)).length, 341)
@@ -83,7 +137,18 @@ test(
         run.conversationId,
       )
       await assert.rejects(service.deleteConversation(run.conversationId), /执行/)
+      const pinned = await service.setConversationPinned(run.conversationId, true)
+      assert.ok(pinned.conversation.pinnedAt)
+      assert.ok(pinned.revision > 0)
+      await assert.rejects(service.setConversationArchived(run.conversationId, true), /执行/)
+      assert.equal(
+        (await service.workspaceConversations(workspace.id, 0)).conversations[0]?.archivedAt,
+        null,
+      )
       await assert.rejects(service.deleteWorkspace(workspace.id), /执行/)
+      assert.ok((await service.setWorkspacePinned(workspace.id, true)).workspace.pinnedAt)
+      await assert.rejects(service.setWorkspaceArchived(workspace.id, true), /执行/)
+      assert.equal((await service.listWorkspaces(0)).workspaces[0]?.archivedAt, null)
       assert.equal(
         (await service.renameConversation(run.conversationId, '人工保留的标题')).title,
         '人工保留的标题',
@@ -109,6 +174,79 @@ test(
       )
       assert.equal((await service.overview(0)).conversations[0]?.id, unbound.conversationId)
       assert.equal((await service.detail(run.conversationId)).conversation.title, '人工保留的标题')
+      await service.setConversationPinned(unbound.conversationId, true)
+      await service.setConversationArchived(run.conversationId, true)
+      await service.setConversationArchived(unbound.conversationId, true)
+      assert.equal((await service.overview(0)).conversations.length, 0)
+      assert.equal((await service.workspaceConversations(workspace.id, 0)).conversations.length, 0)
+      assert.equal((await service.archivedConversations(0)).conversations.length, 2)
+      await assert.rejects(service.detail(run.conversationId), /归档/)
+      await service.close()
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      service.subscribe((event) => events.push(event))
+      assert.equal((await service.archivedConversations(0)).conversations.length, 2)
+      const restoredProjectChat = await service.setConversationArchived(run.conversationId, false)
+      assert.equal(restoredProjectChat.conversation.workspaceId, workspace.id)
+      assert.ok(restoredProjectChat.conversation.pinnedAt)
+      await service.setConversationArchived(unbound.conversationId, false)
+      assert.equal((await service.overview(0)).conversations[0]?.id, unbound.conversationId)
+      assert.equal((await service.archivedConversations(0)).conversations.length, 0)
+      assert.ok((await service.detail(run.conversationId)).messages.length)
+      assert.equal(
+        (await service.setConversationPinned(run.conversationId, false)).conversation.pinnedAt,
+        null,
+      )
+      // 在项目读取完成后暂停详情，确定性验证期间归档的项目状态会进入快照。
+      const request: (method: string, params: unknown) => Promise<unknown> = Reflect.get(
+        service,
+        'request',
+      ).bind(service)
+      let releaseParent!: () => void, parentRead!: () => void
+      const parentReady = new Promise<void>((resolve) => {
+        parentRead = resolve
+      })
+      const parentGate = new Promise<void>((resolve) => {
+        releaseParent = resolve
+      })
+      Reflect.set(service, 'request', async (method: string, params: unknown) => {
+        const result = await request(method, params)
+        if (method === 'workspace.get') {
+          parentRead()
+          await parentGate
+        }
+        return result
+      })
+      try {
+        const details = service.detail(run.conversationId)
+        void details.catch(() => undefined)
+        await parentReady
+        await service.setWorkspaceArchived(workspace.id, true)
+        releaseParent()
+        await assert.rejects(details, /项目|归档/)
+      } finally {
+        releaseParent()
+        Reflect.set(service, 'request', request)
+      }
+      await service.setWorkspaceArchived(workspace.id, false)
+      await service.setConversationArchived(run.conversationId, true)
+      await service.setWorkspaceArchived(workspace.id, true)
+      assert.equal((await service.listWorkspaces(0)).workspaces.length, 0)
+      assert.equal((await service.archivedWorkspaces(0)).workspaces[0]?.id, workspace.id)
+      await assert.rejects(service.workspaceConversations(workspace.id, 0), /归档/)
+      await assert.rejects(service.setConversationArchived(run.conversationId, false), /项目|归档/)
+      await service.close()
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      service.subscribe((event) => events.push(event))
+      assert.ok((await service.archivedWorkspaces(0)).workspaces[0]?.pinnedAt)
+      const restoredWorkspace = await service.setWorkspaceArchived(workspace.id, false)
+      assert.equal(restoredWorkspace.workspace.rootPath, await realpath(folder))
+      assert.ok(restoredWorkspace.workspace.pinnedAt)
+      await service.setConversationArchived(run.conversationId, false)
+      assert.ok((await service.detail(run.conversationId)).messages.length)
+      await service.setWorkspaceArchived(workspace.id, true)
+      await assert.rejects(service.detail(run.conversationId), /项目|归档/)
+      await service.setWorkspaceArchived(workspace.id, false)
+      assert.equal((await service.setWorkspacePinned(workspace.id, false)).workspace.pinnedAt, null)
       const deleted = await service.deleteConversation(unbound.conversationId)
       assert.ok(deleted.deletedAt)
       assert.equal((await service.overview(0)).conversations.length, 0)
@@ -206,6 +344,74 @@ test(
       await service.deleteConversation(conversations.conversations[0]!.id)
       assert.equal((await service.workspaceConversations(workspace.id, 0)).conversations.length, 50)
       assert.equal((await service.workspaceConversations(workspace.id, 50)).conversations.length, 0)
+      const remaining = (await service.workspaceConversations(workspace.id, 0)).conversations
+      const last = remaining.at(-1)!
+      await service.setConversationPinned(last.id, true)
+      assert.equal(
+        (await service.workspaceConversations(workspace.id, 0)).conversations[0]?.id,
+        last.id,
+      )
+      for (const item of remaining) await service.setConversationArchived(item.id, true)
+      const independent = await service.send({
+        conversationId: null,
+        modelId,
+        text: '分页独立会话',
+      })
+      await until(() =>
+        events.some(
+          ({ change }) =>
+            change.kind === 'run' &&
+            change.value.id === independent.runId &&
+            change.value.status === 'completed',
+        ),
+      )
+      await service.setConversationArchived(independent.conversationId, true)
+      const archived = await service.archivedConversations(0),
+        nextArchived = await service.archivedConversations(50)
+      assert.equal(archived.conversations.length, 50)
+      assert.equal(archived.hasMore, true)
+      assert.equal(archived.conversations[0]?.id, last.id)
+      assert.equal(nextArchived.conversations.length, 1)
+      assert.equal(
+        new Set([...archived.conversations, ...nextArchived.conversations].map((item) => item.id))
+          .size,
+        51,
+      )
+      await service.setConversationArchived(last.id, false)
+      assert.equal(
+        (await service.workspaceConversations(workspace.id, 0)).conversations[0]?.id,
+        last.id,
+      )
+      assert.equal((await service.archivedConversations(0)).conversations.length, 50)
+      await service.deleteWorkspace(workspace.id)
+      assert.equal((await service.archivedConversations(0)).conversations.length, 1)
+      await assert.rejects(
+        service.setConversationArchived(remaining[0]!.id, false),
+        /项目|删除|恢复/,
+      )
+      const projects = [...firstPage.workspaces, ...nextPage.workspaces].filter(
+        (item) => item.id !== workspace.id,
+      )
+      const extraRoot = join(profile, 'archived-extra')
+      await mkdir(extraRoot)
+      projects.push(await service.createWorkspace({ name: '分页归档项目', rootPath: extraRoot }))
+      const oldestProject = projects.at(-2)!
+      await service.setWorkspacePinned(oldestProject.id, true)
+      assert.equal((await service.listWorkspaces(0)).workspaces[0]?.id, oldestProject.id)
+      for (const item of projects) await service.setWorkspaceArchived(item.id, true)
+      const archivedProjects = await service.archivedWorkspaces(0),
+        nextProjects = await service.archivedWorkspaces(50)
+      assert.equal(archivedProjects.workspaces.length, 50)
+      assert.equal(archivedProjects.hasMore, true)
+      assert.equal(nextProjects.workspaces.length, 1)
+      assert.equal(archivedProjects.workspaces[0]?.id, oldestProject.id)
+      assert.equal(
+        new Set([...archivedProjects.workspaces, ...nextProjects.workspaces].map((item) => item.id))
+          .size,
+        51,
+      )
+      await service.setWorkspaceArchived(oldestProject.id, false)
+      assert.equal((await service.listWorkspaces(0)).workspaces[0]?.id, oldestProject.id)
     } finally {
       await service?.close()
       await upstream?.close()
