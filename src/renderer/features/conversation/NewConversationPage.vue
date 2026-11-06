@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { ArrowUpIcon, LaptopIcon, LoaderCircleIcon, SparklesIcon, SquareIcon } from '@lucide/vue'
-import { MAX_MESSAGE_LENGTH } from '@shared/chat'
+import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
@@ -140,9 +140,17 @@ const expandedRunId = ref<string | null>(null)
 watch(
   [() => state.selectedId, () => latestRun.value?.id],
   () => {
-    expandedRunId.value = latestRun.value?.id ?? null
+    expandedRunId.value =
+      latestRun.value && isActiveRun(latestRun.value) ? latestRun.value.id : null
   },
   { immediate: true },
+)
+watch(
+  () => latestRun.value?.status,
+  () => {
+    const run = latestRun.value
+    if (run && !isActiveRun(run) && expandedRunId.value === run.id) expandedRunId.value = null
+  },
 )
 function keydown(event: KeyboardEvent): void {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -335,6 +343,7 @@ onScopeDispose(() => {
               :snapshots="state.detail?.steps ?? []"
               :connected="!state.serviceError"
               :expanded="expandedRunId === item.runId"
+              :active="activeRun?.id === item.runId"
               @expand="expandedRunId = $event ? item.runId : null"
               @inspect="follow = false"
               @changed="scrollToBottom"

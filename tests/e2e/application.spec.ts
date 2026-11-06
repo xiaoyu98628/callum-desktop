@@ -823,6 +823,11 @@ test.describe('真实 Go 对话交互', () => {
         '已处理',
       )
       const timeline = page.getByRole('region', { name: '调用过程', exact: true })
+      await expect(timeline.getByRole('button', { name: '调用过程', exact: true })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      )
+      await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
       await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
       await timeline.locator(':scope > div > details > summary').click()
@@ -835,6 +840,11 @@ test.describe('真实 Go 对话交互', () => {
         .getByRole('region', { name: '最近', exact: true })
         .getByRole('button', { name: '需要审批', exact: true })
         .click()
+      await expect(timeline.getByRole('button', { name: '调用过程', exact: true })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      )
+      await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
       await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: '仅本次允许' })).not.toBeVisible()
@@ -2469,5 +2479,52 @@ test.describe('Markdown 回答展示', () => {
     await expect(input).toBeEnabled()
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await expect(page.getByRole('heading', { name: '设置', level: 1, exact: true })).toBeVisible()
+  })
+})
+
+test.describe('调用过程两层折叠', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('执行自动展开、终态自动收起，重新展开只显示概述，命令详情由用户单独打开', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const timeline = answer.getByRole('region', { name: '调用过程', exact: true })
+    const toggle = timeline.getByRole('button', { name: '调用过程', exact: true })
+    const overview = timeline.getByRole('region', { name: '过程概述', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('分阶段过程命令')
+    await input.press('Enter')
+    await expect(answer).toContainText('我会先运行检查命令')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
+    modelEndpoint!.continueProcess()
+    await expect(answer).toContainText('命令检查已完成')
+    await expect(overview).toContainText('已运行命令')
+    await expect(overview).not.toContainText('controlled-fold-output')
+    const command = overview.locator('details[data-step-id]').first()
+    await command.locator(':scope > summary').focus()
+    await command.locator(':scope > summary').press('Enter')
+    await expect(command).toContainText('controlled-fold-output')
+    await command.getByRole('button', { name: '刷新结果', exact: true }).focus()
+    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
+    modelEndpoint!.continueProcess()
+    await expect(answer).toContainText('已完成项目检查')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(toggle).toBeFocused()
+    await expect(overview).toHaveCount(0)
+    await toggle.press('Enter')
+    await expect(overview).toContainText('命令检查已完成')
+    await expect(overview.locator('details[open]')).toHaveCount(0)
+    await expect(overview).not.toContainText('controlled-fold-output')
+    for (const name of ['较早步骤', '后续步骤', '从头查看'])
+      await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+    await toggle.click()
+    await toggle.click()
+    await expect(overview.locator('details[open]')).toHaveCount(0)
   })
 })

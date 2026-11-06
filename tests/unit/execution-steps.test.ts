@@ -185,6 +185,138 @@ async function until(check: () => boolean): Promise<void> {
     await setTimeout(20)
   }
 }
+
+test(
+  '真实 Go 过程说明：操作前流式可见、阶段交错、最终正文隔离、取消与重启恢复',
+  { skip: !supportedBackend },
+  async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-process-integration-'))
+    let service: ChatService | undefined
+    const fixture = join(profile, 'fixture.txt')
+    const upstream = await startModelServer(fixture).catch(async (error: unknown) => {
+      await rm(profile, { recursive: true, force: true })
+      throw error
+    })
+    const events: ChatEvent[] = []
+    const first = '我会先查看项目目录，确认结构后再读取相关文件。'
+    const progress = '目录结构已确认，接下来读取文件核实具体内容。'
+    const final = '已完成项目检查，文件内容已核实。'
+    try {
+      await writeFile(fixture, 'controlled-file')
+      const modelId = await seedModel(profile, upstream.baseUrl)
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      service.subscribe((event) => events.push(event))
+      const run = await service.send({ conversationId: null, modelId, text: '分阶段过程检查' })
+      const sawText = (text: string) =>
+        events.some(
+          ({ change }) =>
+            change.kind === 'step' &&
+            change.value.runId === run.runId &&
+            change.value.text === text,
+        )
+      await until(() => sawText(first) && upstream.pendingProcess === 1)
+      assert.equal(
+        (await service.listSteps(run.conversationId, run.runId, 0)).steps.filter(
+          (step) => step.type === 'tool_call',
+        ).length,
+        0,
+      )
+      upstream.continueProcess()
+      await until(() => sawText(progress) && upstream.pendingProcess === 1)
+      assert.equal(
+        (await service.listSteps(run.conversationId, run.runId, 0)).steps.filter(
+          (step) => step.type === 'tool_call',
+        ).length,
+        1,
+      )
+      upstream.continueProcess()
+      await until(() =>
+        events.some(
+          ({ change }) =>
+            change.kind === 'run' &&
+            change.value.id === run.runId &&
+            change.value.status === 'completed',
+        ),
+      )
+      const page = await service.listSteps(run.conversationId, run.runId, 0)
+      const main = page.steps.filter(
+        (step) =>
+          step.type === 'tool_call' || (step.type === 'model_call' && step.purpose === 'answer'),
+      )
+      assert.deepEqual(
+        main.map((step) => step.type),
+        ['model_call', 'tool_call', 'model_call', 'tool_call', 'model_call'],
+      )
+      const models = main.filter((step) => step.type === 'model_call')
+      assert.deepEqual(
+        models.map((step) => step.commentary),
+        [true, true, false],
+      )
+      for (const [index, text] of [first, progress, final].entries()) {
+        const details = await service.stepDetails(run.conversationId, run.runId, models[index]!.id)
+        assert.equal(details.text, text)
+      }
+      assert.deepEqual((await service.detail(run.conversationId)).messages.at(-1)?.content, [
+        { type: 'text', text: final, path: '' },
+      ])
+      assert.ok(
+        upstream.requests
+          .filter((request) => request.stream)
+          .every((request) => request.processInstructions),
+      )
+      const cancelled = await service.send({
+        conversationId: null,
+        modelId,
+        text: '分阶段过程取消',
+      })
+      await until(
+        () =>
+          upstream.pendingProcess === 1 &&
+          events.some(
+            ({ change }) =>
+              change.kind === 'step' &&
+              change.value.runId === cancelled.runId &&
+              change.value.text === first,
+          ),
+      )
+      await service.cancel(cancelled.runId)
+      await until(() =>
+        events.some(
+          ({ change }) =>
+            change.kind === 'run' &&
+            change.value.id === cancelled.runId &&
+            change.value.status === 'cancelled',
+        ),
+      )
+      await until(() => upstream.pendingProcess === 0)
+      assert.equal(
+        (await service.listSteps(cancelled.conversationId, cancelled.runId, 0)).steps.filter(
+          (step) => step.type === 'tool_call',
+        ).length,
+        0,
+      )
+      await service.close()
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const history = await service.listSteps(run.conversationId, run.runId, 0)
+      const comments = history.steps.filter((step) => step.type === 'model_call' && step.commentary)
+      assert.equal(comments.length, 2)
+      for (const [index, text] of [first, progress].entries())
+        assert.equal(
+          (await service.stepDetails(run.conversationId, run.runId, comments[index]!.id)).text,
+          text,
+        )
+      assert.equal(
+        (await service.detail(run.conversationId)).messages.at(-1)?.content[0]?.text,
+        final,
+      )
+    } finally {
+      await service?.close()
+      await upstream.close()
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
+
 test(
   '真实 Go 步骤：命令输出、非零退出、取消及超过一页的调用记录',
   { skip: !supportedBackend },
