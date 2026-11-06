@@ -1,0 +1,116 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.7rem;
+  --background: #fafbfc;
+  --foreground: #20212a;
+  --card: #ffffff;
+  --card-foreground: #20212a;
+  --primary: #6651cf;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f4;
+  --secondary-foreground: #30313b;
+  --muted: #f1f2f5;
+  --muted-foreground: #6e7180;
+  --accent: #eeebfb;
+  --accent-foreground: #5943be;
+  --destructive: #bd333a;
+  --border: #e6e7ed;
+  --input: #d8dbe4;
+  --ring: #8d7bdc;
+  --sidebar: #f4f5f8;
+  color-scheme: light;
+}
+
+.dark {
+  --background: #17181d;
+  --foreground: #ececf2;
+  --card: #1f2027;
+  --card-foreground: #ececf2;
+  --primary: #b3a3ff;
+  --primary-foreground: #21183e;
+  --secondary: #2a2b35;
+  --secondary-foreground: #e7e7ef;
+  --muted: #25262e;
+  --muted-foreground: #a0a2b1;
+  --accent: #302943;
+  --accent-foreground: #c5b6ff;
+  --destructive: #ff8d94;
+  --border: #30313c;
+  --input: #414351;
+  --ring: #b3a3ff;
+  --sidebar: #1c1d23;
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+  body {
+    @apply m-0 bg-background text-foreground antialiased;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-size: 14px;
+  }
+  button,
+  a,
+  input {
+    -webkit-app-region: no-drag;
+  }
+  button:not(:disabled),
+  label {
+    cursor: pointer;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-4 outline-ring;
+  }
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+}
+
+.window-drag {
+  -webkit-app-region: drag;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

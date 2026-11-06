@@ -1,0 +1,784 @@
+import { access, mkdir, realpath, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
+import {
+  array,
+  id,
+  isActiveRun,
+  isVisible,
+  PAGE_SIZE,
+  parseName,
+  parseWorkspaceInput,
+  record,
+  string,
+} from '../../shared/chat.ts'
+import type {
+  ChatChange,
+  ApprovalScope,
+  DirectoryGrant,
+  ChatEvent,
+  ChatMessage,
+  ChatOverview,
+  ChatRun,
+  ChatStep,
+  StepPage,
+  StepDetails,
+  ChatUserInput,
+  UserInputAnswer,
+  Conversation,
+  ConversationPage,
+  ConversationDetail,
+  Workspace,
+  WorkspaceInput,
+  WorkspacePage,
+  SendMessageInput,
+  SendMessageResult,
+  ResendMessageInput,
+  ResendMessageResult,
+} from '../../shared/chat.ts'
+import {
+  appendDelta,
+  approvalFromRpc,
+  directoryGrantFromRpc,
+  conversationFromRpc,
+  messageFromRpc,
+  runFromRpc,
+  stepFromRpc,
+  workspaceFromRpc,
+  userInputFromRpc,
+} from './protocol-mapper.ts'
+import { RpcClient, RpcError } from './rpc-client.ts'
+import { ModelCatalog } from './model-catalog.ts'
+import {
+  boundSteps,
+  STEP_PAGE_SIZE,
+  STEP_TEXT_LIMIT,
+  truncateStepText,
+} from '../../shared/steps.ts'
+import { StepOutput, readStepDetails } from './step-data.ts'
+import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
+import type { ExecutionSettings } from '../../shared/execution.ts'
+
+function upsert<T extends { id: string }>(items: T[], item: T): T[] {
+  return [...items.filter((current) => current.id !== item.id), item]
+}
+
+/** 应用持有服务；RPC 细节、增量装配、快照一致性均止于此处。 */
+export class ChatService {
+  readonly catalog = new ModelCatalog((method, params) => this.request(method, params))
+  private client: RpcClient | null = null
+  private readonly ready: Promise<void>
+  private error: string | null = null
+  private revision = 0
+  private readonly listeners = new Set<(event: ChatEvent) => void>()
+  private readonly messages = new Map<string, ChatMessage>()
+  private readonly runs = new Map<string, ChatRun>()
+  private readonly dirty = new Map<string, ChatMessage>()
+  private readonly steps = new Map<string, ChatStep>()
+  private readonly dirtySteps = new Map<string, ChatStep>()
+  private readonly stepOutputs = new Map<string, StepOutput>()
+  private readonly stepReads = new Map<string, Promise<StepDetails>>()
+  private flushTimer: ReturnType<typeof setTimeout> | undefined
+  private readonly history: { event: ChatEvent; bytes: number }[] = []
+  private historyBytes = 0
+  private droppedRevision = 0
+  private readonly persistenceFailures = new Set<string>()
+  private readonly mutations = new Set<string>()
+  private closing = false
+  private closeTask: Promise<void> | null = null
+
+  constructor(dataDirectory: string, resourceRoot: string) {
+    this.ready = this.initialize(dataDirectory, resourceRoot)
+    void this.ready.catch(() => undefined)
+  }
+  private async initialize(dataDirectory: string, resourceRoot: string): Promise<void> {
+    try {
+      if (!isAbsolute(dataDirectory)) throw new Error('服务数据目录必须是绝对路径')
+      const executable = resolveBackendExecutable(resourceRoot)
+      await access(executable, constants.X_OK)
+      await mkdir(dataDirectory, { recursive: true, mode: 0o700 })
+      if (this.closing) return
+      this.client = new RpcClient(
+        executable,
+        ['--data-dir', dataDirectory],
+        (method, params) => this.receive(method, params),
+        () => {
+          this.error =
+            '对话服务连接已中断，未完成请求的结果可能未知。请重新打开应用核对历史，避免重复发送。'
+          this.flush()
+          this.publish({ kind: 'service', error: this.error })
+        },
+      )
+      await this.client.ready
+    } catch {
+      this.error ??= '无法启动对话服务，请检查客户端是否包含适用于本机的服务程序。'
+      if (this.client) await this.client.close()
+      throw new Error(this.error)
+    }
+  }
+  subscribe(listener: (event: ChatEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+  private async request(method: string, params: unknown): Promise<unknown> {
+    await this.ready
+    if (this.error) throw new Error(this.error)
+    if (this.closing || !this.client) throw new Error('对话服务正在关闭。')
+    return this.client.request(method, params)
+  }
+  async overview(offset: number): Promise<ChatOverview> {
+    const start = this.revision
+    const [models, rows] = await Promise.all([
+      this.request('model.list', { selectable_only: true }),
+      this.request('conversation.list', { unbound: true, limit: PAGE_SIZE, offset }),
+    ])
+    let conversations = array(rows ?? [], conversationFromRpc)
+    const hasMore = conversations.length === PAGE_SIZE
+    for (const event of this.since(start)) {
+      if (event.change.kind === 'service') throw new Error(event.change.error)
+      if (
+        event.change.kind === 'conversation' &&
+        (offset === 0 ||
+          conversations.some(
+            (item) => event.change.kind === 'conversation' && item.id === event.change.value.id,
+          ))
+      )
+        conversations = upsert(conversations, event.change.value)
+    }
+    return {
+      models: array(models ?? [], (item) => {
+        const v = record(item)
+        return { id: id(v.id), name: string(v.display_name) }
+      }),
+      conversations: conversations
+        .filter((item) => item.workspaceId === null && isVisible(item))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async executionSettings(): Promise<ExecutionSettings> {
+    return executionSettingsFromRpc(await this.request('settings.get', { key: 'execution' }))
+  }
+  async updateExecutionSettings(input: ExecutionSettings): Promise<ExecutionSettings> {
+    const value = parseExecutionSettings(input)
+    return this.mutate('execution-settings', async () =>
+      executionSettingsFromRpc(
+        await this.request('settings.update', {
+          key: 'execution',
+          revision: value.revision,
+          value: {
+            approval_policy: value.approvalPolicy,
+            sandbox_mode: value.sandboxMode,
+            approvals_reviewer: 'user',
+          },
+        }),
+      ),
+    )
+  }
+  async workspaceConversations(workspaceId: string, offset: number): Promise<ConversationPage> {
+    const start = this.revision
+    const [workspace, rows] = await Promise.all([
+      this.request('workspace.get', { id: workspaceId }),
+      this.request('conversation.list', { workspace_id: workspaceId, limit: PAGE_SIZE, offset }),
+    ])
+    if (!isVisible(workspaceFromRpc(workspace))) throw new Error('项目已被删除或归档。')
+    let conversations = array(rows ?? [], conversationFromRpc)
+    const hasMore = conversations.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        change.value.id === workspaceId &&
+        !isVisible(change.value)
+      )
+        throw new Error('项目已被删除或归档。')
+      if (
+        change.kind === 'conversation' &&
+        (offset === 0 || conversations.some((item) => item.id === change.value.id))
+      )
+        conversations = upsert(conversations, change.value)
+    }
+    return {
+      conversations: conversations
+        .filter((item) => item.workspaceId === workspaceId && isVisible(item))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async listWorkspaces(offset: number): Promise<WorkspacePage> {
+    const start = this.revision
+    let workspaces = array(
+      (await this.request('workspace.list', { limit: PAGE_SIZE, offset })) ?? [],
+      workspaceFromRpc,
+    )
+    const hasMore = workspaces.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        (offset === 0 || workspaces.some((item) => item.id === change.value.id))
+      )
+        workspaces = upsert(workspaces, change.value)
+    }
+    return { workspaces: workspaces.filter(isVisible), hasMore, revision: this.revision }
+  }
+  private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
+    if (this.mutations.has(key)) throw new Error('此操作正在提交，请稍候。')
+    if (this.mutations.size >= 32) throw new Error('正在处理的管理操作过多，请稍后重试。')
+    this.mutations.add(key)
+    try {
+      return await action()
+    } finally {
+      this.mutations.delete(key)
+    }
+  }
+  async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+    const parsed = parseWorkspaceInput(input)
+    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择项目的绝对路径。')
+    const rootPath = await realpath(parsed.rootPath)
+    if (!(await stat(rootPath)).isDirectory()) throw new Error('项目必须是文件夹。')
+    return this.mutate(`path:${rootPath}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.create', { name: parsed.name, root_path: rootPath }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
+    return this.mutate(`workspace:${workspaceId}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.update', { id: id(workspaceId), name: parseName(name) }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async deleteWorkspace(workspaceId: string): Promise<Workspace> {
+    return this.mutate(`workspace:${workspaceId}`, async () => {
+      const value = workspaceFromRpc(
+        await this.request('workspace.delete', { id: id(workspaceId) }),
+      )
+      this.publish({ kind: 'workspace', value })
+      return value
+    })
+  }
+  async renameConversation(conversationId: string, title: string): Promise<Conversation> {
+    return this.mutate(`conversation:${conversationId}`, async () => {
+      const value = conversationFromRpc(
+        await this.request('conversation.update', {
+          id: id(conversationId),
+          title: parseName(title),
+        }),
+      )
+      this.publish({ kind: 'conversation', value })
+      return value
+    })
+  }
+  async deleteConversation(conversationId: string): Promise<Conversation> {
+    return this.mutate(`conversation:${conversationId}`, async () => {
+      const value = conversationFromRpc(
+        await this.request('conversation.delete', { id: id(conversationId) }),
+      )
+      this.publish({ kind: 'conversation', value })
+      return value
+    })
+  }
+  async detail(conversationId: string): Promise<ConversationDetail> {
+    const start = this.revision
+    const [conversation, messages, runs] = await Promise.all([
+      this.request('conversation.get', { id: conversationId }),
+      this.request('conversation.messages', { conversation_id: conversationId, limit: PAGE_SIZE }),
+      this.request('run.list', { conversation_id: conversationId, limit: 200 }),
+    ])
+    const parsedRuns = array(runs ?? [], runFromRpc)
+    const pending = await Promise.all(
+      parsedRuns
+        .filter(isActiveRun)
+        .map((run) =>
+          this.request('approval.list', { run_id: run.id, status: 'pending', limit: 200 }),
+        ),
+    )
+    const inputs = await Promise.all(
+      parsedRuns
+        .filter((run) => run.status === 'awaiting_user_input')
+        .map((run) =>
+          this.request('user_input.list', { run_id: run.id, status: 'pending', limit: 200 }),
+        ),
+    )
+    const result: ConversationDetail = {
+      conversation: conversationFromRpc(conversation),
+      messages: array(messages ?? [], messageFromRpc),
+      runs: parsedRuns,
+      steps: [...this.steps.values()].filter((step) => step.conversationId === conversationId),
+      approvals: pending.flatMap((rows) =>
+        array(rows ?? [], (row) => approvalFromRpc(row, conversationId)),
+      ),
+      directoryGrants: await this.directories(conversationId, 0),
+      userInputs: inputs.flatMap((rows) => array(rows ?? [], userInputFromRpc)),
+      revision: 0,
+      warning: this.persistenceFailures.has(conversationId)
+        ? '本次执行状态未能完整保存，请重新打开应用后核对历史。'
+        : null,
+    }
+    for (const event of this.since(start)) this.mergeDetail(result, event.change)
+    if (!isVisible(result.conversation)) throw new Error('会话已被删除或归档。')
+    // 活动回答可能尚未落库；完整的内存消息优先于数据库及事件中的中间快照。
+    for (const message of this.messages.values())
+      if (message.conversationId === conversationId)
+        result.messages = upsert(result.messages, message)
+    result.messages.sort((a, b) => a.sequence - b.sequence)
+    result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+    result.revision = this.revision
+    return result
+  }
+  async listSteps(conversationId: string, runId: string, afterSequence: number): Promise<StepPage> {
+    const run = runFromRpc(await this.request('run.get', { id: runId }))
+    if (run.id !== runId || run.conversationId !== conversationId)
+      throw new Error('步骤执行归属不匹配')
+    const start = this.revision
+    const rows = array(
+      await this.request('step.list', {
+        run_id: runId,
+        after_sequence: afterSequence,
+        limit: STEP_PAGE_SIZE + 1,
+      }),
+      stepFromRpc,
+    )
+    if (
+      rows.some(
+        (step, index) =>
+          step.runId !== runId ||
+          step.conversationId !== conversationId ||
+          step.sequence <= (rows[index - 1]?.sequence ?? afterSequence),
+      )
+    )
+      throw new Error('步骤顺序或归属不匹配')
+    let steps = rows.map((step) => {
+      const live = this.steps.get(step.id)
+      return live && live.updatedAt >= step.updatedAt ? live : step
+    })
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'step' &&
+        change.value.runId === runId &&
+        change.value.sequence > afterSequence &&
+        (rows.length <= STEP_PAGE_SIZE || change.value.sequence <= rows.at(-1)!.sequence)
+      )
+        steps = upsert(steps, change.value)
+    }
+    steps.sort((a, b) => a.sequence - b.sequence)
+    const parents = new Set(steps.map((step) => step.parentStepId))
+    const hasMore = steps.length > STEP_PAGE_SIZE
+    steps = steps
+      .slice(0, STEP_PAGE_SIZE)
+      .map((step) => ({ ...step, commentary: step.commentary || parents.has(step.id) }))
+    return {
+      steps,
+      afterSequence,
+      nextSequence: steps.at(-1)?.sequence ?? afterSequence,
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async stepDetails(conversationId: string, runId: string, stepId: string): Promise<StepDetails> {
+    const key = `${conversationId}:${runId}:${stepId}`
+    const pending = this.stepReads.get(key)
+    if (pending) return pending
+    if (this.stepReads.size >= 16) throw new Error('步骤详情查询较多，请稍后重试。')
+    const task = (async () => {
+      const step = stepFromRpc(await this.request('step.get', { id: stepId }))
+      if (step.id !== stepId || step.runId !== runId || step.conversationId !== conversationId)
+        throw new Error('步骤归属不匹配')
+      return readStepDetails((method, params) => this.request(method, params), step)
+    })()
+    this.stepReads.set(key, task)
+    try {
+      return await task
+    } finally {
+      this.stepReads.delete(key)
+    }
+  }
+  private saveStep(step: ChatStep): void {
+    this.steps.delete(step.id)
+    this.steps.set(step.id, step)
+    const retained = new Set(boundSteps([...this.steps.values()]).map((value) => value.id))
+    for (const key of this.steps.keys())
+      if (!retained.has(key)) {
+        this.steps.delete(key)
+        this.dirtySteps.delete(key)
+        this.stepOutputs.delete(key)
+      }
+  }
+  async earlier(conversationId: string, beforeSequence: number): Promise<ChatMessage[]> {
+    return array(
+      (await this.request('conversation.messages', {
+        conversation_id: conversationId,
+        before_sequence: beforeSequence,
+        limit: PAGE_SIZE,
+      })) ?? [],
+      messageFromRpc,
+    )
+  }
+  async send(input: SendMessageInput): Promise<SendMessageResult> {
+    const value = record(
+      await this.request('conversation.send', {
+        ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+        ...(!input.conversationId && input.workspaceId ? { workspace_id: input.workspaceId } : {}),
+        model_id: input.modelId,
+        stream: true,
+        content: [{ type: 'text', text: input.text }],
+      }),
+    )
+    return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
+  }
+  async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
+    return this.mutate(`resend:${input.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.resend', {
+          conversation_id: input.conversationId,
+          message_id: input.messageId,
+          model_id: input.modelId,
+          stream: true,
+          content: [{ type: 'text', text: input.text }],
+        }),
+      )
+      const conversationId = id(value.conversation_id),
+        runId = id(value.run_id)
+      const removedMessageIds = array(value.removed_message_ids ?? [], id)
+      if (
+        conversationId !== input.conversationId ||
+        id(value.user_message_id) !== input.messageId ||
+        new Set(removedMessageIds).size !== removedMessageIds.length ||
+        removedMessageIds.includes(input.messageId) ||
+        removedMessageIds.includes(id(value.message_id))
+      )
+        throw new Error('重发结果归属不匹配，请重新加载历史后核对。')
+      // 以服务端受理结果移除旧回答。先排空通知，避免旧的增量在移除通知之后再出现。
+      this.flush()
+      for (const messageId of removedMessageIds) {
+        this.messages.delete(messageId)
+        this.dirty.delete(messageId)
+      }
+      if (removedMessageIds.length)
+        this.publish({
+          kind: 'messages-removed',
+          value: {
+            id: runId,
+            conversationId,
+            messageIds: removedMessageIds,
+          },
+        })
+      return { conversationId, runId, removedMessageIds }
+    })
+  }
+  async cancel(runId: string): Promise<boolean> {
+    const value = record(await this.request('run.cancel', { run_id: runId }))
+    if (typeof value.cancel_requested !== 'boolean') throw new Error('取消响应无效')
+    return value.cancel_requested
+  }
+  async submitUserInput(
+    inputId: string,
+    runId: string,
+    answer: UserInputAnswer,
+  ): Promise<ChatUserInput> {
+    const value = userInputFromRpc(
+      await this.request('user_input.submit', {
+        input_id: inputId,
+        run_id: runId,
+        answer: { option_index: answer.optionIndex, text: answer.text, skipped: answer.skipped },
+      }),
+    )
+    if (value.id !== inputId || value.runId !== runId) throw new Error('回复归属不匹配')
+    return value
+  }
+  async decide(
+    approvalId: string,
+    decision: 'approved' | 'rejected',
+    scope: ApprovalScope = 'once',
+  ): Promise<boolean> {
+    await this.request('approval.decide', { approval_id: approvalId, decision, scope })
+    return true
+  }
+  async directories(conversationId: string, offset: number): Promise<DirectoryGrant[]> {
+    const grants = array(
+      await this.request('approval.directory.list', {
+        conversation_id: id(conversationId),
+        limit: 200,
+        offset,
+      }),
+      directoryGrantFromRpc,
+    )
+    if (grants.some((grant) => grant.conversationId !== conversationId))
+      throw new Error('目录授权归属不匹配')
+    return grants
+  }
+  async revokeDirectory(conversationId: string, grantId: string): Promise<DirectoryGrant> {
+    const value = directoryGrantFromRpc(
+      await this.request('approval.directory.revoke', {
+        conversation_id: id(conversationId),
+        id: id(grantId),
+      }),
+    )
+    if (value.conversationId !== conversationId || value.id !== grantId)
+      throw new Error('目录授权归属不匹配')
+    return value
+  }
+  private receive(method: string, value: unknown): void {
+    const p = record(value)
+    if (method === 'conversation.created' || method === 'conversation.updated') {
+      this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
+    } else if (method === 'message.created' || method === 'message.updated') {
+      const message = messageFromRpc(p.message)
+      this.checkOwner(p, message)
+      this.messages.set(message.id, message)
+      this.dirty.delete(message.id)
+      this.publish({ kind: 'message', value: message })
+    } else if (method === 'step.created' || method === 'step.updated') {
+      let step = stepFromRpc(p.step)
+      if (
+        step.id !== id(p.step_id) ||
+        step.runId !== id(p.run_id) ||
+        step.conversationId !== id(p.conversation_id)
+      )
+        throw new Error('步骤归属不匹配')
+      const previous = this.steps.get(step.id)
+      if (previous)
+        step = {
+          ...step,
+          reasoning: previous.reasoning ?? '',
+          reasoningTruncated: previous.reasoningTruncated ?? false,
+          text: previous.text,
+          commentary: previous.commentary,
+          textTruncated: previous.textTruncated,
+          output: previous.output,
+          outputTruncated: previous.outputTruncated,
+          outputSequence: previous.outputSequence,
+        }
+      this.saveStep(step)
+      this.dirtySteps.delete(step.id)
+      this.publish({ kind: 'step', value: step })
+      if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
+        const parent = this.steps.get(step.parentStepId)
+        if (parent && !parent.commentary) {
+          const commentary = { ...parent, commentary: true }
+          this.saveStep(commentary)
+          this.dirtySteps.delete(parent.id)
+          this.publish({ kind: 'step', value: commentary })
+        }
+      }
+      if (!['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(step.status))
+        this.stepOutputs.delete(step.id)
+    } else if (method === 'tool.output') {
+      const stepId = id(p.step_id),
+        previous = this.steps.get(stepId)
+      // 已被缓存淘汰的输出不重建无归属步骤；持久化结果仍可按需查询。
+      if (previous) {
+        if (
+          previous.conversationId !== id(p.conversation_id) ||
+          previous.runId !== id(p.run_id) ||
+          previous.type !== 'tool_call'
+        )
+          throw new Error('工具输出归属不匹配')
+        const decoder = this.stepOutputs.get(stepId) ?? new StepOutput()
+        this.stepOutputs.set(stepId, decoder)
+        const step = decoder.append(previous, p.output)
+        this.saveStep(step)
+        this.dirtySteps.set(step.id, step)
+        this.flushTimer ??= setTimeout(() => this.flush(), 16)
+      }
+    } else if (method === 'reasoning.delta') {
+      const previous = this.steps.get(id(p.step_id))
+      if (previous) {
+        if (
+          previous.type !== 'model_call' ||
+          previous.runId !== id(p.run_id) ||
+          previous.conversationId !== id(p.conversation_id)
+        )
+          throw new Error('思考内容归属不匹配')
+        const text = string(p.text)
+        if (text.length > 512 * 1024) throw new Error('思考增量过长')
+        const reasoning = (previous.reasoning ?? '') + text
+        const step = {
+          ...previous,
+          reasoning: truncateStepText(reasoning, STEP_TEXT_LIMIT),
+          reasoningTruncated: previous.reasoningTruncated || reasoning.length > STEP_TEXT_LIMIT,
+        }
+        this.saveStep(step)
+        this.dirtySteps.set(step.id, step)
+        this.flushTimer ??= setTimeout(() => this.flush(), 16)
+      }
+    } else if (method === 'message.delta') {
+      const messageId = id(p.message_id),
+        previous = this.messages.get(messageId)
+      if (!previous) throw new Error('消息增量缺少初始消息')
+      const message = appendDelta(previous, p)
+      this.messages.set(message.id, message)
+      this.dirty.set(message.id, message)
+      if (p.step_id !== undefined) {
+        const step = this.steps.get(id(p.step_id))
+        if (step) {
+          if (
+            step.conversationId !== message.conversationId ||
+            step.runId !== message.runId ||
+            step.type !== 'model_call'
+          )
+            throw new Error('模型步骤归属不匹配')
+          const text = step.text + string(record(p.delta).text)
+          const updated = {
+            ...step,
+            text: truncateStepText(text, STEP_TEXT_LIMIT),
+            textTruncated: step.textTruncated || text.length > STEP_TEXT_LIMIT,
+          }
+          this.saveStep(updated)
+          this.dirtySteps.set(step.id, updated)
+        }
+      }
+      this.flushTimer ??= setTimeout(() => this.flush(), 16)
+    } else if (method.startsWith('run.') && p.run !== undefined) {
+      const run = runFromRpc(p.run)
+      if (id(p.conversation_id) !== run.conversationId || id(p.run_id) !== run.id)
+        throw new Error('执行归属不匹配')
+      this.runs.set(run.id, run)
+      if (p.persisted === false) {
+        this.persistenceFailures.add(run.conversationId)
+        if (this.persistenceFailures.size > 128) throw new Error('执行状态持续保存失败')
+      }
+      this.flush()
+      this.publish({ kind: 'run', value: run, persisted: p.persisted !== false })
+      if (!isActiveRun(run)) {
+        for (const [key, message] of this.messages)
+          if (message.runId === run.id) this.messages.delete(key)
+        this.runs.delete(run.id)
+      }
+    } else if (method === 'approval.requested' || method === 'approval.updated') {
+      const approval = approvalFromRpc(p.approval, id(p.conversation_id))
+      if (approval.runId !== id(p.run_id) || approval.id !== id(p.approval_id))
+        throw new Error('审批归属不匹配')
+      this.publish({ kind: 'approval', value: approval })
+    } else if (method === 'directory_grant.updated') {
+      const grant = directoryGrantFromRpc(p.directory_grant)
+      if (grant.conversationId !== id(p.conversation_id)) throw new Error('目录授权归属不匹配')
+      this.publish({ kind: 'directory-grant', value: grant })
+    } else if (method === 'user_input.requested' || method === 'user_input.updated') {
+      const input = userInputFromRpc(p.user_input)
+      if (
+        input.id !== id(p.input_id) ||
+        input.runId !== id(p.run_id) ||
+        input.conversationId !== id(p.conversation_id) ||
+        input.stepId !== id(p.step_id)
+      )
+        throw new Error('问题归属不匹配')
+      this.publish({ kind: 'user-input', value: input })
+    }
+    if (this.messages.size > 32 || this.runs.size > 64) throw new Error('活动消息超出限制')
+  }
+  private checkOwner(params: Record<string, unknown>, message: ChatMessage): void {
+    if (
+      id(params.conversation_id) !== message.conversationId ||
+      id(params.run_id) !== message.runId ||
+      id(params.message_id) !== message.id
+    )
+      throw new Error('消息归属不匹配')
+  }
+  private flush(): void {
+    clearTimeout(this.flushTimer)
+    this.flushTimer = undefined
+    for (const message of this.dirty.values()) this.publish({ kind: 'message', value: message })
+    this.dirty.clear()
+    for (const step of this.dirtySteps.values()) this.publish({ kind: 'step', value: step })
+    this.dirtySteps.clear()
+  }
+  private publish(change: ChatChange): void {
+    const event = { revision: ++this.revision, change }
+    const bytes = Buffer.byteLength(JSON.stringify(event))
+    this.history.push({ event, bytes })
+    this.historyBytes += bytes
+    while (this.history.length > 512 || this.historyBytes > 16 * 1024 * 1024) {
+      const oldest = this.history.shift()
+      if (!oldest) break
+      this.historyBytes -= oldest.bytes
+      this.droppedRevision = oldest.event.revision
+    }
+    for (const listener of this.listeners) listener(event)
+  }
+  private since(revision: number): ChatEvent[] {
+    if (revision < this.droppedRevision) throw new Error('对话内容变化较快，请重新加载。')
+    return this.history
+      .filter((entry) => entry.event.revision > revision)
+      .map((entry) => entry.event)
+  }
+  private mergeDetail(detail: ConversationDetail, change: ChatChange): void {
+    if (change.kind === 'service') throw new Error(change.error)
+    if (change.kind === 'workspace') {
+      if (change.value.id === detail.conversation.workspaceId && !isVisible(change.value))
+        throw new Error('项目已被删除或归档。')
+      return
+    }
+    if (change.kind === 'conversation') {
+      if (change.value.id === detail.conversation.id) detail.conversation = change.value
+      return
+    }
+    if (change.value.conversationId !== detail.conversation.id) return
+    if (change.kind === 'messages-removed')
+      detail.messages = detail.messages.filter(
+        (message) => !change.value.messageIds.includes(message.id),
+      )
+    if (change.kind === 'message') detail.messages = upsert(detail.messages, change.value)
+    if (change.kind === 'step') detail.steps = boundSteps(upsert(detail.steps, change.value))
+    if (change.kind === 'run') {
+      detail.runs = upsert(detail.runs, change.value)
+      if (!change.persisted) detail.warning = '本次执行状态未能完整保存，请重新打开应用后核对历史。'
+    }
+    if (change.kind === 'directory-grant')
+      detail.directoryGrants = upsert(detail.directoryGrants, change.value).slice(-200)
+    if (change.kind === 'approval') detail.approvals = upsert(detail.approvals, change.value)
+    if (change.kind === 'user-input') detail.userInputs = upsert(detail.userInputs, change.value)
+  }
+  close(): Promise<void> {
+    this.closeTask ??= this.shutdown()
+    return this.closeTask
+  }
+  private async shutdown(): Promise<void> {
+    this.closing = true
+    // 退出可能发生在握手期间，先关闭已创建的进程，不能等待就绪超时后才取消启动。
+    const closeClient = this.client?.close() ?? Promise.resolve()
+    void closeClient.catch(() => undefined)
+    try {
+      await this.ready
+    } catch {
+      /* 初始化错误已记录，仍需清理已创建的子进程。 */
+    }
+    try {
+      await closeClient
+    } finally {
+      clearTimeout(this.flushTimer)
+      this.dirty.clear()
+      this.messages.clear()
+      this.runs.clear()
+      this.steps.clear()
+      this.dirtySteps.clear()
+      this.stepOutputs.clear()
+      this.persistenceFailures.clear()
+      this.history.length = 0
+      this.listeners.clear()
+    }
+  }
+}
+
+export function resolveBackendExecutable(resourceRoot: string): string {
+  if (process.platform !== 'darwin' || process.arch !== 'arm64')
+    throw new Error('当前仅提供 macOS Apple Silicon 服务程序。')
+  return join(resourceRoot, 'backend', `${process.platform}-${process.arch}`, 'callum')
+}
+export function publicChatError(error: unknown): string {
+  if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')
+  if (error instanceof Error && !/ENOENT|EACCES|JSON|格式|无效|不匹配/.test(error.message))
+    return error.message
+  return '无法完成对话操作，请重试。'
+}

@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.test.tsbuildinfo",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": [
+    "tests/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/main/security/renderer-policy.ts",
+    "src/main/backend/**/*.ts",
+    "src/main/ipc/chat-event-delivery.ts",
+    "src/renderer/features/conversation/markdown/render.ts",
+    "src/renderer/features/conversation/markdown/contract.ts",
+    "src/renderer/features/conversation/markdown/renderer.ts",
+    "src/renderer/env.d.ts"
+  ]
+}

@@ -1,0 +1,259 @@
+.activity-disclosure {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.activity-heading {
+  display: inline-flex;
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: color-mix(in srgb, var(--foreground) 38%, transparent);
+  text-align: start;
+  font: inherit;
+}
+.activity-trigger {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  transition: color 160ms ease;
+}
+.activity-trigger:is(:hover, :focus-visible) {
+  color: var(--foreground);
+}
+.activity-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.activity-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activity-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+  transition:
+    transform 220ms ease,
+    opacity 140ms ease;
+}
+.activity-trigger[aria-expanded='true'] > .activity-chevron {
+  opacity: 1;
+  transform: rotate(90deg);
+}
+.activity-trigger:focus-visible > .activity-chevron {
+  opacity: 1;
+}
+@media (hover: hover) {
+  .activity-trigger:hover > .activity-chevron {
+    opacity: 1;
+  }
+}
+@media (hover: none) {
+  .activity-chevron {
+    opacity: 1;
+  }
+}
+.activity-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.activity-body-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+.activity-reveal-enter-active,
+.activity-reveal-leave-active {
+  transition:
+    grid-template-rows 220ms ease,
+    opacity 180ms ease;
+}
+.activity-reveal-enter-from,
+.activity-reveal-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.activity-status {
+  color: inherit;
+  font: inherit;
+}
+.activity-run-ended {
+  margin-bottom: 12px;
+}
+.activity-run > .activity-disclosure > .activity-heading {
+  margin-top: 2px;
+}
+.activity-run > .activity-disclosure > .activity-body > .activity-body-clip > div {
+  padding-top: 12px;
+}
+.activity-separator {
+  display: block;
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.activity-rows {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+.activity-commentary {
+  color: var(--muted-foreground);
+}
+.activity-tool-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.activity-tool-label > svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.activity-tool-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-tool-details {
+  padding: 8px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.activity-group-label {
+  flex-wrap: wrap;
+  column-gap: 4px;
+  row-gap: 0;
+}
+.activity-group-label > svg {
+  margin-right: 2px;
+}
+.activity-group-operations {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 2px 20px;
+}
+.activity-shimmer {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--foreground) 38%, transparent) 30%,
+    color-mix(in srgb, var(--foreground) 80%, transparent) 48%,
+    color-mix(in srgb, var(--foreground) 38%, transparent) 66%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  animation: activity-shimmer 2s linear infinite;
+}
+@keyframes activity-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+.reasoning-scroll {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  max-height: 140px;
+  margin-top: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.reasoning-scroll[data-overflow='true'] {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent
+  );
+}
+.reasoning-scroll[data-at-start='false'] {
+  --fade-top: 16px;
+}
+.reasoning-scroll[data-at-end='false'] {
+  --fade-bottom: 16px;
+}
+.reasoning-scroll:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.reasoning-content {
+  color: color-mix(in srgb, var(--foreground) 50%, transparent);
+  padding-bottom: 2px;
+}
+.reasoning-content .markdown-message {
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.reasoning-content .markdown-message :is(span, strong, em, code, a, li, h1, h2, h3) {
+  color: inherit;
+}
+.reasoning-content .markdown-part + .markdown-part {
+  margin-top: 0.6em;
+}
+.reasoning-content .markdown-code-block {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}
+.reasoning-notice {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-trigger,
+  .activity-chevron,
+  .activity-reveal-enter-active,
+  .activity-reveal-leave-active {
+    transition: none;
+  }
+  .activity-shimmer {
+    animation: none;
+    background: none;
+    color: color-mix(in srgb, var(--foreground) 50%, transparent);
+  }
+}
+
+.activity-load-edge {
+  height: 1px;
+  flex-shrink: 0;
+}
+
+.activity-compaction {
+  color: color-mix(in srgb, var(--foreground) 46%, transparent);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.activity-compaction-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.activity-compaction-line > svg {
+  position: relative;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.activity-compaction-error {
+  margin: 2px 0 0 20px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

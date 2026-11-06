@@ -1,0 +1,140 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout } from 'node:timers/promises'
+import { parseExecutionSettings, executionSettingsFromRpc } from '../../src/shared/execution.ts'
+import { approvalSummary } from '../../src/shared/approval-summary.ts'
+import { ChatService } from '../../src/main/backend/chat-service.ts'
+import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
+import { startModelServer } from '../helpers/model-server.ts'
+
+test('权限桥接拒绝未展示的权限、无效版本和审批人', () => {
+  const valid = { revision: 1, sandboxMode: 'workspace-write', approvalPolicy: 'on-request' }
+  assert.deepEqual(parseExecutionSettings(valid), valid)
+  for (const value of [
+    { ...valid, revision: 0 },
+    { ...valid, sandboxMode: 'full-access' },
+    { ...valid, approvalPolicy: 'allow-all' },
+    { ...valid, approvalsReviewer: 'auto_review' },
+  ])
+    assert.throws(() => parseExecutionSettings(value))
+  assert.throws(() =>
+    executionSettingsFromRpc({
+      key: 'execution',
+      revision: 1,
+      value: {
+        approval_policy: 'never',
+        sandbox_mode: 'read-only',
+        approvals_reviewer: 'auto_review',
+      },
+    }),
+  )
+})
+
+test('审批展示区分沙箱内危险确认和本次沙箱外执行', () => {
+  const summary = (sandboxed: boolean, escalated: boolean) =>
+    approvalSummary(
+      JSON.stringify({
+        details: {
+          executable: '/bin/pwd',
+          cwd: '/project',
+          justification: '受控原因',
+          execution_boundary: { sandboxed, escalated, sandbox_mode: 'workspace-write' },
+        },
+      }),
+    )
+  assert.match(summary(true, false).executionNotice ?? '', /仍在系统沙箱内/)
+  assert.match(summary(false, true).executionNotice ?? '', /本次请求在沙箱外运行/)
+  assert.match(summary(false, true).executionNotice ?? '', /不会保存/)
+  assert.match(summary(false, false).executionNotice ?? '', /未使用系统沙箱/)
+})
+
+test(
+  '真实 Go：沙箱自动执行、越界拒绝、提权审批、权限版本和任务快照',
+  { skip: !supportedBackend },
+  async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-sandbox-integration-'))
+    await mkdir(join(profile, 'project'))
+    const fixture = join(profile, 'project', 'fixture.txt')
+    await writeFile(fixture, 'controlled-file')
+    let service: ChatService | undefined
+    const upstream = await startModelServer(fixture)
+    try {
+      const modelId = await seedModel(profile, upstream.baseUrl)
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const workspace = await service.createWorkspace({
+        name: '受控项目',
+        rootPath: join(profile, 'project'),
+      })
+      async function wait(
+        id: string,
+        check: (detail: Awaited<ReturnType<ChatService['detail']>>) => boolean,
+      ) {
+        for (const deadline = Date.now() + 7000; ;) {
+          const detail = await service!.detail(id)
+          if (check(detail)) return detail
+          if (Date.now() > deadline) throw new Error('等待沙箱执行状态超时')
+          await setTimeout(20)
+        }
+      }
+      async function send(text: string) {
+        return service!.send({ conversationId: null, workspaceId: workspace.id, modelId, text })
+      }
+      async function report(text: string) {
+        const run = await send(text)
+        const detail = await wait(run.conversationId, (d) =>
+          d.runs.some((r) => r.id === run.runId && r.status === 'completed'),
+        )
+        assert.equal(detail.approvals.length, 0)
+        const step = (await service!.listSteps(run.conversationId, run.runId, 0)).steps.find(
+          (s) => s.name === 'run_command',
+        )!
+        const raw = await service!.stepDetails(run.conversationId, run.runId, step.id)
+        return (
+          JSON.parse(raw.output) as {
+            result: { exit_code: number; execution_boundary: { sandboxed: boolean } }
+          }
+        ).result
+      }
+      const initial = await service.executionSettings()
+      assert.equal(initial.sandboxMode, 'workspace-write')
+      assert.equal((await report('沙箱 pwd')).exit_code, 0)
+      assert.equal((await report('沙箱项目写入')).exit_code, 0)
+      assert.equal(
+        await readFile(join(profile, 'project', 'sandbox-write.txt'), 'utf8'),
+        'controlled',
+      )
+      const outside = await report('沙箱项目外写入')
+      assert.equal(outside.execution_boundary.sandboxed, true)
+      assert.notEqual(outside.exit_code, 0)
+      await assert.rejects(readFile(join(profile, 'outside.txt')))
+      const pending = await send('沙箱提权')
+      const detail = await wait(pending.conversationId, (d) => d.approvals.length > 0)
+      const approval = detail.approvals[0]!
+      assert.match(approvalSummary(approval.snapshot).executionNotice ?? '', /本次请求在沙箱外运行/)
+      const saved = await service.updateExecutionSettings({
+        ...initial,
+        sandboxMode: 'read-only',
+        approvalPolicy: 'never',
+      })
+      await assert.rejects(service.updateExecutionSettings(initial), /设置已被修改/)
+      await service.decide(approval.id, 'approved')
+      await wait(pending.conversationId, (d) =>
+        d.runs.some((r) => r.id === pending.runId && r.status === 'completed'),
+      )
+      assert.equal(await readFile(join(profile, 'outside.txt'), 'utf8'), 'controlled')
+      assert.notEqual((await report('沙箱项目写入')).exit_code, 0)
+      assert.equal((await service.executionSettings()).revision, saved.revision)
+      await service.close()
+      service = undefined
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      assert.deepEqual(await service.executionSettings(), saved)
+    } finally {
+      await service?.close()
+      await upstream.close()
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
