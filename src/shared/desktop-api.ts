@@ -22,6 +22,7 @@ import type {
   ResendMessageResult,
 } from './chat'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
+import type { ExecutionSettings } from './execution'
 
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
@@ -36,6 +37,8 @@ export interface DesktopApi {
   copyCode(text: string): Promise<ChatResult<boolean>>
   copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
+  getExecutionSettings(): Promise<ChatResult<ExecutionSettings>>
+  updateExecutionSettings(input: ExecutionSettings): Promise<ChatResult<ExecutionSettings>>
   getModelCatalog(): Promise<ChatResult<ModelCatalog>>
   saveModelProvider(input: ProviderInput): Promise<ChatResult<string>>
   deleteModelProvider(providerId: string): Promise<ChatResult<string>>

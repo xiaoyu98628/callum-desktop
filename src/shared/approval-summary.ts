@@ -8,6 +8,7 @@ export interface ApprovalSummary {
   description: string
   fields: SummaryField[]
   recognized: boolean
+  executionNotice?: string
 }
 
 /** 摘要只读取服务端固定快照中的展示字段；完整原文仍由面板提供，不据此生成审批请求。 */
@@ -17,6 +18,7 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
   try {
     const request = record(JSON.parse(snapshot) as unknown)
     const fields: SummaryField[] = []
+    let executionNotice: string | undefined
     const add = (label: string, value: unknown): void => {
       if (typeof value === 'string' && value) fields.push({ label, value })
     }
@@ -55,6 +57,29 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
       const details = record(request.details)
       add('可执行文件', details.executable)
       add('工作目录', details.cwd)
+      if (details.execution_boundary != null) {
+        const boundary = record(details.execution_boundary)
+        if (boundary.escalated === true && boundary.sandboxed === false) {
+          executionNotice =
+            '本次请求在沙箱外运行。批准后，此命令可使用当前系统用户的文件及网络权限；不会保存为后续命令授权。'
+          add('执行方式', '本次沙箱外运行')
+        } else if (boundary.sandboxed === true) {
+          executionNotice = '此命令仍在系统沙箱内运行，网络关闭；批准不会扩大文件或网络权限。'
+          add('执行方式', boundary.sandbox_mode === 'read-only' ? '只读沙箱' : '项目写入沙箱')
+          add('网络访问', '关闭')
+        } else {
+          executionNotice =
+            '此命令未使用系统沙箱。批准只针对本次命令，使用当前系统用户的文件及网络权限。'
+          add('执行方式', '未使用系统沙箱')
+        }
+        if (boundary.risk === 'destructive_command')
+          add('审批原因', '识别到删除、权限修改等高风险命令')
+        if (boundary.risk === 'sensitive_git_command')
+          add('审批原因', '识别到会改变 Git 状态或发布内容的命令')
+        if (boundary.risk === 'sandbox_backend_unsupported')
+          add('审批原因', '此平台尚未接入系统沙箱')
+        add('权限申请原因', details.justification)
+      }
     }
     const hasLocation = fields.length > 0
     if (request.arguments !== undefined && request.arguments !== null) {
@@ -87,6 +112,7 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
       description: typeof request.summary === 'string' ? request.summary : '',
       fields,
       recognized: hasLocation && (request.plan == null || recognizedPlan),
+      ...(executionNotice ? { executionNotice } : {}),
     }
   } catch {
     return fallback

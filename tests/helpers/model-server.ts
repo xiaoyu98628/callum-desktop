@@ -175,6 +175,44 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         finish(response, 'tool_calls')
         return
       }
+      if (text.startsWith('沙箱')) {
+        const path =
+          text.includes('项目外') || text.includes('提权')
+            ? join(dirname(fixturePath), '..', 'outside.txt')
+            : join(dirname(fixturePath), 'sandbox-write.txt')
+        const command =
+          text.includes('写入') || text.includes('提权')
+            ? [
+                process.execPath,
+                '-e',
+                `require('node:fs').writeFileSync(${JSON.stringify(path)},'controlled')`,
+              ]
+            : ['/bin/pwd']
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-sandbox',
+              type: 'function',
+              function: {
+                name: 'run_command',
+                arguments: JSON.stringify({
+                  command,
+                  cwd: dirname(fixturePath),
+                  ...(text.includes('提权')
+                    ? {
+                        sandbox_permissions: 'require_escalated',
+                        justification: '验证本次受控沙箱外写入审批',
+                      }
+                    : {}),
+                }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (text.startsWith('命令') && text.endsWith('步骤')) {
         emit(response, { content: '准备运行命令并检查结果。' })
         const script = text.includes('取消')
@@ -191,6 +229,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                 arguments: JSON.stringify({
                   command: [process.execPath, '-e', script],
                   cwd: dirname(fixturePath),
+                  sandbox_permissions: 'require_escalated',
+                  justification: '在受控临时目录验证命令审批、输出和取消',
                 }),
               },
             },

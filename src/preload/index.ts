@@ -23,6 +23,7 @@ import {
   parseDirectoryGrant,
 } from '../shared/chat'
 import { parseCatalog } from '../shared/models'
+import { parseExecutionSettings } from '../shared/execution'
 
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('无效的操作结果')
@@ -46,6 +47,18 @@ const desktopApi: DesktopApi = {
   },
   async getModelCatalog() {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.getModelCatalog), parseCatalog)
+  },
+  async getExecutionSettings() {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getExecutionSettings),
+      parseExecutionSettings,
+    )
+  },
+  async updateExecutionSettings(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.updateExecutionSettings, input),
+      parseExecutionSettings,
+    )
   },
   async saveModelProvider(input) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.saveModelProvider, input), id)

@@ -148,7 +148,7 @@ preload 只暴露固定的 `listRunSteps(conversationId, runId, afterSequence)` 
 
 输入区默认两行文字，底部工具栏独立排布；高度测量以两行为下限，沿用最大高度、宽度监听及卸载清理。`ProjectSelector.vue` 使用已有 Reka Popover 与 Combobox 展示新对话输入框上方的项目标识、可搜索列表和项目创建入口，复用 `CreateProjectDialog.vue` 与现有 IPC。`selectDraftProject` 只接受已加载项目或独立新对话，发送受理中、加载中或已有会话时拒绝切换；各项目的草稿按原有归属隔离，首次发送才保存项目归属。项目列表沿用共享分页和有界缓存，搜索范围为已加载项目，可继续加载；创建失败在弹窗内重试，取消恢复选择入口焦点，切换页面时销毁所属弹层。首次发送或打开已有会话后，页面卸载整条项目／计算机栏及其弹层；“最近”右侧入口始终打开独立新对话并恢复项目选择栏。后端接口及数据库结构保持现有契约。
 
-随附 Go 程序的默认 on-request 允许纯读取当前系统用户可读的本地路径，未绑定项目时仍要求绝对路径；always 保留逐次审批。写入边界、真实目标检查和资源限制保持有效，命令仍按 unknown 独立审批，不通过 cwd 或命令文本推测可访问范围。历史只读目录授权继续保存和查询，默认读取不再依赖它，撤销只读记录不会禁止读取。
+随附 Go 程序的默认 on-request 允许纯读取当前系统用户可读的本地路径，未绑定项目时仍要求绝对路径；always 保留逐次审批。写入边界、真实目标检查和资源限制保持有效，命令保持 unknown 分类，macOS 新任务通过服务端固定 Seatbelt 边界判断普通命令自动执行；危险命令和明确沙箱外请求单独审批，不通过 cwd 或命令文本猜测权限。历史只读目录授权继续保存和查询，默认读取不再依赖它，撤销只读记录不会禁止读取。
 
 ## 资源与状态所有权
 
@@ -194,3 +194,7 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 - [Electron 安全建议](https://www.electronjs.org/docs/latest/tutorial/security)
 - [Electron 自定义协议](https://www.electronjs.org/docs/latest/api/protocol)
 - [shadcn-vue 的 Vite 接入](https://www.shadcn-vue.com/docs/installation/vite)
+
+执行权限通过固定 getExecutionSettings/updateExecutionSettings IPC、preload 校验和 ChatService 转换 settings.get/update；不暴露通用 RPC 或模型可修改的权限。渲染层使用 sandboxMode/approvalPolicy/revision，审批人固定 user。设置 revision 冲突和断连失败可见，保存后只影响新任务。权限对话框卸载后不再写入异步结果，保存时避免重复提交与关闭。
+
+审批展示只读取 Go 生成的 details.execution_boundary 和 justification，不依据模型正文判断已授权。sandboxed=true 的危险操作批准不扩大访问；escalated=true 的沙箱外请求显示本次当前用户文件和网络权限，不保存后续命令授权。旧审批没有边界字段时保留原展示。Electron 窗口沙箱与 Go 命令 Seatbelt 是独立边界。

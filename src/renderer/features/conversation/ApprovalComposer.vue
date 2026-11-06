@@ -88,6 +88,12 @@ watch(
           重新加载审批
         </Button>
       </div>
+      <p
+        v-if="summary.executionNotice"
+        class="mb-3 rounded-lg bg-muted/60 p-3 text-muted-foreground"
+      >
+        {{ summary.executionNotice }}
+      </p>
       <div v-if="target" class="mb-2 min-w-0">
         <p class="mb-1 flex items-center gap-2 text-sm">
           <FileTextIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

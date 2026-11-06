@@ -56,6 +56,8 @@ import {
   truncateStepText,
 } from '../../shared/steps.ts'
 import { StepOutput, readStepDetails } from './step-data.ts'
+import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
+import type { ExecutionSettings } from '../../shared/execution.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -156,6 +158,25 @@ export class ChatService {
       hasMore,
       revision: this.revision,
     }
+  }
+  async executionSettings(): Promise<ExecutionSettings> {
+    return executionSettingsFromRpc(await this.request('settings.get', { key: 'execution' }))
+  }
+  async updateExecutionSettings(input: ExecutionSettings): Promise<ExecutionSettings> {
+    const value = parseExecutionSettings(input)
+    return this.mutate('execution-settings', async () =>
+      executionSettingsFromRpc(
+        await this.request('settings.update', {
+          key: 'execution',
+          revision: value.revision,
+          value: {
+            approval_policy: value.approvalPolicy,
+            sandbox_mode: value.sandboxMode,
+            approvals_reviewer: 'user',
+          },
+        }),
+      ),
+    )
   }
   async workspaceConversations(workspaceId: string, offset: number): Promise<ConversationPage> {
     const start = this.revision

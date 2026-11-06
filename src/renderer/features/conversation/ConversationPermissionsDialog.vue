@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
 import {
   DialogRoot,
   DialogPortal,
@@ -11,18 +11,69 @@ import {
 import { XIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
+import { getDesktopApi } from '@/lib/desktop'
+import type { ExecutionSettings } from '@shared/execution'
 
 const props = defineProps<{ returnFocus: HTMLElement | null }>()
 const emit = defineEmits<{ close: [] }>()
 const { state, workspace, loadDirectories, revokeDirectory } = useConversations()
 const conversationId = state.selectedId
 const grants = computed(() => state.detail?.directoryGrants ?? [])
-const busy = computed(() => !!state.revokingDirectory)
+const execution = ref<ExecutionSettings | null>(null)
+const executionLoading = ref(false),
+  executionSaving = ref(false),
+  executionError = ref(''),
+  executionSaved = ref(false)
+let disposed = false
+const busy = computed(() => !!state.revokingDirectory || executionSaving.value)
 const unavailable = computed(() => state.directoriesLoading || !!state.serviceError || busy.value)
 function restoreFocus(event: Event): void {
   event.preventDefault()
   if (props.returnFocus?.isConnected) props.returnFocus.focus()
   else document.getElementById('new-conversation')?.focus()
+}
+async function loadExecution(): Promise<void> {
+  if (executionLoading.value || executionSaving.value) return
+  executionLoading.value = true
+  executionError.value = ''
+  executionSaved.value = false
+  try {
+    const result = await getDesktopApi().getExecutionSettings()
+    if (!result.ok) throw new Error(result.error)
+    if (!disposed) execution.value = result.value
+  } catch (error) {
+    if (!disposed)
+      executionError.value = error instanceof Error ? error.message : '无法读取执行权限，请重试。'
+  } finally {
+    if (!disposed) executionLoading.value = false
+  }
+}
+async function saveExecution(): Promise<void> {
+  if (
+    !execution.value ||
+    executionLoading.value ||
+    busy.value ||
+    state.serviceError ||
+    executionError.value
+  )
+    return
+  executionSaving.value = true
+  executionError.value = ''
+  executionSaved.value = false
+  try {
+    const result = await getDesktopApi().updateExecutionSettings({ ...execution.value })
+    if (!result.ok) throw new Error(result.error)
+    if (!disposed) {
+      execution.value = result.value
+      executionSaved.value = true
+    }
+  } catch (error) {
+    if (!disposed)
+      executionError.value =
+        error instanceof Error ? error.message : '无法保存执行权限，请重新读取后核对。'
+  } finally {
+    if (!disposed) executionSaving.value = false
+  }
 }
 watch(
   () => state.selectedId,
@@ -32,6 +83,10 @@ watch(
 )
 onMounted(() => {
   void loadDirectories(0)
+  void loadExecution()
+})
+onScopeDispose(() => {
+  disposed = true
 })
 </script>
 
@@ -47,8 +102,7 @@ onMounted(() => {
       >
         <DialogTitle class="pr-8 text-base font-semibold">会话权限</DialogTitle>
         <DialogDescription class="mt-2 text-xs leading-6 text-muted-foreground">
-          权限仅关联当前会话。默认 on-request
-          下，读取文件、查看目录和搜索无需逐次审批；写入按项目范围及目录授权判断。
+          沙箱与审批策略分别控制命令的访问范围和询问时机。下方默认设置影响所有会话的新任务，已受理任务保持原权限；额外目录授权仅关联当前会话。
         </DialogDescription>
         <Button
           variant="ghost"
@@ -61,6 +115,68 @@ onMounted(() => {
           <XIcon class="size-4" aria-hidden="true" />
         </Button>
         <div class="mt-4 space-y-4 text-xs leading-6">
+          <section class="space-y-3 rounded-lg border p-3" aria-label="后续任务默认权限">
+            <h3 class="font-medium">后续任务默认权限</h3>
+            <p v-if="executionLoading" role="status" class="text-muted-foreground">
+              正在读取执行权限…
+            </p>
+            <template v-if="execution">
+              <label class="block"
+                >访问范围
+                <select
+                  v-model="execution.sandboxMode"
+                  aria-label="沙箱访问范围"
+                  class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
+                  :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
+                  @change="executionSaved = false"
+                >
+                  <option value="workspace-write">项目自动：项目内可读写，命令网络关闭</option>
+                  <option value="read-only">只读：读取可自动执行，修改需要审批</option>
+                </select>
+              </label>
+              <label class="block"
+                >审批方式
+                <select
+                  v-model="execution.approvalPolicy"
+                  aria-label="审批方式"
+                  class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
+                  :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
+                  @change="executionSaved = false"
+                >
+                  <option value="on-request">按需询问</option>
+                  <option value="always">每次询问</option>
+                  <option value="never">不询问：拒绝仍需审批的操作</option>
+                </select>
+              </label>
+              <p class="text-muted-foreground">
+                macOS
+                命令及子进程使用系统沙箱。未关联项目时仅允许读取及私有临时目录写入；其他平台的命令仍需独立审批。模型请求不受命令网络限制影响。
+              </p>
+            </template>
+            <p v-if="executionError" role="alert" class="break-words text-destructive">
+              {{ executionError }}
+            </p>
+            <p v-if="executionSaved" role="status" class="text-muted-foreground">
+              已保存，下一次发起任务时生效。
+            </p>
+            <div class="flex gap-2">
+              <Button
+                v-if="execution"
+                variant="outline"
+                size="sm"
+                :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
+                @click="saveExecution"
+                >{{ executionSaving ? '正在保存…' : '保存默认权限' }}</Button
+              >
+              <Button
+                variant="ghost"
+                size="sm"
+                :disabled="executionLoading || busy || !!state.serviceError"
+                @click="loadExecution"
+                >重新读取权限</Button
+              >
+            </div>
+          </section>
           <div v-if="state.workspaceId" class="rounded-lg bg-muted/50 p-3">
             <p class="font-medium">当前项目</p>
             <p class="break-all text-muted-foreground">

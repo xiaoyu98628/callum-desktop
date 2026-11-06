@@ -17,6 +17,7 @@ import type { ChatService } from '../backend/chat-service'
 import { isTrustedRendererUrl } from '../security/renderer-policy'
 import { ChatEventDelivery } from './chat-event-delivery'
 import { parseModelInput, parseProviderInput } from '../../shared/models'
+import { parseExecutionSettings } from '../../shared/execution'
 
 export function registerChatHandlers(
   getWindow: () => BrowserWindow | null,
@@ -152,6 +153,10 @@ export function registerChatHandlers(
     service.deleteConversation(id(conversationId)),
   )
   handle(IPC_CHANNELS.getModelCatalog, 0, () => service.catalog.list())
+  handle(IPC_CHANNELS.getExecutionSettings, 0, () => service.executionSettings())
+  handle(IPC_CHANNELS.updateExecutionSettings, 1, (input) =>
+    service.updateExecutionSettings(parseExecutionSettings(input)),
+  )
   handle(IPC_CHANNELS.saveModelProvider, 1, (input) =>
     service.catalog.saveProvider(parseProviderInput(input)),
   )
