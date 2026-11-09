@@ -29,6 +29,11 @@ export interface WorkspaceInput {
   rootPath: string
   otherPaths?: string[]
 }
+/** 编辑项目名称，可选地将已有源目录切换为主目录。 */
+export interface WorkspaceChange {
+  name: string
+  rootPath?: string
+}
 export interface SelectedDirectory {
   path: string
   name: string
@@ -315,6 +320,15 @@ export function parseWorkspaceInput(value: unknown): WorkspaceInput {
     ...(v.otherPaths === undefined
       ? {}
       : { otherPaths: otherWorkspacePaths(rootPath, v.otherPaths) }),
+  }
+}
+export function parseWorkspaceChange(value: unknown): WorkspaceChange {
+  const v = record(value)
+  if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
+    throw new Error('项目更新参数无效')
+  return {
+    name: parseName(v.name),
+    ...(v.rootPath === undefined ? {} : { rootPath: workspacePath(v.rootPath) }),
   }
 }
 export function parseWorkspace(value: unknown): Workspace {

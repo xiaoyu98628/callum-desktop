@@ -119,10 +119,10 @@ const desktopApi: DesktopApi = {
       parseWorkspace,
     )
   },
-  async renameWorkspace(workspaceId, name) {
+  async updateWorkspace(workspaceId, input) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.renameWorkspace, workspaceId, name),
-      parseWorkspace,
+      await ipcRenderer.invoke(IPC_CHANNELS.updateWorkspace, workspaceId, input),
+      parseWorkspaceUpdate,
     )
   },
   async deleteWorkspace(workspaceId) {

@@ -42,7 +42,7 @@ const {
   expandWorkspace,
   loadWorkspaceConversations,
   createWorkspace,
-  renameWorkspace,
+  updateWorkspace,
   deleteWorkspace,
   renameConversation,
   deleteConversation,
@@ -152,7 +152,7 @@ async function createProject(input: WorkspaceInput, selectionId: string): Promis
     managementError.value = error instanceof Error ? error.message : '无法创建项目，请重试。'
   }
 }
-async function confirmManagement(name: string): Promise<void> {
+async function confirmManagement(name: string, rootPath?: string): Promise<void> {
   const target = managementTarget.value
   if (!target || state.managing) return
   managementError.value = ''
@@ -162,7 +162,8 @@ async function confirmManagement(name: string): Promise<void> {
       else await renameConversation(target.id, name)
     } else if (target.id) {
       if (target.deleting) await deleteWorkspace(target.id)
-      else await renameWorkspace(target.id, name)
+      else
+        await updateWorkspace(target.id, { name, ...(rootPath === undefined ? {} : { rootPath }) })
     }
     managementTarget.value = null
   } catch (error) {

@@ -10,7 +10,7 @@ export interface ManagementTarget {
 </script>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   DialogRoot,
   DialogPortal,
@@ -29,8 +29,9 @@ const props = defineProps<{
   error: string
   returnFocus: HTMLElement | null
 }>()
-const emit = defineEmits<{ close: []; confirm: [name: string]; remove: [] }>()
+const emit = defineEmits<{ close: []; confirm: [name: string, rootPath?: string]; remove: [] }>()
 const name = ref(props.target.name)
+const mainPath = ref(props.target.rootPath)
 const validationError = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 const cancelButton = ref<InstanceType<typeof Button> | null>(null)
@@ -38,8 +39,10 @@ const previousFocus =
   props.returnFocus ??
   (document.activeElement instanceof HTMLElement ? document.activeElement : null)
 const editingWorkspace = computed(() => props.target.kind === 'workspace' && !props.target.deleting)
-const folderName = computed(
-  () => props.target.rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? props.target.rootPath,
+const directories = computed(() =>
+  [props.target.rootPath, ...props.target.otherPaths]
+    .toSorted((a, b) => Number(b === mainPath.value) - Number(a === mainPath.value))
+    .map((path) => ({ path, name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? path })),
 )
 const title = computed(() =>
   props.target.kind === 'conversation'
@@ -56,17 +59,31 @@ const description = computed(() =>
       ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一主目录可恢复项目及对话，其他目录以新选择为准。'
       : '此会话将从列表移除，当前窗口中的对应草稿也会清除。'
     : props.target.kind === 'workspace'
-      ? '修改项目名称，查看此项目的源文件夹。'
+      ? '修改项目名称，点击“设为主要”可切换主要目录，主要目录始终排在首行。保存后作为相对路径的基准。'
       : '保持简短且易于识别',
 )
 function confirm(): void {
   if (props.busy) return
   validationError.value = ''
   try {
-    emit('confirm', props.target.deleting ? props.target.name : parseName(name.value))
+    emit(
+      'confirm',
+      props.target.deleting ? props.target.name : parseName(name.value),
+      editingWorkspace.value && mainPath.value !== props.target.rootPath
+        ? mainPath.value
+        : undefined,
+    )
   } catch (error) {
     validationError.value = error instanceof Error ? error.message : '请检查名称。'
   }
+}
+async function selectMain(path: string, event: MouseEvent): Promise<void> {
+  if (props.busy) return
+  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('li') : null
+  mainPath.value = path
+  // 操作按钮切换为“主要”标记后，将焦点留在置顶后的目录行。
+  await nextTick()
+  if (row?.isConnected) row.focus({ preventScroll: true })
 }
 function initialFocus(event: Event): void {
   event.preventDefault()
@@ -124,8 +141,12 @@ watch(
               target.kind === 'workspace' ? '项目名称' : '会话标题'
             }}</label>
             <div
-              class="flex items-center border bg-card transition-colors focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500"
-              :class="editingWorkspace ? 'h-10 rounded-xl' : 'h-9 rounded-[10px]'"
+              class="flex items-center border bg-card transition-colors focus-within:border-blue-500"
+              :class="
+                editingWorkspace
+                  ? 'h-10 rounded-xl'
+                  : 'h-9 rounded-[10px] focus-within:ring-1 focus-within:ring-blue-500'
+              "
             >
               <span
                 v-if="editingWorkspace"
@@ -148,37 +169,45 @@ watch(
             <p id="management-source-heading" class="mb-2 mt-3 text-sm font-medium">源文件夹</p>
             <section
               aria-labelledby="management-source-heading"
-              class="flex min-w-0 items-start gap-2.5 rounded-xl border bg-card px-3 py-3"
+              class="min-w-0 overflow-hidden rounded-xl border bg-card"
             >
-              <FolderIcon class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <div class="min-w-0 flex-1">
-                <p class="break-words text-sm [overflow-wrap:anywhere]">{{ folderName }}</p>
-                <p class="mt-1 break-all text-xs leading-5 text-muted-foreground">
-                  {{ target.rootPath }}
-                </p>
-              </div>
-              <span class="shrink-0 rounded-lg border px-2 py-0.5 text-xs text-muted-foreground"
-                >主要</span
-              >
-            </section>
-            <ul v-if="target.otherPaths.length" class="mt-2 space-y-2">
-              <li
-                v-for="path in target.otherPaths"
-                :key="path"
-                class="flex items-start gap-2.5 rounded-xl border bg-card px-3 py-3"
-              >
-                <FolderIcon
-                  class="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <p class="min-w-0 flex-1 break-all text-xs leading-5 text-muted-foreground">
-                  {{ path }}
-                </p>
-                <span class="shrink-0 rounded-lg border px-2 py-0.5 text-xs text-muted-foreground"
-                  >其他</span
+              <ul class="min-w-0 divide-y">
+                <li
+                  v-for="directory in directories"
+                  :key="directory.path"
+                  class="group/folder flex h-12 min-w-0 items-center gap-2.5 px-3.5 focus-visible:outline-offset-[-2px]"
+                  :title="directory.path"
+                  :tabindex="directory.path === mainPath ? -1 : undefined"
+                  :aria-label="
+                    directory.path === mainPath ? `主要目录 ${directory.name}` : undefined
+                  "
                 >
-              </li>
-            </ul>
+                  <div class="flex min-w-0 flex-1 items-center gap-2.5 text-sm">
+                    <FolderIcon
+                      class="size-4 shrink-0 text-muted-foreground/70"
+                      aria-hidden="true"
+                    />
+                    <span class="truncate">{{ directory.name }}</span>
+                  </div>
+                  <span
+                    v-if="directory.path === mainPath"
+                    class="shrink-0 rounded-[10px] border px-2.5 py-1 text-xs text-muted-foreground"
+                    >主要</span
+                  >
+                  <Button
+                    v-else
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    class="h-7 rounded-lg border px-2 font-normal text-foreground opacity-0 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100"
+                    :disabled="busy"
+                    :aria-label="`将 ${directory.name} 设为主要`"
+                    @click="selectMain(directory.path, $event)"
+                    >设为主要</Button
+                  >
+                </li>
+              </ul>
+            </section>
           </template>
           <div v-else-if="target.rootPath" class="mt-4 space-y-1">
             <p class="text-xs text-muted-foreground">文件夹</p>

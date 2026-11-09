@@ -9,6 +9,7 @@ import {
   parseSendInput,
   parseResendInput,
   parseWorkspaceInput,
+  parseWorkspaceChange,
   parseUserInputAnswer,
 } from '../../shared/chat'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
@@ -174,8 +175,8 @@ export function registerChatHandlers(
       creatingWorkspace = false
     }
   })
-  handle(IPC_CHANNELS.renameWorkspace, 2, (workspaceId, name) =>
-    service.renameWorkspace(id(workspaceId), parseName(name)),
+  handle(IPC_CHANNELS.updateWorkspace, 2, (workspaceId, input) =>
+    service.updateWorkspace(id(workspaceId), parseWorkspaceChange(input)),
   )
   handle(IPC_CHANNELS.deleteWorkspace, 1, (workspaceId) => service.deleteWorkspace(id(workspaceId)))
   handle(IPC_CHANNELS.setWorkspacePinned, 2, (workspaceId, pinned) => {

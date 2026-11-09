@@ -16,6 +16,7 @@ import type {
   WorkspacePage,
   Workspace,
   WorkspaceInput,
+  WorkspaceChange,
   WorkspaceUpdate,
   UserInputAnswer,
 } from '@shared/chat'
@@ -644,10 +645,10 @@ function createConversations() {
     }
     return result
   }
-  async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
-    const result = await manage(() => getDesktopApi().renameWorkspace(workspaceId, name))
-    if (!disposed && !hiddenWorkspaces.has(workspaceId))
-      state.workspaces = upsert(state.workspaces, result).sort(comparePinnedItems).slice(0, 1000)
+  async function updateWorkspace(workspaceId: string, input: WorkspaceChange): Promise<void> {
+    const result = await manage(() => getDesktopApi().updateWorkspace(workspaceId, input))
+    if (!disposed)
+      apply({ revision: result.revision, change: { kind: 'workspace', value: result.workspace } })
   }
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     await manage(() => getDesktopApi().deleteWorkspace(workspaceId))
@@ -1159,7 +1160,7 @@ function createConversations() {
     expandWorkspace,
     loadWorkspaceConversations,
     createWorkspace,
-    renameWorkspace,
+    updateWorkspace,
     deleteWorkspace,
     renameConversation,
     deleteConversation,

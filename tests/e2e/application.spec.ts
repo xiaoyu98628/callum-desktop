@@ -125,11 +125,12 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'deleteModel',
     'getChatOverview',
     'getConversation',
-    'chooseWorkspaceDirectory',
+    'chooseWorkspaceDirectories',
+    'discardWorkspaceDirectories',
     'listWorkspaces',
     'getWorkspaceConversations',
     'createWorkspace',
-    'renameWorkspace',
+    'updateWorkspace',
     'deleteWorkspace',
     'setWorkspacePinned',
     'setWorkspaceArchived',
@@ -1326,7 +1327,7 @@ async function addTestWorkspace(
   await page.getByRole('button', { name: '添加项目', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '创建项目', exact: true })
   await dialog.getByRole('textbox', { name: '项目名称', exact: true }).fill(name)
-  await dialog.getByRole('button', { name: '添加', exact: true }).click()
+  await dialog.getByRole('button', { name: '添加文件夹', exact: true }).click()
   await dialog.getByRole('button', { name: '创建项目', exact: true }).click()
   await expect(dialog).not.toBeVisible()
   await expect(page.getByRole('region', { name, exact: true })).toBeVisible()
@@ -1387,7 +1388,7 @@ test.describe('会话与项目管理', () => {
     await picker.getByRole('button', { name: '新建项目', exact: true }).click()
     await chooseTestDirectory(desktop, newFolder)
     await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('输入区新项目')
-    await creation.getByRole('button', { name: '添加', exact: true }).click()
+    await creation.getByRole('button', { name: '添加文件夹', exact: true }).click()
     await creation.getByRole('button', { name: '创建项目', exact: true }).click()
     await expect(creation).toHaveCount(0)
     await expect(trigger).toHaveText('输入区新项目')
@@ -1454,9 +1455,12 @@ test.describe('会话与项目管理', () => {
     await expect(independent.locator('svg')).toHaveCount(0)
   })
 
-  test('创建项目可选择多个文件夹、指定主目录和移除目录', async ({ desktop, profile }) => {
+  test('创建与编辑项目可切换主要目录并置顶，取消保留设置，活动执行拒绝切换', async ({
+    desktop,
+    profile,
+  }) => {
     const page = await desktop.firstWindow()
-    const firstFolder = join(profile, 'first-folder'),
+    const firstFolder = join(profile, `first-folder-${'long-name-'.repeat(12)}`),
       secondFolder = join(profile, 'second-folder'),
       removedFolder = join(profile, 'removed-folder')
     await mkdir(firstFolder)
@@ -1468,7 +1472,8 @@ test.describe('会话与项目管理', () => {
     const name = dialog.getByRole('textbox', { name: '项目名称', exact: true })
     await expect(name).toBeFocused()
     await expect(dialog.getByRole('button', { name: '创建项目', exact: true })).toBeDisabled()
-    await expect(dialog.getByText('在此电脑上添加文件夹', { exact: true })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: '添加文件夹', exact: true })).toBeEnabled()
+    await expect(dialog.getByRole('listitem')).toHaveCount(0)
     await page.screenshot({
       path: '.artifacts/screenshots/create-project-empty.png',
       animations: 'disabled',
@@ -1479,22 +1484,70 @@ test.describe('会话与项目管理', () => {
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
     await name.fill('自定义项目名称')
     await chooseTestDirectory(desktop, [firstFolder, secondFolder, firstFolder])
-    await dialog.getByRole('button', { name: '添加', exact: true }).click()
+    await dialog.getByRole('button', { name: '添加文件夹', exact: true }).click()
     await expect(name).toHaveValue('自定义项目名称')
-    await expect(dialog.getByText(await realpath(firstFolder), { exact: true })).toBeVisible()
-    await expect(dialog.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
-    await dialog.getByRole('button', { name: '将 second-folder 设为主要', exact: true }).click()
+    await expect(dialog.getByTitle(await realpath(firstFolder), { exact: true })).toContainText(
+      'first-folder',
+    )
+    await expect(dialog.getByTitle(await realpath(secondFolder), { exact: true })).toContainText(
+      'second-folder',
+    )
+    await expect(dialog.getByText('其他', { exact: true })).toHaveCount(0)
+    const mainDirectory = dialog.getByRole('button', {
+      name: '将 second-folder 设为主要',
+      exact: true,
+    })
+    await expect(mainDirectory).toHaveText('设为主要')
+    await page.mouse.move(0, 0)
+    await name.focus()
+    await expect(mainDirectory).toHaveCSS('opacity', '0')
+    await dialog.getByTitle(await realpath(secondFolder), { exact: true }).hover()
+    await expect(mainDirectory).toHaveCSS('opacity', '1')
+    await expect(mainDirectory).toHaveCSS('border-top-width', '1px')
+    await expect(mainDirectory).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    await dialog.screenshot({
+      path: '.artifacts/screenshots/create-project-main-action-hover.png',
+      animations: 'disabled',
+    })
+    await page.mouse.move(0, 0)
+    await expect(mainDirectory).toHaveCSS('opacity', '0')
+    await mainDirectory.focus()
+    await expect(mainDirectory).toHaveCSS('opacity', '1')
+    await mainDirectory.press('Enter')
+    await expect(dialog.getByRole('listitem').first()).toContainText('second-folder')
+    await expect(
+      dialog.getByRole('listitem', { name: '主要目录 second-folder', exact: true }),
+    ).toBeFocused()
     await expect(
       dialog.getByRole('listitem').filter({ hasText: 'second-folder' }).getByText('主要'),
     ).toBeVisible()
     await chooseTestDirectory(desktop, removedFolder)
-    await dialog.getByRole('button', { name: '添加', exact: true }).click()
+    await dialog.getByRole('button', { name: '添加文件夹', exact: true }).click()
     await dialog.getByRole('button', { name: '移除 removed-folder', exact: true }).click()
-    await expect(dialog.getByText(await realpath(removedFolder), { exact: true })).toHaveCount(0)
+    await expect(dialog.getByTitle(await realpath(removedFolder), { exact: true })).toHaveCount(0)
     await chooseTestDirectory(desktop, null)
-    await dialog.getByRole('button', { name: '添加', exact: true }).click()
-    await expect(dialog.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
+    await dialog.getByRole('button', { name: '添加文件夹', exact: true }).click()
+    await expect(dialog.getByTitle(await realpath(secondFolder), { exact: true })).toBeVisible()
     await expect(name).toHaveValue('自定义项目名称')
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    )
+    await page.mouse.move(0, 0)
+    await page.screenshot({
+      path: '.artifacts/screenshots/create-project-folders-light.png',
+      animations: 'disabled',
+    })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    await page.screenshot({
+      path: '.artifacts/screenshots/create-project-folders-dark.png',
+      animations: 'disabled',
+    })
+    await page.emulateMedia({ colorScheme: 'light' })
+    await expect(page.locator('html')).not.toHaveClass(/dark/)
     await dialog.getByRole('button', { name: '创建项目', exact: true }).click()
     await expect(dialog).not.toBeVisible()
     const result = await page.evaluate(() => window.callum.listWorkspaces(0))
@@ -1505,10 +1558,79 @@ test.describe('会话与项目管理', () => {
         otherPaths: [await realpath(firstFolder)],
       }),
     ])
+    const message = page.getByRole('textbox', { name: '消息', exact: true })
+    await message.fill('保留主要目录切换前的对话')
+    await message.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
     await page.getByRole('button', { name: '自定义项目名称', exact: true }).dblclick()
     const management = page.getByRole('dialog', { name: '编辑项目', exact: true })
-    await expect(management.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
-    await expect(management.getByText(await realpath(firstFolder), { exact: true })).toBeVisible()
+    await expect(
+      management.getByTitle(await realpath(secondFolder), { exact: true }),
+    ).toContainText('second-folder')
+    await expect(management.getByTitle(await realpath(firstFolder), { exact: true })).toContainText(
+      'first-folder',
+    )
+    await expect(management.getByText('其他', { exact: true })).toHaveCount(0)
+    const folders = management.getByRole('listitem')
+    await expect(folders.first()).toContainText('second-folder')
+    const secondaryRow = management.getByTitle(await realpath(firstFolder), { exact: true })
+    const secondaryAction = secondaryRow.getByRole('button')
+    await page.mouse.move(0, 0)
+    await expect(secondaryAction).toHaveCSS('opacity', '0')
+    await expect(folders.first().getByText('主要', { exact: true })).toBeVisible()
+    await secondaryRow.hover()
+    await expect(secondaryAction).toHaveCSS('opacity', '1')
+    await expect(secondaryAction).toHaveCSS('border-top-width', '1px')
+    await expect(secondaryAction).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    await management.screenshot({
+      path: '.artifacts/screenshots/project-edit-main-action-hover.png',
+      animations: 'disabled',
+    })
+    await secondaryAction.click()
+    await expect(folders.first()).toContainText('first-folder')
+    await expect(folders.first().getByText('主要', { exact: true })).toBeVisible()
+    await expect(folders.first()).toBeFocused()
+    await management.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '自定义项目名称', exact: true }).dblclick()
+    await expect(folders.first()).toContainText('second-folder')
+    const originalRow = management.getByTitle(await realpath(firstFolder), { exact: true })
+    const originalFolder = originalRow.getByRole('button')
+    await expect(originalFolder).toHaveText('设为主要')
+    await page.mouse.move(0, 0)
+    await expect(originalFolder).toHaveCSS('opacity', '0')
+    await originalFolder.focus()
+    await expect(originalFolder).toHaveCSS('opacity', '1')
+    await originalFolder.press('Space')
+    await expect(folders.first()).toContainText('first-folder')
+    await expect(originalRow).toBeFocused()
+    await management
+      .getByRole('textbox', { name: '项目名称', exact: true })
+      .fill('切换主要目录的项目')
+    await management.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(management).toHaveCount(0)
+    const changed = await page.evaluate(() => window.callum.listWorkspaces(0))
+    expect(changed.ok && changed.value.workspaces).toEqual([
+      expect.objectContaining({
+        id: result.ok ? result.value.workspaces[0]?.id : '',
+        name: '切换主要目录的项目',
+        rootPath: await realpath(firstFolder),
+        otherPaths: [await realpath(secondFolder)],
+      }),
+    ])
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+      '保留主要目录切换前的对话',
+    )
+    await page.reload()
+    await page.getByRole('button', { name: '切换主要目录的项目', exact: true }).dblclick()
+    await expect(folders.first()).toContainText('first-folder')
+    await expect(folders.first().getByText('主要', { exact: true })).toBeVisible()
+    expect(await management.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    )
+    await page.screenshot({
+      path: '.artifacts/screenshots/project-edit-folders-light.png',
+      animations: 'disabled',
+    })
 
     await chooseTestDirectory(desktop, removedFolder)
     const rejected = await page.evaluate(
@@ -1529,6 +1651,30 @@ test.describe('会话与项目管理', () => {
       await realpath(firstFolder),
     )
     expect(rejected).toEqual([false, false])
+    await management.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '在切换主要目录的项目中新建对话', exact: true }).click()
+    await message.fill('等待甲')
+    await message.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '切换主要目录的项目', exact: true }).dblclick()
+    await management
+      .getByTitle(await realpath(secondFolder), { exact: true })
+      .getByRole('button')
+      .click()
+    await management.getByRole('textbox', { name: '项目名称', exact: true }).fill('不得保存的名称')
+    await management.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(management.getByRole('alert')).toContainText('未结束执行')
+    await expect(folders.first()).toContainText('second-folder')
+    await expect(management.getByRole('textbox', { name: '项目名称', exact: true })).toHaveValue(
+      '不得保存的名称',
+    )
+    const unchanged = await page.evaluate(() => window.callum.listWorkspaces(0))
+    expect(unchanged.ok && unchanged.value.workspaces).toEqual(
+      changed.ok ? changed.value.workspaces : [],
+    )
+    await management.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
   })
 
   test('项目菜单下方展开且明暗不透明，支持键盘置顶、编辑和归档恢复，并保留目录与草稿', async ({
@@ -2278,9 +2424,11 @@ test.describe('会话与项目管理', () => {
         input.selectionEnd,
       ]),
     ).toEqual([0, '双击项目'.length])
-    await expect(edit.getByRole('region', { name: '源文件夹', exact: true })).toContainText(
-      await realpath(folder),
-    )
+    await expect(
+      edit
+        .getByRole('region', { name: '源文件夹', exact: true })
+        .getByTitle(await realpath(folder), { exact: true }),
+    ).toContainText('project-with-spaces 项目')
     await expect(edit.getByRole('button', { name: '添加文件夹', exact: true })).toHaveCount(0)
     await page.screenshot({
       path: '.artifacts/screenshots/project-edit-light.png',
@@ -2413,7 +2561,7 @@ test.describe('会话与项目管理', () => {
     await page.getByRole('button', { name: '产品计划的操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
     const edit = page.getByRole('dialog', { name: '编辑项目', exact: true })
-    await expect(edit.getByText(await realpath(folder), { exact: true })).toBeVisible()
+    await expect(edit.getByTitle(await realpath(folder), { exact: true })).toBeVisible()
     await edit.getByRole('textbox', { name: '项目名称', exact: true }).fill('开发项目')
     await edit.getByRole('button', { name: '保存', exact: true }).click()
     const renamedWorkspace = page.getByRole('region', { name: '开发项目', exact: true })
@@ -2480,7 +2628,7 @@ test.describe('会话与项目管理', () => {
     await chooseTestDirectory(desktop, null)
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
     const cancelledCreation = page.getByRole('dialog', { name: '创建项目', exact: true })
-    await cancelledCreation.getByRole('button', { name: '添加', exact: true }).click()
+    await cancelledCreation.getByRole('button', { name: '添加文件夹', exact: true }).click()
     await expect(
       cancelledCreation.getByRole('button', { name: '创建项目', exact: true }),
     ).toBeDisabled()
@@ -2489,7 +2637,7 @@ test.describe('会话与项目管理', () => {
     await chooseTestDirectory(desktop, folder)
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
     const addition = page.getByRole('dialog', { name: '创建项目', exact: true })
-    await addition.getByRole('button', { name: '添加', exact: true }).click()
+    await addition.getByRole('button', { name: '添加文件夹', exact: true }).click()
     await addition.getByRole('button', { name: '创建项目', exact: true }).click()
     await expect(addition.getByRole('alert')).toBeVisible()
     await addition.getByRole('button', { name: '取消', exact: true }).click()
@@ -2665,7 +2813,7 @@ test.describe('会话与项目管理', () => {
           ),
         )
       })
-    }, IPC_CHANNELS.renameWorkspace)
+    }, IPC_CHANNELS.updateWorkspace)
     await dialog.getByRole('button', { name: '保存', exact: true }).click()
     await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
     await expect(dialog.getByRole('button', { name: '移除本地项目', exact: true })).toBeDisabled()

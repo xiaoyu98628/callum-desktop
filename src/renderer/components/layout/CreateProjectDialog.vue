@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, ref } from 'vue'
+import { computed, nextTick, onScopeDispose, ref } from 'vue'
 import {
   DialogRoot,
   DialogPortal,
@@ -27,6 +27,19 @@ let disposed = false
 const blocked = computed(() => props.busy || choosing.value || removing.value)
 const canAdd = computed(() => !blocked.value && directories.value.length < MAX_WORKSPACE_FOLDERS)
 const canCreate = computed(() => !blocked.value && !!name.value.trim() && !!mainPath.value)
+const sortedDirectories = computed(() =>
+  directories.value.toSorted(
+    (a, b) => Number(b.path === mainPath.value) - Number(a.path === mainPath.value),
+  ),
+)
+async function selectMain(path: string, event: MouseEvent): Promise<void> {
+  if (blocked.value) return
+  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('li') : null
+  mainPath.value = path
+  // 切换后操作按钮会变成“主要”标记，将焦点留在置顶后的目录行。
+  await nextTick()
+  if (row?.isConnected) row.focus({ preventScroll: true })
+}
 async function chooseDirectories(): Promise<void> {
   if (!canAdd.value) return
   choosing.value = true
@@ -101,25 +114,25 @@ onScopeDispose(() => {
 <template>
   <DialogRoot :open="true" @update:open="!$event && !blocked && emit('close')">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]" />
+      <DialogOverlay class="fixed inset-0 z-40 bg-black/10 dark:bg-black/45" />
       <DialogContent
-        class="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border bg-background p-4 shadow-xl"
+        class="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] max-w-[520px] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-3xl border bg-background p-5 shadow-lg"
         @interact-outside.prevent
         @escape-key-down="blocked && $event.preventDefault()"
         @close-auto-focus="restoreFocus"
       >
         <DialogTitle class="pr-8 text-xl font-semibold">创建项目</DialogTitle>
         <DialogDescription class="sr-only">
-          填写项目名称，选择本机源文件夹并指定主目录。
+          填写项目名称，选择本机源文件夹。点击“设为主要”可切换主要目录，主要目录始终排在首行。
         </DialogDescription>
-        <form class="mt-4" @submit.prevent="create">
+        <form class="mt-3" @submit.prevent="create">
           <label for="project-name" class="sr-only">项目名称</label>
           <div
-            class="flex h-10 items-center rounded-xl border transition-colors focus-within:border-foreground/50 focus-within:ring-1 focus-within:ring-foreground/20"
+            class="flex h-10 items-center rounded-xl border bg-card transition-colors focus-within:border-blue-500"
           >
             <span
               class="flex h-5 w-10 shrink-0 items-center justify-center border-r text-muted-foreground"
-              ><FolderIcon class="size-4" aria-hidden="true"
+              ><FolderIcon class="size-3.5" aria-hidden="true"
             /></span>
             <input
               id="project-name"
@@ -132,79 +145,72 @@ onScopeDispose(() => {
               autocomplete="off"
             />
           </div>
-          <p id="project-source-heading" class="mb-2 mt-4 text-sm font-medium">源文件夹</p>
+          <p id="project-source-heading" class="mb-2 mt-3 text-sm font-medium">源文件夹</p>
           <section
             aria-labelledby="project-source-heading"
-            class="flex min-h-28 min-w-0 flex-col items-center justify-center gap-3 rounded-xl border bg-card px-4 py-5"
+            class="min-w-0 overflow-hidden rounded-xl border bg-card"
           >
-            <ul v-if="directories.length" class="w-full min-w-0 divide-y">
+            <ul v-if="directories.length" class="min-w-0 divide-y border-b">
               <li
-                v-for="directory in directories"
+                v-for="directory in sortedDirectories"
                 :key="directory.path"
-                class="flex min-w-0 items-start gap-2 py-2.5 first:pt-0"
+                class="group/folder flex h-12 min-w-0 items-center gap-2.5 px-3.5 focus-visible:outline-offset-[-2px]"
+                :title="directory.path"
+                :tabindex="directory.path === mainPath ? -1 : undefined"
+                :aria-label="directory.path === mainPath ? `主要目录 ${directory.name}` : undefined"
               >
-                <FolderIcon
-                  class="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <div class="min-w-0 flex-1">
-                  <p class="break-words text-sm font-medium [overflow-wrap:anywhere]">
-                    {{ directory.name }}
-                  </p>
-                  <p class="mt-1 break-all text-xs leading-5 text-muted-foreground">
-                    {{ directory.path }}
-                  </p>
+                <div class="flex min-w-0 flex-1 items-center gap-2.5 text-sm">
+                  <FolderIcon class="size-4 shrink-0 text-muted-foreground/70" aria-hidden="true" />
+                  <span class="truncate">{{ directory.name }}</span>
                 </div>
-                <div class="flex shrink-0 flex-wrap items-center justify-end gap-1">
-                  <span class="rounded-lg border px-2 py-0.5 text-xs text-muted-foreground">
-                    {{ directory.path === mainPath ? '主要' : '其他' }}
-                  </span>
-                  <Button
-                    v-if="directory.path !== mainPath"
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    :disabled="blocked"
-                    :aria-label="`将 ${directory.name} 设为主要`"
-                    @click="mainPath = directory.path"
-                    >设为主要</Button
-                  >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    class="size-6 text-muted-foreground"
-                    :disabled="blocked"
-                    :aria-label="`移除 ${directory.name}`"
-                    @click="removeDirectory(directory.path)"
-                    ><XIcon class="size-3.5" aria-hidden="true"
-                  /></Button>
-                </div>
+                <span
+                  v-if="directory.path === mainPath"
+                  class="shrink-0 rounded-[10px] border px-2.5 py-1 text-xs text-muted-foreground"
+                  >主要</span
+                >
+                <Button
+                  v-else
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  class="h-7 rounded-lg border px-2 font-normal text-foreground opacity-0 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100"
+                  :disabled="blocked"
+                  :aria-label="`将 ${directory.name} 设为主要`"
+                  @click="selectMain(directory.path, $event)"
+                  >设为主要</Button
+                >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  class="size-6 text-muted-foreground/70"
+                  :disabled="blocked"
+                  :aria-label="`移除 ${directory.name}`"
+                  @click="removeDirectory(directory.path)"
+                  ><XIcon class="size-3.5" aria-hidden="true"
+                /></Button>
               </li>
             </ul>
-            <p v-else class="text-sm text-muted-foreground">在此电脑上添加文件夹</p>
             <Button
               type="button"
-              variant="secondary"
-              size="xs"
-              class="gap-1.5 rounded-full"
+              variant="ghost"
+              class="h-12 w-full justify-start gap-2.5 rounded-none px-3.5 font-normal"
               :disabled="!canAdd"
               @click="chooseDirectories"
               ><LoaderCircleIcon
                 v-if="choosing"
-                class="size-3.5 animate-spin"
+                class="size-4 animate-spin text-muted-foreground/70"
                 aria-hidden="true"
-              /><FolderPlusIcon v-else class="size-3.5" aria-hidden="true" />{{
-                choosing ? '正在选择…' : '添加'
-              }}</Button
+              /><FolderPlusIcon v-else class="size-4 text-muted-foreground/70" aria-hidden="true" />
+              {{ choosing ? '正在选择…' : '添加文件夹' }}</Button
             >
-            <p
-              v-if="directories.length >= MAX_WORKSPACE_FOLDERS"
-              class="text-xs text-muted-foreground"
-            >
-              最多可添加 {{ MAX_WORKSPACE_FOLDERS }} 个文件夹
-            </p>
           </section>
+          <p
+            v-if="directories.length >= MAX_WORKSPACE_FOLDERS"
+            class="mt-2 text-xs text-muted-foreground"
+          >
+            最多可添加 {{ MAX_WORKSPACE_FOLDERS }} 个文件夹
+          </p>
           <p
             v-if="validationError || error"
             role="alert"
@@ -212,18 +218,20 @@ onScopeDispose(() => {
           >
             {{ validationError || error }}
           </p>
-          <div class="mt-7 flex justify-end gap-2">
+          <div class="mt-5 flex justify-end gap-2">
             <Button
               type="button"
               variant="ghost"
-              class="text-muted-foreground"
+              size="sm"
+              class="rounded-[10px] px-4 text-muted-foreground"
               :disabled="blocked"
               @click="emit('close')"
               >取消</Button
             >
             <Button
               type="submit"
-              class="gap-2 rounded-xl bg-foreground text-background hover:bg-foreground/90"
+              size="sm"
+              class="gap-2 rounded-[10px] bg-foreground px-4 text-background hover:bg-foreground/90"
               :disabled="!canCreate"
               ><LoaderCircleIcon
                 v-if="busy"

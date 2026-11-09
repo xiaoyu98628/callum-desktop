@@ -12,6 +12,7 @@ import {
   parseName,
   parseSendInput,
   parseWorkspaceInput,
+  parseWorkspaceChange,
   parseWorkspace,
   parseWorkspaceUpdate,
 } from '../../src/shared/chat.ts'
@@ -72,6 +73,20 @@ test('会话与工作区输入按 UTF-8 限制名称，拒绝未知字段及发�
     assert.throws(() => parseName(value))
   assert.throws(() => parseWorkspaceInput({ name: '工作区', rootPath: '/tmp', deleted: true }))
   assert.throws(() => parseWorkspaceInput({ name: '工作区', rootPath: '/tmp\0' }))
+  assert.deepEqual(parseWorkspaceChange({ name: ' 项目 ', rootPath: '/tmp/source' }), {
+    name: '项目',
+    rootPath: '/tmp/source',
+  })
+  assert.deepEqual(parseWorkspaceChange({ name: '仅改名' }), { name: '仅改名' })
+  for (const value of [
+    { name: '', rootPath: '/tmp' },
+    { name: '项目', rootPath: '' },
+    { name: '项目', rootPath: '/tmp\0' },
+    { name: '项目', rootPath: null },
+    { name: '项目', otherPaths: [] },
+    { name: '项目', pinned: true },
+  ])
+    assert.throws(() => parseWorkspaceChange(value))
   assert.throws(() =>
     parseSendInput({ conversationId: uuid, workspaceId: uuid, modelId: uuid, text: '内容' }),
   )
@@ -89,6 +104,53 @@ async function until(check: () => boolean): Promise<void> {
     await setTimeout(10)
   }
 }
+
+test(
+  '真实 Go 项目更新：主目录交换、失败原子性、事件版本及重启保留',
+  { skip: !supportedBackend },
+  async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-primary-test-'))
+    let service: ChatService | undefined
+    try {
+      const root = join(profile, 'root'),
+        other = join(profile, 'other'),
+        unbound = join(profile, 'unbound')
+      await Promise.all([mkdir(root), mkdir(other), mkdir(unbound)])
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const created = await service.createWorkspace({
+        name: '原项目',
+        rootPath: root,
+        otherPaths: [other],
+      })
+      const events: ChatEvent[] = []
+      service.subscribe((event) => events.push(event))
+      await assert.rejects(
+        service.updateWorkspace(created.id, {
+          name: '不能保存',
+          rootPath: await realpath(unbound),
+        }),
+      )
+      assert.equal(events.length, 0)
+      assert.equal((await service.listWorkspaces(0)).workspaces[0]?.name, created.name)
+      const changed = await service.updateWorkspace(created.id, {
+        name: '已切换',
+        rootPath: await realpath(other),
+      })
+      assert.equal(changed.workspace.id, created.id)
+      assert.equal(changed.workspace.rootPath, await realpath(other))
+      assert.deepEqual(changed.workspace.otherPaths, [created.rootPath])
+      assert.equal(changed.revision, events[0]?.revision)
+      assert.equal(events[0]?.change.kind, 'workspace')
+      await service.close()
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const restored = (await service.listWorkspaces(0)).workspaces[0]
+      assert.deepEqual(restored, changed.workspace)
+    } finally {
+      await service?.close()
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
 
 test(
   '真实 Go 管理：分组、人工标题、活动执行限制、软删除与重启恢复',
@@ -153,7 +215,10 @@ test(
         (await service.renameConversation(run.conversationId, '人工保留的标题')).title,
         '人工保留的标题',
       )
-      assert.equal((await service.renameWorkspace(workspace.id, '工作区改名')).name, '工作区改名')
+      assert.equal(
+        (await service.updateWorkspace(workspace.id, { name: '工作区改名' })).workspace.name,
+        '工作区改名',
+      )
       await service.cancel(run.runId)
       await until(() =>
         events.some(

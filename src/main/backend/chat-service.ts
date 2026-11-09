@@ -10,6 +10,7 @@ import {
   PAGE_SIZE,
   parseName,
   parseWorkspaceInput,
+  parseWorkspaceChange,
   record,
   string,
 } from '../../shared/chat.ts'
@@ -32,6 +33,7 @@ import type {
   ConversationDetail,
   Workspace,
   WorkspaceInput,
+  WorkspaceChange,
   WorkspacePage,
   WorkspaceUpdate,
   SendMessageInput,
@@ -272,13 +274,24 @@ export class ChatService {
       return value
     })
   }
-  async renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
-    return this.mutate(`workspace:${workspaceId}`, async () => {
-      const value = workspaceFromRpc(
-        await this.request('workspace.update', { id: id(workspaceId), name: parseName(name) }),
+  async updateWorkspace(workspaceId: string, input: WorkspaceChange): Promise<WorkspaceUpdate> {
+    const identifier = id(workspaceId)
+    const parsed = parseWorkspaceChange(input)
+    return this.mutate(`workspace:${identifier}`, async () => {
+      if (parsed.rootPath !== undefined) {
+        const directory = await resolveWorkspaceDirectory(parsed.rootPath)
+        if (directory.path !== parsed.rootPath)
+          throw new Error('项目文件夹已变化，请重新打开项目编辑。')
+      }
+      const workspace = workspaceFromRpc(
+        await this.request('workspace.update', {
+          id: identifier,
+          name: parsed.name,
+          root_path: parsed.rootPath,
+        }),
       )
-      this.publish({ kind: 'workspace', value })
-      return value
+      this.publish({ kind: 'workspace', value: workspace })
+      return { workspace, revision: this.revision }
     })
   }
   async deleteWorkspace(workspaceId: string): Promise<Workspace> {

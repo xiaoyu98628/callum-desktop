@@ -17,7 +17,7 @@ export const IPC_CHANNELS = {
   listWorkspaces: 'callum:workspace:list',
   getWorkspaceConversations: 'callum:workspace:conversations',
   createWorkspace: 'callum:workspace:create',
-  renameWorkspace: 'callum:workspace:rename',
+  updateWorkspace: 'callum:workspace:update',
   deleteWorkspace: 'callum:workspace:delete',
   setWorkspacePinned: 'callum:workspace:set-pinned',
   setWorkspaceArchived: 'callum:workspace:set-archived',
