@@ -65,6 +65,7 @@ export function workspaceFromRpc(value: unknown): Workspace {
     id: v.id,
     name: v.name,
     rootPath: v.root_path,
+    otherPaths: v.other_paths,
     updatedAt: v.updated_at,
     pinnedAt: v.pinned_at ?? null,
     deletedAt: v.deleted_at ?? null,

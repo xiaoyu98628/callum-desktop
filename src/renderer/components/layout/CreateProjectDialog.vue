@@ -9,30 +9,38 @@ import {
   DialogDescription,
 } from 'reka-ui'
 import { FolderIcon, FolderPlusIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
-import { parseWorkspaceInput } from '@shared/chat'
+import { MAX_WORKSPACE_FOLDERS, parseWorkspaceInput } from '@shared/chat'
 import type { SelectedDirectory, WorkspaceInput } from '@shared/chat'
 import { getDesktopApi } from '@/lib/desktop'
 import { Button } from '@/components/ui/button'
 
 const props = defineProps<{ busy: boolean; error: string; returnFocus: HTMLElement | null }>()
-const emit = defineEmits<{ close: []; create: [input: WorkspaceInput] }>()
+const emit = defineEmits<{ close: []; create: [input: WorkspaceInput, selectionId: string] }>()
 const name = ref('')
-const directory = ref<SelectedDirectory | null>(null)
+const directories = ref<SelectedDirectory[]>([])
+const mainPath = ref('')
+const selectionId = crypto.randomUUID()
 const choosing = ref(false)
+const removing = ref(false)
 const validationError = ref('')
 let disposed = false
-const blocked = computed(() => props.busy || choosing.value)
-const canCreate = computed(() => !blocked.value && !!name.value.trim() && !!directory.value)
-async function chooseDirectory(): Promise<void> {
-  if (blocked.value) return
+const blocked = computed(() => props.busy || choosing.value || removing.value)
+const canAdd = computed(() => !blocked.value && directories.value.length < MAX_WORKSPACE_FOLDERS)
+const canCreate = computed(() => !blocked.value && !!name.value.trim() && !!mainPath.value)
+async function chooseDirectories(): Promise<void> {
+  if (!canAdd.value) return
   choosing.value = true
   validationError.value = ''
   try {
-    const result = await getDesktopApi().chooseWorkspaceDirectory()
+    const result = await getDesktopApi().chooseWorkspaceDirectories(selectionId)
     if (!result.ok) throw new Error(result.error)
-    if (!disposed && result.value) {
-      directory.value = result.value
-      if (!name.value.trim()) name.value = result.value.name
+    const first = result.value[0]
+    if (!disposed && first) {
+      directories.value.push(...result.value)
+      if (!mainPath.value) {
+        mainPath.value = first.path
+        if (!name.value.trim()) name.value = first.name
+      }
     }
   } catch (error) {
     if (!disposed)
@@ -41,11 +49,38 @@ async function chooseDirectory(): Promise<void> {
     if (!disposed) choosing.value = false
   }
 }
-function create(): void {
-  if (!canCreate.value || !directory.value) return
+async function removeDirectory(path: string): Promise<void> {
+  if (blocked.value) return
+  removing.value = true
   validationError.value = ''
   try {
-    emit('create', parseWorkspaceInput({ name: name.value, rootPath: directory.value.path }))
+    const result = await getDesktopApi().discardWorkspaceDirectories(selectionId, path)
+    if (!result.ok) throw new Error(result.error)
+    if (disposed) return
+    directories.value = directories.value.filter((directory) => directory.path !== path)
+    if (mainPath.value === path) mainPath.value = directories.value[0]?.path ?? ''
+  } catch (error) {
+    if (!disposed)
+      validationError.value = error instanceof Error ? error.message : '无法移除文件夹。'
+  } finally {
+    if (!disposed) removing.value = false
+  }
+}
+function create(): void {
+  if (!canCreate.value) return
+  validationError.value = ''
+  try {
+    emit(
+      'create',
+      parseWorkspaceInput({
+        name: name.value,
+        rootPath: mainPath.value,
+        otherPaths: directories.value
+          .filter((directory) => directory.path !== mainPath.value)
+          .map((directory) => directory.path),
+      }),
+      selectionId,
+    )
   } catch (error) {
     validationError.value = error instanceof Error ? error.message : '请检查项目信息。'
   }
@@ -57,6 +92,9 @@ function restoreFocus(event: Event): void {
 }
 onScopeDispose(() => {
   disposed = true
+  void getDesktopApi()
+    .discardWorkspaceDirectories(selectionId)
+    .catch(() => {})
 })
 </script>
 
@@ -71,7 +109,9 @@ onScopeDispose(() => {
         @close-auto-focus="restoreFocus"
       >
         <DialogTitle class="pr-8 text-xl font-semibold">创建项目</DialogTitle>
-        <DialogDescription class="sr-only">填写项目名称并选择本机源文件夹。</DialogDescription>
+        <DialogDescription class="sr-only">
+          填写项目名称，选择本机源文件夹并指定主目录。
+        </DialogDescription>
         <form class="mt-4" @submit.prevent="create">
           <label for="project-name" class="sr-only">项目名称</label>
           <div
@@ -97,8 +137,12 @@ onScopeDispose(() => {
             aria-labelledby="project-source-heading"
             class="flex min-h-28 min-w-0 flex-col items-center justify-center gap-3 rounded-xl border bg-card px-4 py-5"
           >
-            <template v-if="directory">
-              <div class="flex w-full min-w-0 items-start gap-3">
+            <ul v-if="directories.length" class="w-full min-w-0 divide-y">
+              <li
+                v-for="directory in directories"
+                :key="directory.path"
+                class="flex min-w-0 items-start gap-2 py-2.5 first:pt-0"
+              >
                 <FolderIcon
                   class="mt-0.5 size-4 shrink-0 text-muted-foreground"
                   aria-hidden="true"
@@ -111,35 +155,55 @@ onScopeDispose(() => {
                     {{ directory.path }}
                   </p>
                 </div>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                class="self-end rounded-full text-muted-foreground"
-                :disabled="blocked"
-                @click="chooseDirectory"
-                >更换文件夹</Button
-              >
-            </template>
-            <template v-else>
-              <p class="text-sm text-muted-foreground">在此电脑上添加文件夹</p>
-              <Button
-                type="button"
-                variant="secondary"
-                size="xs"
-                class="gap-1.5 rounded-full"
-                :disabled="blocked"
-                @click="chooseDirectory"
-                ><LoaderCircleIcon
-                  v-if="choosing"
-                  class="size-3.5 animate-spin"
-                  aria-hidden="true"
-                /><FolderPlusIcon v-else class="size-3.5" aria-hidden="true" />{{
-                  choosing ? '正在选择…' : '添加'
-                }}</Button
-              >
-            </template>
+                <div class="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                  <span class="rounded-lg border px-2 py-0.5 text-xs text-muted-foreground">
+                    {{ directory.path === mainPath ? '主要' : '其他' }}
+                  </span>
+                  <Button
+                    v-if="directory.path !== mainPath"
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    :disabled="blocked"
+                    :aria-label="`将 ${directory.name} 设为主要`"
+                    @click="mainPath = directory.path"
+                    >设为主要</Button
+                  >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    class="size-6 text-muted-foreground"
+                    :disabled="blocked"
+                    :aria-label="`移除 ${directory.name}`"
+                    @click="removeDirectory(directory.path)"
+                    ><XIcon class="size-3.5" aria-hidden="true"
+                  /></Button>
+                </div>
+              </li>
+            </ul>
+            <p v-else class="text-sm text-muted-foreground">在此电脑上添加文件夹</p>
+            <Button
+              type="button"
+              variant="secondary"
+              size="xs"
+              class="gap-1.5 rounded-full"
+              :disabled="!canAdd"
+              @click="chooseDirectories"
+              ><LoaderCircleIcon
+                v-if="choosing"
+                class="size-3.5 animate-spin"
+                aria-hidden="true"
+              /><FolderPlusIcon v-else class="size-3.5" aria-hidden="true" />{{
+                choosing ? '正在选择…' : '添加'
+              }}</Button
+            >
+            <p
+              v-if="directories.length >= MAX_WORKSPACE_FOLDERS"
+              class="text-xs text-muted-foreground"
+            >
+              最多可添加 {{ MAX_WORKSPACE_FOLDERS }} 个文件夹
+            </p>
           </section>
           <p
             v-if="validationError || error"

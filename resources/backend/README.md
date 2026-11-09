@@ -8,9 +8,9 @@ resources/backend/
     callum
 ```
 
-当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `513d9c4` 及当时的本地改动。SHA-256 为 `a4408717071091cd543175493aa7aadbf2c47b1f5b04155cc8f3541d27b509e0`。
+当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `d4f0d07` 及本次多目录改动。SHA-256 为 `178b6419a52344a67d5561cede949e104038504f41853082eb4582b77e92275e`。
 
-当前开发数据库基线为版本 `1`。旧开发库请保留在原目录，桌面使用独立目录自动建新库。命令默认在只读 Seatbelt 沙箱执行，项目写入须逐次审批。内置文件工具和 Seatbelt 命令隔离应用数据目录。
+当前开发数据库基线为版本 `1`，建表包含 `workspace_additional_folders`。缺少该表的旧库会被结构校验拒绝，可用独立开发目录初始化空库。命令默认在只读 Seatbelt 沙箱执行，项目写入须逐次审批。内置文件工具和 Seatbelt 命令隔离应用数据目录。
 
 ## 打包资源约定
 

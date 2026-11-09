@@ -111,6 +111,7 @@ function manageConversation(
     id: item.id,
     name: item.title,
     rootPath: '',
+    otherPaths: [],
     deleting,
   }
 }
@@ -123,6 +124,7 @@ function manageWorkspace(item: Workspace, deleting: boolean, trigger: HTMLElemen
     id: item.id,
     name: item.name,
     rootPath: item.rootPath,
+    otherPaths: item.otherPaths,
     deleting,
   }
 }
@@ -139,11 +141,11 @@ function addWorkspace(): void {
   managementError.value = ''
   creatingProject.value = true
 }
-async function createProject(input: WorkspaceInput): Promise<void> {
+async function createProject(input: WorkspaceInput, selectionId: string): Promise<void> {
   if (state.managing) return
   managementError.value = ''
   try {
-    const workspace = await createWorkspace(input)
+    const workspace = await createWorkspace(input, selectionId)
     creatingProject.value = false
     startConversation(workspace.id)
   } catch (error) {

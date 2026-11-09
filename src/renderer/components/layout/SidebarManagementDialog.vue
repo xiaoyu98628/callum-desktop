@@ -4,6 +4,7 @@ export interface ManagementTarget {
   id: string | null
   name: string
   rootPath: string
+  otherPaths: string[]
   deleting: boolean
 }
 </script>
@@ -52,7 +53,7 @@ const title = computed(() =>
 const description = computed(() =>
   props.target.deleting
     ? props.target.kind === 'workspace'
-      ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一文件夹可恢复项目及对话。'
+      ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一主目录可恢复项目及对话，其他目录以新选择为准。'
       : '此会话将从列表移除，当前窗口中的对应草稿也会清除。'
     : props.target.kind === 'workspace'
       ? '修改项目名称，查看此项目的源文件夹。'
@@ -160,6 +161,24 @@ watch(
                 >主要</span
               >
             </section>
+            <ul v-if="target.otherPaths.length" class="mt-2 space-y-2">
+              <li
+                v-for="path in target.otherPaths"
+                :key="path"
+                class="flex items-start gap-2.5 rounded-xl border bg-card px-3 py-3"
+              >
+                <FolderIcon
+                  class="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <p class="min-w-0 flex-1 break-all text-xs leading-5 text-muted-foreground">
+                  {{ path }}
+                </p>
+                <span class="shrink-0 rounded-lg border px-2 py-0.5 text-xs text-muted-foreground"
+                  >其他</span
+                >
+              </li>
+            </ul>
           </template>
           <div v-else-if="target.rootPath" class="mt-4 space-y-1">
             <p class="text-xs text-muted-foreground">文件夹</p>

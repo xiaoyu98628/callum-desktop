@@ -18,6 +18,7 @@ export interface Workspace {
   id: string
   name: string
   rootPath: string
+  otherPaths: string[]
   updatedAt: number
   pinnedAt: number | null
   deletedAt: number | null
@@ -26,6 +27,7 @@ export interface Workspace {
 export interface WorkspaceInput {
   name: string
   rootPath: string
+  otherPaths?: string[]
 }
 export interface SelectedDirectory {
   path: string
@@ -224,6 +226,7 @@ export interface ResendMessageResult extends SendMessageResult {
 export type ChatResult<T> = { ok: true; value: T } | { ok: false; error: string }
 export const MAX_MESSAGE_LENGTH = 100_000
 export const PAGE_SIZE = 50
+export const MAX_WORKSPACE_FOLDERS = 16
 
 export function isActiveRun(run: ChatRun): boolean {
   return ['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(run.status)
@@ -303,29 +306,48 @@ export function parseName(value: unknown): string {
 }
 export function parseWorkspaceInput(value: unknown): WorkspaceInput {
   const v = record(value)
-  if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
+  if (Object.keys(v).some((key) => !['name', 'rootPath', 'otherPaths'].includes(key)))
     throw new Error('项目参数无效')
-  const rootPath = string(v.rootPath)
-  if (!rootPath || rootPath.length > 8192 || rootPath.includes('\0'))
-    throw new Error('项目路径无效')
-  return { name: parseName(v.name), rootPath }
+  const rootPath = workspacePath(v.rootPath)
+  return {
+    name: parseName(v.name),
+    rootPath,
+    ...(v.otherPaths === undefined
+      ? {}
+      : { otherPaths: otherWorkspacePaths(rootPath, v.otherPaths) }),
+  }
 }
 export function parseWorkspace(value: unknown): Workspace {
   const v = record(value)
+  const rootPath = workspacePath(v.rootPath)
   return {
     id: id(v.id),
     name: string(v.name),
-    rootPath: string(v.rootPath),
+    rootPath,
+    otherPaths: otherWorkspacePaths(rootPath, v.otherPaths ?? []),
     updatedAt: integer(v.updatedAt),
     pinnedAt: v.pinnedAt === null ? null : integer(v.pinnedAt),
     deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
     archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
   }
 }
-export function parseSelectedDirectory(value: unknown): SelectedDirectory | null {
-  if (value === null) return null
+function workspacePath(value: unknown): string {
+  const path = string(value)
+  if (!path || new TextEncoder().encode(path).length > 8192 || path.includes('\0'))
+    throw new Error('项目路径无效')
+  return path
+}
+function otherWorkspacePaths(rootPath: string, value: unknown): string[] {
+  const paths = array(value, workspacePath)
+  if (paths.length >= MAX_WORKSPACE_FOLDERS)
+    throw new Error(`项目最多可添加 ${MAX_WORKSPACE_FOLDERS} 个文件夹。`)
+  if (new Set([rootPath, ...paths]).size !== paths.length + 1)
+    throw new Error('项目文件夹不能重复。')
+  return paths
+}
+export function parseSelectedDirectory(value: unknown): SelectedDirectory {
   const v = record(value)
-  return { path: string(v.path), name: string(v.name) }
+  return { path: workspacePath(v.path), name: string(v.name) }
 }
 export function parseConversationPage(value: unknown): ConversationPage {
   const v = record(value)

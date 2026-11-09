@@ -632,8 +632,8 @@ function createConversations() {
       state.managing = false
     }
   }
-  async function createWorkspace(input: WorkspaceInput): Promise<Workspace> {
-    const result = await manage(() => getDesktopApi().createWorkspace(input))
+  async function createWorkspace(input: WorkspaceInput, selectionId: string): Promise<Workspace> {
+    const result = await manage(() => getDesktopApi().createWorkspace(input, selectionId))
     if (!disposed) {
       hiddenWorkspaces.delete(result.id)
       state.workspaces = upsert(state.workspaces, result)

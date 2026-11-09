@@ -48,13 +48,14 @@ export interface DesktopApi {
   setModelEnabled(modelId: string, enabled: boolean): Promise<ChatResult<string>>
   deleteModel(modelId: string): Promise<ChatResult<string>>
   getChatOverview(offset: number): Promise<ChatResult<ChatOverview>>
-  chooseWorkspaceDirectory(): Promise<ChatResult<SelectedDirectory | null>>
+  chooseWorkspaceDirectories(selectionId: string): Promise<ChatResult<SelectedDirectory[]>>
+  discardWorkspaceDirectories(selectionId: string, path?: string): Promise<ChatResult<null>>
   listWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
   getWorkspaceConversations(
     workspaceId: string,
     offset: number,
   ): Promise<ChatResult<ConversationPage>>
-  createWorkspace(input: WorkspaceInput): Promise<ChatResult<Workspace>>
+  createWorkspace(input: WorkspaceInput, selectionId: string): Promise<ChatResult<Workspace>>
   renameWorkspace(workspaceId: string, name: string): Promise<ChatResult<Workspace>>
   deleteWorkspace(workspaceId: string): Promise<ChatResult<Workspace>>
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<ChatResult<WorkspaceUpdate>>

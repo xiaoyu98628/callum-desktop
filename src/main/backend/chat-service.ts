@@ -243,14 +243,30 @@ export class ChatService {
       this.mutations.delete(key)
     }
   }
-  async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+  async createWorkspace(
+    input: WorkspaceInput,
+    selected?: ReadonlyMap<string, string>,
+  ): Promise<Workspace> {
     const parsed = parseWorkspaceInput(input)
-    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择项目的绝对路径。')
-    const rootPath = await realpath(parsed.rootPath)
-    if (!(await stat(rootPath)).isDirectory()) throw new Error('项目必须是文件夹。')
+    const paths: string[] = []
+    const seen = new Set<string>()
+    for (const path of [parsed.rootPath, ...(parsed.otherPaths ?? [])]) {
+      if (selected && !selected.has(path)) throw new Error('请重新选择项目文件夹。')
+      const directory = await resolveWorkspaceDirectory(path)
+      if (selected && (path !== directory.path || selected.get(path) !== directory.identity))
+        throw new Error('项目文件夹已变化，请重新选择。')
+      if (seen.has(directory.identity)) throw new Error('项目文件夹不能重复。')
+      seen.add(directory.identity)
+      paths.push(directory.path)
+    }
+    const [rootPath, ...otherPaths] = paths
     return this.mutate(`path:${rootPath}`, async () => {
       const value = workspaceFromRpc(
-        await this.request('workspace.create', { name: parsed.name, root_path: rootPath }),
+        await this.request('workspace.create', {
+          name: parsed.name,
+          root_path: rootPath,
+          other_paths: parsed.otherPaths === undefined ? undefined : otherPaths,
+        }),
       )
       this.publish({ kind: 'workspace', value })
       return value
@@ -908,6 +924,23 @@ export function resolveBackendExecutable(resourceRoot: string): string {
     throw new Error('当前仅提供 macOS Apple Silicon 服务程序。')
   return join(resourceRoot, 'backend', `${process.platform}-${process.arch}`, 'callum')
 }
+/** 选择和提交均校验实际目录，身份用于拒绝重复和选择后替换的目录。 */
+export async function resolveWorkspaceDirectory(
+  path: string,
+): Promise<{ path: string; identity: string }> {
+  if (!isAbsolute(path)) throw new Error('请选择项目的绝对路径。')
+  let actual: string
+  let info
+  try {
+    actual = await realpath(path)
+    info = await stat(actual, { bigint: true })
+  } catch {
+    throw new Error('项目文件夹不可用，请重新选择。')
+  }
+  if (!info.isDirectory()) throw new Error('项目必须是文件夹。')
+  return { path: actual, identity: `${info.dev}:${info.ino}` }
+}
+
 export function publicChatError(error: unknown): string {
   if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')
   if (error instanceof Error && !/ENOENT|EACCES|JSON|格式|无效|不匹配/.test(error.message))

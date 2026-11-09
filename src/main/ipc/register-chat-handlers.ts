@@ -1,10 +1,10 @@
 import { dialog, ipcMain } from 'electron'
-import { realpath, stat } from 'node:fs/promises'
-import { basename, isAbsolute } from 'node:path'
+import { basename } from 'node:path'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
 import {
   id,
   integer,
+  MAX_WORKSPACE_FOLDERS,
   parseName,
   parseSendInput,
   parseResendInput,
@@ -12,7 +12,7 @@ import {
   parseUserInputAnswer,
 } from '../../shared/chat'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { publicChatError } from '../backend/chat-service'
+import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
 import { isTrustedRendererUrl } from '../security/renderer-policy'
 import { ChatEventDelivery } from './chat-event-delivery'
@@ -27,14 +27,13 @@ export function registerChatHandlers(
   const channels: string[] = []
   let active = false
   let target: WebContents | null = null
-  let selectedDirectory: string | null = null
+  let selection: { id: string; paths: Map<string, string> } | null = null
   let choosingDirectory = false
-  let directoryGeneration = 0
+  let creatingWorkspace = false
   const reset = (): void => {
     active = false
     delivery.reset()
-    selectedDirectory = null
-    directoryGeneration++
+    selection = null
   }
   const delivery = new ChatEventDelivery((token, event) => {
     if (target && !target.isDestroyed() && active) target.send(IPC_CHANNELS.chatEvent, token, event)
@@ -106,41 +105,74 @@ export function registerChatHandlers(
     if (offset > 100_000) throw new Error('分页参数无效')
     return offset
   }
-  handle(IPC_CHANNELS.chooseWorkspaceDirectory, 0, async () => {
+  handle(IPC_CHANNELS.chooseWorkspaceDirectories, 1, async (selectionId) => {
     const window = getWindow()
-    if (!window || window.isDestroyed() || choosingDirectory)
+    if (
+      !window ||
+      window.isDestroyed() ||
+      target !== window.webContents ||
+      choosingDirectory ||
+      creatingWorkspace ||
+      typeof selectionId !== 'string' ||
+      !/^[a-f0-9-]{36}$/.test(selectionId)
+    )
       throw new Error('文件夹选择器当前不可用。')
+    if (selection?.id !== selectionId) selection = { id: selectionId, paths: new Map() }
+    const current = selection
     choosingDirectory = true
-    const generation = directoryGeneration
     try {
       const result = await dialog.showOpenDialog(window, {
-        title: '选择项目文件夹',
-        buttonLabel: '选择文件夹',
-        properties: ['openDirectory'],
+        title: '添加项目文件夹',
+        buttonLabel: '添加',
+        properties: ['openDirectory', 'multiSelections'],
       })
-      if (result.canceled || window.isDestroyed() || generation !== directoryGeneration) return null
-      const path = result.filePaths[0]
-      if (!path || !isAbsolute(path)) throw new Error('请选择有效的文件夹。')
-      const actualPath = await realpath(path)
-      if (!(await stat(actualPath)).isDirectory()) throw new Error('请选择文件夹。')
-      if (generation !== directoryGeneration) return null
-      selectedDirectory = actualPath
-      return { path: actualPath, name: basename(actualPath) || actualPath }
+      if (result.canceled || window.isDestroyed() || selection !== current) return []
+      if (result.filePaths.length > MAX_WORKSPACE_FOLDERS)
+        throw new Error(`项目最多可添加 ${MAX_WORKSPACE_FOLDERS} 个文件夹。`)
+      const paths = new Map(current.paths)
+      const seen = new Set(paths.values())
+      const added = []
+      for (const selected of result.filePaths) {
+        const { path, identity } = await resolveWorkspaceDirectory(selected)
+        if (paths.has(path) || seen.has(identity)) continue
+        paths.set(path, identity)
+        seen.add(identity)
+        added.push({ path, name: basename(path) || path })
+      }
+      if (paths.size > MAX_WORKSPACE_FOLDERS)
+        throw new Error(`项目最多可添加 ${MAX_WORKSPACE_FOLDERS} 个文件夹。`)
+      if (window.isDestroyed() || selection !== current) return []
+      current.paths = paths
+      return added
     } finally {
       choosingDirectory = false
     }
+  })
+  handle(IPC_CHANNELS.discardWorkspaceDirectories, 2, async (selectionId, path) => {
+    if (selection && selection.id === selectionId) {
+      if (path === undefined) selection = null
+      else if (typeof path === 'string' && !choosingDirectory && !creatingWorkspace)
+        selection.paths.delete(path)
+    }
+    return null
   })
   handle(IPC_CHANNELS.listWorkspaces, 1, (offset) => service.listWorkspaces(pageOffset(offset)))
   handle(IPC_CHANNELS.getWorkspaceConversations, 2, (workspaceId, offset) =>
     service.workspaceConversations(id(workspaceId), pageOffset(offset)),
   )
-  handle(IPC_CHANNELS.createWorkspace, 1, async (input) => {
+  handle(IPC_CHANNELS.createWorkspace, 2, async (input, selectionId) => {
     const parsed = parseWorkspaceInput(input)
-    // 目录只能来自本窗口最近一次系统选择，不让渲染界面提交任意路径。
-    if (parsed.rootPath !== selectedDirectory) throw new Error('请重新选择项目文件夹。')
-    const workspace = await service.createWorkspace(parsed)
-    selectedDirectory = null
-    return workspace
+    const current = selection
+    if (!current || current.id !== selectionId || choosingDirectory || creatingWorkspace)
+      throw new Error('请重新选择项目文件夹。')
+    creatingWorkspace = true
+    try {
+      const workspace = await service.createWorkspace(parsed, current.paths)
+      if (selection === current) selection = null
+      return workspace
+    } finally {
+      creatingWorkspace = false
+    }
   })
   handle(IPC_CHANNELS.renameWorkspace, 2, (workspaceId, name) =>
     service.renameWorkspace(id(workspaceId), parseName(name)),

@@ -89,10 +89,16 @@ const desktopApi: DesktopApi = {
       parseDetail,
     )
   },
-  async chooseWorkspaceDirectory() {
+  async chooseWorkspaceDirectories(selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.chooseWorkspaceDirectory),
-      parseSelectedDirectory,
+      await ipcRenderer.invoke(IPC_CHANNELS.chooseWorkspaceDirectories, selectionId),
+      (value) => array(value, parseSelectedDirectory),
+    )
+  },
+  async discardWorkspaceDirectories(selectionId, path) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.discardWorkspaceDirectories, selectionId, path),
+      () => null,
     )
   },
   async listWorkspaces(offset) {
@@ -107,9 +113,9 @@ const desktopApi: DesktopApi = {
       parseConversationPage,
     )
   },
-  async createWorkspace(input) {
+  async createWorkspace(input, selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.createWorkspace, input),
+      await ipcRenderer.invoke(IPC_CHANNELS.createWorkspace, input, selectionId),
       parseWorkspace,
     )
   },

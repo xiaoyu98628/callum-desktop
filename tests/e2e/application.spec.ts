@@ -1301,7 +1301,7 @@ test.describe('真实 Go 对话交互', () => {
 
 async function chooseTestDirectory(
   desktop: ElectronApplication,
-  path: string | null,
+  path: string | string[] | null,
 ): Promise<void> {
   // 仅替代操作系统选择器；返回值仍经过生产 IPC、路径检查和真实 Go 服务。
   await desktop.evaluate(({ dialog }, path) => {
@@ -1309,8 +1309,9 @@ async function chooseTestDirectory(
       dialog,
       'showOpenDialog',
       async (_parent: unknown, options: { properties?: string[] }) => {
-        if (options.properties?.join() !== 'openDirectory') throw new Error('选择器未限制为文件夹')
-        return { canceled: path === null, filePaths: path === null ? [] : [path] }
+        if (options.properties?.join() !== 'openDirectory,multiSelections')
+          throw new Error('选择器未限制为可多选的文件夹')
+        return { canceled: path === null, filePaths: path === null ? [] : [path].flat() }
       },
     )
   }, path)
@@ -1453,15 +1454,14 @@ test.describe('会话与项目管理', () => {
     await expect(independent.locator('svg')).toHaveCount(0)
   })
 
-  test('创建项目在弹窗内命名和选择文件夹，更换或取消选择保留已填内容', async ({
-    desktop,
-    profile,
-  }) => {
+  test('创建项目可选择多个文件夹、指定主目录和移除目录', async ({ desktop, profile }) => {
     const page = await desktop.firstWindow()
     const firstFolder = join(profile, 'first-folder'),
-      secondFolder = join(profile, 'second-folder')
+      secondFolder = join(profile, 'second-folder'),
+      removedFolder = join(profile, 'removed-folder')
     await mkdir(firstFolder)
     await mkdir(secondFolder)
+    await mkdir(removedFolder)
     await chooseTestDirectory(desktop, null)
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '创建项目', exact: true })
@@ -1478,23 +1478,57 @@ test.describe('会话与项目管理', () => {
     expect(before.ok && before.value.workspaces).toEqual([])
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
     await name.fill('自定义项目名称')
-    await chooseTestDirectory(desktop, firstFolder)
+    await chooseTestDirectory(desktop, [firstFolder, secondFolder, firstFolder])
     await dialog.getByRole('button', { name: '添加', exact: true }).click()
     await expect(name).toHaveValue('自定义项目名称')
     await expect(dialog.getByText(await realpath(firstFolder), { exact: true })).toBeVisible()
-    await chooseTestDirectory(desktop, secondFolder)
-    await dialog.getByRole('button', { name: '更换文件夹', exact: true }).click()
     await expect(dialog.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
+    await dialog.getByRole('button', { name: '将 second-folder 设为主要', exact: true }).click()
+    await expect(
+      dialog.getByRole('listitem').filter({ hasText: 'second-folder' }).getByText('主要'),
+    ).toBeVisible()
+    await chooseTestDirectory(desktop, removedFolder)
+    await dialog.getByRole('button', { name: '添加', exact: true }).click()
+    await dialog.getByRole('button', { name: '移除 removed-folder', exact: true }).click()
+    await expect(dialog.getByText(await realpath(removedFolder), { exact: true })).toHaveCount(0)
     await chooseTestDirectory(desktop, null)
-    await dialog.getByRole('button', { name: '更换文件夹', exact: true }).click()
+    await dialog.getByRole('button', { name: '添加', exact: true }).click()
     await expect(dialog.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
     await expect(name).toHaveValue('自定义项目名称')
     await dialog.getByRole('button', { name: '创建项目', exact: true }).click()
     await expect(dialog).not.toBeVisible()
     const result = await page.evaluate(() => window.callum.listWorkspaces(0))
     expect(result.ok && result.value.workspaces).toEqual([
-      expect.objectContaining({ name: '自定义项目名称', rootPath: await realpath(secondFolder) }),
+      expect.objectContaining({
+        name: '自定义项目名称',
+        rootPath: await realpath(secondFolder),
+        otherPaths: [await realpath(firstFolder)],
+      }),
     ])
+    await page.getByRole('button', { name: '自定义项目名称', exact: true }).dblclick()
+    const management = page.getByRole('dialog', { name: '编辑项目', exact: true })
+    await expect(management.getByText(await realpath(secondFolder), { exact: true })).toBeVisible()
+    await expect(management.getByText(await realpath(firstFolder), { exact: true })).toBeVisible()
+
+    await chooseTestDirectory(desktop, removedFolder)
+    const rejected = await page.evaluate(
+      async (unselected) => {
+        const selectionId = crypto.randomUUID()
+        const selected = await window.callum.chooseWorkspaceDirectories(selectionId)
+        if (!selected.ok || !selected.value[0]) throw new Error('测试文件夹选择失败')
+        const rootPath = selected.value[0].path
+        const input = { name: '伪造其他目录', rootPath, otherPaths: [unselected] }
+        const forged = await window.callum.createWorkspace(input, selectionId)
+        await window.callum.discardWorkspaceDirectories(selectionId, rootPath)
+        const removed = await window.callum.createWorkspace(
+          { name: '已移除', rootPath },
+          selectionId,
+        )
+        return [forged.ok, removed.ok]
+      },
+      await realpath(firstFolder),
+    )
+    expect(rejected).toEqual([false, false])
   })
 
   test('项目菜单下方展开且明暗不透明，支持键盘置顶、编辑和归档恢复，并保留目录与草稿', async ({
@@ -2670,7 +2704,10 @@ test.describe('会话与项目管理', () => {
         '019a4f39-0000-7000-8000-000000000001',
         '中'.repeat(342),
       ),
-      path: await window.callum.createWorkspace({ name: '伪造目录', rootPath: '/arbitrary-path' }),
+      path: await window.callum.createWorkspace(
+        { name: '伪造目录', rootPath: '/arbitrary-path' },
+        crypto.randomUUID(),
+      ),
       page: await window.callum.listWorkspaces(-1),
     }))
     expect(Object.values(invalid).every((result) => !result.ok)).toBe(true)

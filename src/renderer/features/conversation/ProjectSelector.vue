@@ -42,12 +42,12 @@ function addProject(): void {
   creatingProject.value = true
   open.value = false
 }
-async function createProject(input: WorkspaceInput): Promise<void> {
+async function createProject(input: WorkspaceInput, selectionId: string): Promise<void> {
   if (blocked.value) return
   const previousProject = state.workspaceId
   creationError.value = ''
   try {
-    const project = await createWorkspace(input)
+    const project = await createWorkspace(input, selectionId)
     if (!disposed && !state.selectedId && state.workspaceId === previousProject) {
       selectDraftProject(project.id)
       creatingProject.value = false
