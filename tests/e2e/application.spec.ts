@@ -11,6 +11,7 @@ import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
 import { MARKDOWN_CODE, MARKDOWN_CODE_START, MARKDOWN_UNSAFE } from '../helpers/markdown-fixture'
 import { IPC_CHANNELS } from '../../src/shared/ipc-channels'
+import type { ChatResult, SendMessageInput, SendMessageResult } from '../../src/shared/chat'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -97,6 +98,46 @@ const test = base.extend<{
   },
 })
 
+async function prepareManualCompaction(page: Page, title: string, turns = 6) {
+  await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+  const overview = await page.evaluate(() => window.callum.getChatOverview(0))
+  if (!overview.ok || !overview.value.models[0]) throw new Error('压缩测试模型不存在')
+  const modelId = overview.value.models[0].id
+  let conversationId: string | null = null
+  for (let index = 0; index < turns; index++) {
+    const accepted: ChatResult<SendMessageResult> = await page.evaluate(
+      (input: SendMessageInput) => window.callum.sendMessage(input),
+      {
+        conversationId,
+        modelId,
+        text: `历史第 ${index} 轮 ` + '保留已经确认的事实、约束与决定。'.repeat(120),
+      },
+    )
+    if (!accepted.ok) throw new Error(accepted.error)
+    conversationId = accepted.value.conversationId
+    await expect
+      .poll(async () => {
+        const detail = await page.evaluate(
+          (id) => window.callum.getConversation(id),
+          accepted.value.conversationId,
+        )
+        return detail.ok && detail.value.runs.find((run) => run.id === accepted.value.runId)?.status
+      })
+      .toBe('completed')
+  }
+  if (!conversationId) throw new Error('未创建压缩测试对话')
+  await page.evaluate(
+    ({ conversationId, title }) => window.callum.renameConversation(conversationId, title),
+    { conversationId, title },
+  )
+  await page
+    .getByRole('region', { name: '最近', exact: true })
+    .getByRole('button', { name: title, exact: true })
+    .click()
+  await expect(page.getByRole('article', { name: '你的消息', exact: true })).toHaveCount(turns)
+  return { conversationId, modelId }
+}
+
 test('发布页面通过受限桥接读取真实应用信息', async ({ desktop }) => {
   const page = await desktop.firstWindow()
   const errors: string[] = []
@@ -144,6 +185,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'listRunSteps',
     'getStepDetails',
     'sendMessage',
+    'compactConversation',
     'resendMessage',
     'cancelRun',
     'submitUserInput',
@@ -3058,6 +3100,299 @@ test.describe('会话与项目管理', () => {
       page: await window.callum.listWorkspaces(-1),
     }))
     expect(Object.values(invalid).every((result) => !result.ok)).toBe(true)
+  })
+})
+
+test.describe('手动压缩上下文', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+
+  test('/compact 候选支持键盘、鼠标和无操作结果，命令不会作为消息发送', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('/')
+    const menu = page.getByRole('listbox', { name: '命令', exact: true })
+    const option = menu.getByRole('option', { name: /compact/ })
+    await expect(option).toHaveAttribute('aria-disabled', 'true')
+    await expect(option).toContainText('请先发送消息')
+    await input.press('Enter')
+    await expect(page.getByRole('article')).toHaveCount(0)
+    await input.press('Escape')
+    await expect(menu).toHaveCount(0)
+    await input.fill('正文里的 /compact 保持为普通消息')
+    await input.press('Enter')
+    await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
+      '你好，这是受控回答。',
+    )
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    await input.fill('/com')
+    await expect(option).toHaveAttribute('aria-disabled', 'false')
+    await page.screenshot({ path: '.artifacts/screenshots/compact-command-light.png' })
+    await input.press('Tab')
+    await expect(input).toHaveValue('/compact')
+    await expect(input).toBeFocused()
+    await input.press('ArrowDown')
+    await input.press('Enter')
+    const row = page.locator('[data-manual-compaction]')
+    await expect(row).toContainText('暂无可压缩的较早对话')
+    await expect(input).toHaveValue('')
+    await expect(page.getByRole('article')).toHaveCount(2)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '正文里的 /compact 保持为普通消息', exact: true })
+      .click()
+    await expect(row).toContainText('暂无可压缩的较早对话')
+    await input.fill('/comp')
+    await option.click()
+    await expect(row).toHaveCount(2)
+    await expect(row.last()).toContainText('暂无可压缩的较早对话')
+    await expect(page.getByRole('article')).toHaveCount(2)
+  })
+
+  test('手动压缩成功保留消息、草稿和位置，切换与重启后恢复并可继续对话', async ({
+    desktop,
+    modelEndpoint,
+    playwright,
+    profile,
+  }) => {
+    const page = await desktop.firstWindow()
+    const { conversationId, modelId } = await prepareManualCompaction(page, '手动压缩成功')
+    modelEndpoint!.pauseCompaction()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('/compact')
+    await input.press('Enter')
+    const row = page.locator('[data-manual-compaction]')
+    await expect(row).toContainText('正在压缩上下文')
+    await expect.poll(() => modelEndpoint!.pendingCompaction).toBe(1)
+    await expect(page.getByRole('button', { name: '停止压缩', exact: true })).toBeEnabled()
+    await input.fill('/compact')
+    await expect(page.getByRole('option', { name: /compact/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+    await input.press('Enter')
+    const duplicate = await page.evaluate((input) => window.callum.compactConversation(input), {
+      conversationId,
+      modelId,
+    })
+    expect(duplicate.ok).toBe(false)
+    await input.fill('压缩期间保留的草稿')
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('另一个对话的草稿')
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '手动压缩成功', exact: true })
+      .click()
+    await expect(input).toHaveValue('压缩期间保留的草稿')
+    await expect(row).toContainText('正在压缩上下文')
+    await expect(row).toBeInViewport({ ratio: 1 })
+    await page.screenshot({ path: '.artifacts/screenshots/manual-compaction-running.png' })
+    modelEndpoint!.finishCompaction()
+    await expect(row).toContainText('上下文已压缩')
+    await expect(page.getByRole('article')).toHaveCount(12)
+    await expect(input).toHaveValue('压缩期间保留的草稿')
+    await input.press('Enter')
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toHaveCount(7)
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('你好，这是受控回答。')
+    expect(
+      await page.locator('[aria-label="消息记录"]').evaluate((element) => {
+        const children = [...element.children]
+        const index = children.findIndex((child) => child.hasAttribute('data-manual-compaction'))
+        return (
+          index >= 0 &&
+          children.slice(index + 1).filter((child) => child.tagName === 'ARTICLE').length === 2
+        )
+      }),
+    ).toBe(true)
+    expect(
+      modelEndpoint!.requests.some((request) => request.contextSummary && !request.summaryRequest),
+    ).toBe(true)
+    await desktop.close()
+    const restarted = await playwright._electron.launch({
+      args: [projectRoot],
+      env: { ...process.env, CALLUM_USER_DATA_DIR: profile, CALLUM_TEST_BACKGROUND: '1' },
+    })
+    try {
+      const restored = await restarted.firstWindow()
+      await restored
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: '手动压缩成功', exact: true })
+        .click()
+      await expect(restored.locator('[data-manual-compaction]')).toContainText('上下文已压缩')
+      await expect(restored.getByRole('article')).toHaveCount(14)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test('手动压缩结果读取失败只重试查询，断连保留已确认结果', async ({ desktop, modelEndpoint }) => {
+    const page = await desktop.firstWindow()
+    const { conversationId } = await prepareManualCompaction(page, '压缩结果查询')
+    modelEndpoint!.pauseCompaction()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('/compact')
+    await input.press('Enter')
+    const row = page.locator('[data-manual-compaction]')
+    await expect(row).toContainText('正在压缩上下文')
+    const pending = await page.evaluate((id) => window.callum.getConversation(id), conversationId)
+    if (!pending.ok) throw new Error(pending.error)
+    const run = pending.value.runs.find((item) => item.compaction)
+    if (!run?.compaction) throw new Error('缺少独立压缩步骤')
+    const detail = await page.evaluate(
+      ({ conversationId, runId, stepId }) =>
+        window.callum.getStepDetails(conversationId, runId, stepId),
+      { conversationId, runId: run.id, stepId: run.compaction.stepId },
+    )
+    if (!detail.ok) throw new Error(detail.error)
+    // 仅模拟展示查询的失败和恢复；压缩执行仍由真实 Go 服务与受控模型完成。
+    await desktop.evaluate(
+      ({ ipcMain }, { channel, detail }) => {
+        let calls = 0
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, () =>
+          ++calls === 1
+            ? { ok: false, error: '受控压缩结果读取失败' }
+            : {
+                ok: true,
+                value: { ...detail, output: '{"compressed":true}', outputTruncated: false },
+              },
+        )
+      },
+      { channel: IPC_CHANNELS.getStepDetails, detail: detail.value },
+    )
+    await expect.poll(() => modelEndpoint!.pendingCompaction).toBe(1)
+    modelEndpoint!.finishCompaction()
+    await expect(row).toContainText('受控压缩结果读取失败')
+    await expect(row).not.toContainText('上下文已压缩')
+    await row.getByRole('button', { name: '重新读取结果', exact: true }).click()
+    await expect(row).toContainText('上下文已压缩')
+    const after = await page.evaluate((id) => window.callum.getConversation(id), conversationId)
+    expect(after.ok && after.value.runs.filter((item) => item.compaction).length).toBe(1)
+    expect(modelEndpoint!.requests.filter((request) => request.summaryRequest)).toHaveLength(1)
+    await interruptTestBackend(desktop)
+    await expect(page.getByRole('alert')).toContainText('连接已中断')
+    await expect(row).toContainText('上下文已压缩')
+    await expect(row.locator('.activity-shimmer')).toHaveCount(0)
+  })
+
+  for (const outcome of ['failed', 'cancelled', 'interrupted'] as const) {
+    test(`手动压缩 ${outcome} 保留历史并显示真实状态`, async ({
+      desktop,
+      modelEndpoint,
+      playwright,
+      profile,
+    }) => {
+      const page = await desktop.firstWindow()
+      const title = `压缩状态 ${outcome}`
+      await prepareManualCompaction(page, title)
+      modelEndpoint!.pauseCompaction()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await input.fill('/compact')
+      await page.getByRole('option', { name: /compact/ }).click()
+      const row = page.locator('[data-manual-compaction]')
+      await expect(row).toContainText('正在压缩上下文')
+      await expect.poll(() => modelEndpoint!.pendingCompaction).toBe(1)
+      await input.fill('不丢失的草稿')
+      if (outcome === 'failed') {
+        modelEndpoint!.finishCompaction(false)
+        await expect(row).toContainText('上下文压缩失败')
+      } else if (outcome === 'cancelled') {
+        await page.getByRole('button', { name: '停止压缩', exact: true }).click()
+        await expect(row).toContainText('上下文压缩已取消')
+      } else {
+        await interruptTestBackend(desktop)
+        await expect(row).toContainText('连接已断开')
+        await expect(page.getByRole('button', { name: '停止压缩', exact: true })).toBeDisabled()
+      }
+      await expect(row).not.toContainText('上下文已压缩')
+      await expect(row.locator('.activity-shimmer')).toHaveCount(0)
+      await expect(page.getByRole('article')).toHaveCount(12)
+      await expect(input).toHaveValue('不丢失的草稿')
+      if (outcome === 'interrupted') {
+        await desktop.close()
+        const restarted = await playwright._electron.launch({
+          args: [projectRoot],
+          env: { ...process.env, CALLUM_USER_DATA_DIR: profile, CALLUM_TEST_BACKGROUND: '1' },
+        })
+        try {
+          const restored = await restarted.firstWindow()
+          await restored
+            .getByRole('region', { name: '最近', exact: true })
+            .getByRole('button', { name: title, exact: true })
+            .click()
+          await expect(restored.locator('[data-manual-compaction]')).toContainText(
+            '上下文压缩已中断',
+          )
+          await expect(restored.getByRole('article')).toHaveCount(12)
+        } finally {
+          await restarted.close()
+        }
+      } else {
+        await page.reload()
+        await page
+          .getByRole('region', { name: '最近', exact: true })
+          .getByRole('button', { name: title, exact: true })
+          .click()
+        await expect(row).toContainText(
+          outcome === 'failed' ? '上下文压缩失败' : '上下文压缩已取消',
+        )
+      }
+    })
+  }
+
+  test('压缩受理失败保留命令，忙碌不重复提交，迟到失败不污染其他对话草稿', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('新对话原有草稿')
+    await prepareManualCompaction(page, '受理失败测试', 1)
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      Reflect.set(globalThis, 'compactCalls', 0)
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => {
+        Reflect.set(globalThis, 'compactCalls', Number(Reflect.get(globalThis, 'compactCalls')) + 1)
+        return new Promise((resolve) =>
+          Reflect.set(globalThis, 'releaseCompact', () =>
+            resolve({ ok: false, error: '受控压缩受理失败' }),
+          ),
+        )
+      })
+    }, IPC_CHANNELS.compactConversation)
+    await input.fill('/compact')
+    await input.press('Enter')
+    await expect(input).toBeDisabled()
+    await page.keyboard.press('Enter')
+    expect(await desktop.evaluate(() => Reflect.get(globalThis, 'compactCalls'))).toBe(1)
+    await desktop.evaluate(() => Reflect.get(globalThis, 'releaseCompact')())
+    await expect(page.getByRole('alert')).toContainText('受控压缩受理失败')
+    await expect(input).toHaveValue('/compact')
+    await expect(page.locator('[data-manual-compaction]')).toHaveCount(0)
+    await input.focus()
+    await input.press('Enter')
+    await expect(input).toBeDisabled()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(input).toHaveValue('新对话原有草稿')
+    await desktop.evaluate(() => Reflect.get(globalThis, 'releaseCompact')())
+    await expect(input).toBeEnabled()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(input).toHaveValue('新对话原有草稿')
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('/')
+    await desktop.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620)
+    })
+    await expect(page.getByRole('listbox', { name: '命令', exact: true })).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/compact-command-dark.png' })
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
   })
 })
 

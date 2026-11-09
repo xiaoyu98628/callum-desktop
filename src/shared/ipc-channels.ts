@@ -33,6 +33,7 @@ export const IPC_CHANNELS = {
   getStepDetails: 'callum:chat:step-details',
   sendMessage: 'callum:chat:send',
   resendMessage: 'callum:chat:resend',
+  compactConversation: 'callum:chat:compact',
   cancelRun: 'callum:chat:cancel',
   submitUserInput: 'callum:chat:submit-user-input',
   decideApproval: 'callum:chat:decide-approval',

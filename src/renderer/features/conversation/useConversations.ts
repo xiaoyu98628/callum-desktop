@@ -3,6 +3,7 @@ import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
+import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
 import type {
   ChatEvent,
   ApprovalScope,
@@ -83,6 +84,7 @@ function createConversations() {
     loadingList: true,
     sending: false,
     resending: false,
+    compacting: '',
     editing: null as {
       messageId: string
       originalText: string
@@ -160,12 +162,26 @@ function createConversations() {
       state.loadingList ||
       state.sending ||
       state.resending ||
+      !!state.compacting ||
       !!state.serviceError ||
       !!activeRun.value,
   )
   const pendingApprovals = computed(
     () => state.detail?.approvals.filter((item) => item.status === 'pending') ?? [],
   )
+  const compactUnavailable = computed(() => {
+    if (!state.selectedId) return '请先发送消息，建立对话后再压缩上下文。'
+    if (state.serviceError) return '对话服务连接已中断，恢复连接后再压缩。'
+    if (state.loading || state.loadingList || state.modelsLoading)
+      return '正在读取对话或模型，请稍候。'
+    if (state.compacting || state.sending || state.resending || activeRun.value)
+      return '请等待当前任务结束后再压缩上下文。'
+    if (state.editing) return '请先完成或取消消息编辑。'
+    if (state.historical) return '请回到最新消息后再压缩上下文。'
+    if (state.modelError || !state.models.some((model) => model.id === state.modelId))
+      return '请选择可用模型后再压缩上下文。'
+    return ''
+  })
   const pendingInputs = computed(
     () => state.detail?.userInputs.filter((item) => item.status === 'pending') ?? [],
   )
@@ -884,9 +900,14 @@ function createConversations() {
     }
   }
   async function send(): Promise<void> {
+    if (isCompactCommand(draft.value)) {
+      await compact()
+      return
+    }
     if (
       state.sending ||
       state.resending ||
+      state.compacting ||
       state.editing ||
       state.loading ||
       activeRun.value ||
@@ -923,6 +944,35 @@ function createConversations() {
       if (token === selection) state.error = message(error)
     } finally {
       state.sending = false
+    }
+  }
+  async function compact(): Promise<void> {
+    if (compactUnavailable.value || !state.selectedId) return
+    const conversationId = state.selectedId,
+      modelId = state.modelId,
+      token = selection,
+      key = draftKey(),
+      command = draft.value
+    state.compacting = conversationId
+    state.error = ''
+    try {
+      const result = unwrap(await getDesktopApi().compactConversation({ conversationId, modelId }))
+      if (result.conversationId !== conversationId) throw new Error('压缩受理结果归属不匹配。')
+      // 受理后仅消耗原命令；切换会话或期间输入的新草稿不能被清除。
+      if (state.drafts[key] === command && matchesCompactCommand(command)) {
+        delete state.drafts[key]
+        draftWorkspaces.delete(key)
+      }
+      if (!disposed && token === selection) {
+        const reload = openConversation(conversationId)
+        const reloadingSelection = selection
+        await reload
+        if (!disposed && selection === reloadingSelection) state.modelId = modelId
+      }
+    } catch (error) {
+      if (!disposed && token === selection) state.error = message(error)
+    } finally {
+      if (state.compacting === conversationId) state.compacting = ''
     }
   }
   function startEditing(messageId: string): void {
@@ -1148,6 +1198,8 @@ function createConversations() {
     state,
     draft,
     activeRun,
+    compactUnavailable,
+    compact,
     lastUserMessage,
     editUnavailable,
     startEditing,

@@ -5,7 +5,7 @@ import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
 import { STEP_PAGE_SIZE, stepLabel, stepParameters, stepResult } from '@shared/steps'
 import { TimelineWindow } from '@shared/timeline-window'
 import type { TimelineStep } from '@shared/timeline-window'
-import { currentOperationGroup, groupTimeline } from '@shared/timeline-groups'
+import { compactionStatus, currentOperationGroup, groupTimeline } from '@shared/timeline-groups'
 import { getDesktopApi } from '@/lib/desktop'
 import MarkdownMessage from './MarkdownMessage.vue'
 import ActivityDisclosure from './ActivityDisclosure.vue'
@@ -622,10 +622,8 @@ onScopeDispose(() => {
           </div>
           <CompactionStatus
             v-else-if="item.kind === 'compaction'"
-            :group="item"
+            :status="compactionStatus(item.steps, connected, run?.status ?? null)"
             :data-step-id="item.steps[0]?.id"
-            :connected="connected"
-            :run-status="run?.status ?? null"
           />
           <OperationGroup
             v-else

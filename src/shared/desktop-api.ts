@@ -23,6 +23,7 @@ import type {
   SendMessageResult,
   ResendMessageInput,
   ResendMessageResult,
+  CompactConversationInput,
 } from './chat'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
@@ -94,6 +95,7 @@ export interface DesktopApi {
   ): Promise<ChatResult<StepDetails>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
+  compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>
   submitUserInput(
     inputId: string,

@@ -11,6 +11,7 @@ import {
   parseName,
   parseWorkspaceInput,
   parseWorkspaceChange,
+  parseCompactInput,
   record,
   string,
 } from '../../shared/chat.ts'
@@ -40,6 +41,7 @@ import type {
   SendMessageResult,
   ResendMessageInput,
   ResendMessageResult,
+  CompactConversationInput,
 } from '../../shared/chat.ts'
 import {
   appendDelta,
@@ -63,6 +65,7 @@ import {
 import { StepOutput, readStepDetails } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
+import { compactionOutcome, isManualCompactionStep } from '../../shared/manual-compaction.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -471,7 +474,7 @@ export class ChatService {
       this.request('conversation.messages', { conversation_id: conversationId, limit: PAGE_SIZE }),
       this.request('run.list', { conversation_id: conversationId, limit: 200 }),
     ])
-    const parsedRuns = array(runs ?? [], runFromRpc)
+    const parsedRuns = await this.compactionRuns(conversationId, array(runs ?? [], record))
     const pending = await Promise.all(
       parsedRuns
         .filter(isActiveRun)
@@ -522,6 +525,57 @@ export class ChatService {
     result.messages.sort((a, b) => a.sequence - b.sequence)
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     result.revision = this.revision
+    return result
+  }
+  private async compactionRuns(
+    conversationId: string,
+    rows: Record<string, unknown>[],
+  ): Promise<ChatRun[]> {
+    const result: ChatRun[] = []
+    // 手动压缩不创建消息且不使用流式回答。每批最多四次首步骤查询，避免历史读取无界并发。
+    for (let offset = 0; offset < rows.length; offset += 4) {
+      result.push(
+        ...(await Promise.all(
+          rows.slice(offset, offset + 4).map(async (value) => {
+            const run = runFromRpc(value)
+            if (run.conversationId !== conversationId) throw new Error('执行会话归属不匹配')
+            const cached = this.runs.get(run.id)
+            if (cached?.compaction && isActiveRun(run))
+              return { ...run, compaction: cached.compaction }
+            if (value.stream !== false) return run
+            let first = [...this.steps.values()].find(
+              (step) => step.runId === run.id && step.sequence === 1,
+            )
+            if (!first) {
+              const steps = array(
+                await this.request('step.list', { run_id: run.id, after_sequence: 0, limit: 1 }),
+                stepFromRpc,
+              )
+              first = steps[0]
+            }
+            if (first && (first.runId !== run.id || first.conversationId !== conversationId))
+              throw new Error('压缩步骤归属不匹配')
+            if (!first || !isManualCompactionStep(first)) return run
+            const compaction: NonNullable<ChatRun['compaction']> = {
+              stepId: first.id,
+              outcome: null,
+              error: null,
+            }
+            if (run.status === 'completed') {
+              try {
+                compaction.outcome = compactionOutcome(
+                  await readStepDetails((method, params) => this.request(method, params), first),
+                )
+              } catch {
+                compaction.outcome = 'unknown'
+                compaction.error = '无法读取压缩结果，请重新读取。'
+              }
+            }
+            return { ...run, compaction }
+          }),
+        )),
+      )
+    }
     return result
   }
   async listSteps(conversationId: string, runId: string, afterSequence: number): Promise<StepPage> {
@@ -624,6 +678,20 @@ export class ChatService {
       }),
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
+  }
+  async compact(input: CompactConversationInput): Promise<SendMessageResult> {
+    const parsed = parseCompactInput(input)
+    return this.mutate(`compact:${parsed.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.compact', {
+          conversation_id: parsed.conversationId,
+          model_id: parsed.modelId,
+        }),
+      )
+      const conversationId = id(value.conversation_id)
+      if (conversationId !== parsed.conversationId) throw new Error('压缩结果会话归属不匹配')
+      return { conversationId, runId: id(value.run_id) }
+    })
   }
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
     return this.mutate(`resend:${input.conversationId}`, async () => {
@@ -750,6 +818,13 @@ export class ChatService {
         }
       this.saveStep(step)
       this.dirtySteps.delete(step.id)
+      const run = this.runs.get(step.runId)
+      if (run && !run.compaction && isManualCompactionStep(step)) {
+        if (run.conversationId !== step.conversationId) throw new Error('压缩执行归属不匹配')
+        const updated = { ...run, compaction: { stepId: step.id, outcome: null, error: null } }
+        this.runs.set(run.id, updated)
+        this.publish({ kind: 'run', value: updated, persisted: true })
+      }
       this.publish({ kind: 'step', value: step })
       if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
         const parent = this.steps.get(step.parentStepId)
@@ -829,9 +904,11 @@ export class ChatService {
       }
       this.flushTimer ??= setTimeout(() => this.flush(), 16)
     } else if (method.startsWith('run.') && p.run !== undefined) {
-      const run = runFromRpc(p.run)
+      let run = runFromRpc(p.run)
       if (id(p.conversation_id) !== run.conversationId || id(p.run_id) !== run.id)
         throw new Error('执行归属不匹配')
+      const previous = this.runs.get(run.id)
+      if (previous?.compaction) run = { ...run, compaction: previous.compaction }
       this.runs.set(run.id, run)
       if (p.persisted === false) {
         this.persistenceFailures.add(run.conversationId)

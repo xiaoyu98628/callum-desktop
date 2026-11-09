@@ -56,7 +56,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         contextSummary: messages.some(
           (message) =>
             typeof message.content === 'string' &&
-            message.content.includes('execution_context_summary'),
+            (message.content.includes('execution_context_summary') ||
+              message.content.includes('conversation_context_summary')),
         ),
         messageCount: messages.length,
         reasoningReturned: messages.some(

@@ -9,6 +9,11 @@ import {
   SquareIcon,
 } from '@lucide/vue'
 import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
+import {
+  isCompactCommand,
+  matchesCompactCommand,
+  messageCompactions,
+} from '@shared/manual-compaction'
 import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
@@ -20,6 +25,8 @@ import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
 import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
+import ComposerCommands from './ComposerCommands.vue'
+import ManualCompactionStatus from './ManualCompactionStatus.vue'
 defineEmits<{ configureModels: [] }>()
 
 const {
@@ -27,6 +34,8 @@ const {
   draft,
   workspace,
   activeRun,
+  compactUnavailable,
+  compact,
   lastUserMessage,
   editUnavailable,
   startEditing,
@@ -47,6 +56,7 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
+const messageTimeline = computed(() => messageCompactions(messages.value, state.detail?.runs ?? []))
 const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
 )
@@ -105,6 +115,14 @@ const messageRuns = computed(() => {
 })
 const scroller = ref<HTMLElement | null>(null)
 const messageInput = ref<HTMLTextAreaElement | null>(null)
+const commandInputFocused = ref(false)
+const commandsDismissed = ref(false)
+const commandsOpen = computed(
+  () => commandInputFocused.value && !commandsDismissed.value && matchesCompactCommand(draft.value),
+)
+const requestingCompact = computed(() => isCompactCommand(draft.value) || commandsOpen.value)
+const compactingRun = computed(() => !!activeRun.value?.compaction)
+const stopLabel = computed(() => (compactingRun.value ? '停止压缩' : '停止生成'))
 let inputResizeObserver: ResizeObserver | undefined
 let inputResizeFrame: number | undefined
 const follow = ref(true)
@@ -123,6 +141,7 @@ const canSend = computed(
     !state.loadingList &&
     !state.sending &&
     !state.resending &&
+    !state.compacting &&
     !state.editing &&
     !activeRun.value &&
     !currentInteraction.value &&
@@ -130,6 +149,7 @@ const canSend = computed(
     !state.modelsLoading &&
     !state.modelError &&
     availableModel.value &&
+    (!requestingCompact.value || !compactUnavailable.value) &&
     !!draft.value.trim(),
 )
 const runLabels = {
@@ -160,10 +180,36 @@ watch(
   },
 )
 function keydown(event: KeyboardEvent): void {
+  if (event.isComposing) return
+  if (commandsOpen.value) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      commandsDismissed.value = true
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      return
+    }
+    if (event.key === 'Tab' && !event.shiftKey && !isCompactCommand(draft.value)) {
+      event.preventDefault()
+      draft.value = '/compact'
+      return
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
-    if (canSend.value) void send()
+    submitMessage()
   }
+}
+function submitMessage(): void {
+  if (!canSend.value) return
+  if (requestingCompact.value) void compact()
+  else void send()
+}
+function focusCommands(): void {
+  commandInputFocused.value = true
+  commandsDismissed.value = false
 }
 function updateDistance(): void {
   const element = scroller.value
@@ -255,6 +301,9 @@ function resizeMessageInput(): void {
   void scrollToBottom()
 }
 watch(draft, resizeMessageInput, { flush: 'post' })
+watch(draft, () => {
+  commandsDismissed.value = false
+})
 watch(
   () => currentInteraction.value,
   async (id, previous) => {
@@ -301,7 +350,7 @@ async function cancelMessageEdit(): Promise<void> {
       ?.focus({ preventScroll: true })
 }
 watch(
-  () => messages.value,
+  () => messageTimeline.value,
   () => {
     void scrollToBottom()
   },
@@ -402,101 +451,120 @@ onScopeDispose(() => {
           >
         </div>
         <div class="space-y-4" aria-label="消息记录">
-          <article
-            v-for="item in messages"
-            :key="item.id"
-            class="group/message"
-            :data-message-id="item.id"
-            :aria-label="item.role === 'user' ? '你的消息' : 'Callum 的回答'"
-            :class="
-              item.role === 'user'
-                ? state.editing?.messageId === item.id
-                  ? 'ml-auto w-full max-w-[88%]'
-                  : 'ml-auto w-fit max-w-[88%]'
-                : 'py-1'
-            "
-          >
-            <RunTimeline
-              v-if="item.role === 'assistant' && messageRuns.has(item.id)"
-              :run="messageRuns.get(item.id) ?? null"
-              :conversation-id="item.conversationId"
-              :run-id="item.runId"
-              :snapshots="state.detail?.steps ?? []"
+          <ManualCompactionStatus
+            v-for="run in messageTimeline.before"
+            :key="run.id"
+            :run="run"
+            :connected="!state.serviceError"
+            @changed="scrollToBottom"
+          />
+          <template v-for="{ message: item, compactions } in messageTimeline.rows" :key="item.id">
+            <article
+              class="group/message"
+              :data-message-id="item.id"
+              :aria-label="item.role === 'user' ? '你的消息' : 'Callum 的回答'"
+              :class="
+                item.role === 'user'
+                  ? state.editing?.messageId === item.id
+                    ? 'ml-auto w-full max-w-[88%]'
+                    : 'ml-auto w-fit max-w-[88%]'
+                  : 'py-1'
+              "
+            >
+              <RunTimeline
+                v-if="item.role === 'assistant' && messageRuns.has(item.id)"
+                :run="messageRuns.get(item.id) ?? null"
+                :conversation-id="item.conversationId"
+                :run-id="item.runId"
+                :snapshots="state.detail?.steps ?? []"
+                :connected="!state.serviceError"
+                :expanded="expandedRunId === item.runId"
+                :active="activeRun?.id === item.runId"
+                @expand="expandedRunId = $event ? item.runId : null"
+                @inspect="pauseFollowing"
+                @changed="scrollToBottom"
+              />
+              <MarkdownMessage
+                v-if="item.role === 'assistant'"
+                :content="item.content"
+                :streaming="activeRun?.id === item.runId"
+                @rendered="scrollToBottom"
+              />
+              <MessageEditor
+                v-else-if="state.editing?.messageId === item.id"
+                v-model="state.editing.text"
+                :busy="state.resending"
+                :disabled="editUnavailable || !!state.modelError || state.modelsLoading"
+                :error="state.editing.error"
+                @cancel="cancelMessageEdit"
+                @submit="resend"
+              />
+              <div v-else class="ml-auto w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2">
+                <div
+                  v-for="(block, index) in item.content"
+                  :key="index"
+                  class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                >
+                  <template v-if="block.type === 'text'">{{ block.text }}</template>
+                  <p v-else class="text-muted-foreground">
+                    [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
+                  </p>
+                </div>
+              </div>
+              <MessageActions
+                v-if="state.editing?.messageId !== item.id"
+                :message="item"
+                :editable="
+                  item.role === 'user' &&
+                  lastUserMessage?.id === item.id &&
+                  item.content.every((block) => block.type === 'text')
+                "
+                :edit-disabled="editUnavailable"
+                :class="item.role === 'user' ? 'justify-end' : ''"
+                @edit="startEditing(item.id)"
+              />
+              <span
+                v-if="
+                  item.role === 'assistant' &&
+                  !item.content.length &&
+                  activeRun?.id === item.runId &&
+                  !messageRuns.has(item.id)
+                "
+                class="text-sm text-muted-foreground"
+                >正在思考…</span
+              >
+              <p
+                v-if="
+                  ['cancelled', 'failed', 'interrupted'].includes(item.status) &&
+                  !messageRuns.has(item.id)
+                "
+                class="mt-2 text-xs text-muted-foreground"
+              >
+                {{
+                  item.status === 'cancelled'
+                    ? '生成已停止'
+                    : item.status === 'failed'
+                      ? '回答未完成'
+                      : '回答已中断'
+                }}
+              </p>
+            </article>
+            <ManualCompactionStatus
+              v-for="run in compactions"
+              :key="run.id"
+              :run="run"
               :connected="!state.serviceError"
-              :expanded="expandedRunId === item.runId"
-              :active="activeRun?.id === item.runId"
-              @expand="expandedRunId = $event ? item.runId : null"
-              @inspect="pauseFollowing"
               @changed="scrollToBottom"
             />
-            <MarkdownMessage
-              v-if="item.role === 'assistant'"
-              :content="item.content"
-              :streaming="activeRun?.id === item.runId"
-              @rendered="scrollToBottom"
-            />
-            <MessageEditor
-              v-else-if="state.editing?.messageId === item.id"
-              v-model="state.editing.text"
-              :busy="state.resending"
-              :disabled="editUnavailable || !!state.modelError || state.modelsLoading"
-              :error="state.editing.error"
-              @cancel="cancelMessageEdit"
-              @submit="resend"
-            />
-            <div v-else class="ml-auto w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2">
-              <div
-                v-for="(block, index) in item.content"
-                :key="index"
-                class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
-              >
-                <template v-if="block.type === 'text'">{{ block.text }}</template>
-                <p v-else class="text-muted-foreground">
-                  [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
-                </p>
-              </div>
-            </div>
-            <MessageActions
-              v-if="state.editing?.messageId !== item.id"
-              :message="item"
-              :editable="
-                item.role === 'user' &&
-                lastUserMessage?.id === item.id &&
-                item.content.every((block) => block.type === 'text')
-              "
-              :edit-disabled="editUnavailable"
-              :class="item.role === 'user' ? 'justify-end' : ''"
-              @edit="startEditing(item.id)"
-            />
-            <span
-              v-if="
-                item.role === 'assistant' &&
-                !item.content.length &&
-                activeRun?.id === item.runId &&
-                !messageRuns.has(item.id)
-              "
-              class="text-sm text-muted-foreground"
-              >正在思考…</span
-            >
-            <p
-              v-if="
-                ['cancelled', 'failed', 'interrupted'].includes(item.status) &&
-                !messageRuns.has(item.id)
-              "
-              class="mt-2 text-xs text-muted-foreground"
-            >
-              {{
-                item.status === 'cancelled'
-                  ? '生成已停止'
-                  : item.status === 'failed'
-                    ? '回答未完成'
-                    : '回答已中断'
-              }}
-            </p>
-          </article>
+          </template>
         </div>
         <p
-          v-if="latestRun && !activeRun && ['failed', 'interrupted'].includes(latestRun.status)"
+          v-if="
+            latestRun &&
+            !latestRun.compaction &&
+            !activeRun &&
+            ['failed', 'interrupted'].includes(latestRun.status)
+          "
           role="alert"
           class="mt-6 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm leading-6"
         >
@@ -577,9 +645,15 @@ onScopeDispose(() => {
         </span>
       </div>
       <form
-        class="mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
-        @submit.prevent="send"
+        class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
+        @submit.prevent="submitMessage"
       >
+        <ComposerCommands
+          v-if="commandsOpen"
+          :disabled-reason="compactUnavailable"
+          :busy="!!state.compacting"
+          @select="compact"
+        />
         <label for="new-message" class="sr-only">消息</label>
         <textarea
           id="new-message"
@@ -592,6 +666,7 @@ onScopeDispose(() => {
             state.loading ||
             state.sending ||
             state.resending ||
+            !!state.compacting ||
             !!state.editing ||
             state.modelsLoading ||
             !!state.modelError ||
@@ -600,8 +675,13 @@ onScopeDispose(() => {
           "
           placeholder="你想聊些什么？"
           aria-describedby="conversation-hint"
+          aria-autocomplete="list"
+          :aria-controls="commandsOpen ? 'composer-commands' : undefined"
+          :aria-activedescendant="commandsOpen ? 'composer-compact-command' : undefined"
           class="block max-h-48 min-h-12 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
           @input="resizeMessageInput"
+          @focus="focusCommands"
+          @blur="commandInputFocused = false"
           @keydown="keydown"
         ></textarea>
         <div class="mt-2 flex items-center justify-end gap-2">
@@ -626,6 +706,7 @@ onScopeDispose(() => {
                 state.modelsLoading ||
                 state.sending ||
                 state.resending ||
+                !!state.compacting ||
                 !!state.serviceError
               "
             />
@@ -636,8 +717,8 @@ onScopeDispose(() => {
             variant="ghost"
             size="icon"
             class="size-7 shrink-0 rounded-full border bg-background text-foreground hover:bg-muted"
-            aria-label="停止生成"
-            :title="state.cancelling ? '正在停止…' : '停止生成'"
+            :aria-label="stopLabel"
+            :title="state.cancelling ? '正在停止…' : stopLabel"
             :aria-busy="state.cancelling"
             :disabled="
               state.cancelling || !!state.deciding || !!state.replying || !!state.serviceError
@@ -655,7 +736,7 @@ onScopeDispose(() => {
             size="icon"
             class="size-7 shrink-0 rounded-full bg-foreground text-background hover:bg-foreground/90"
             :disabled="!canSend"
-            aria-label="发送消息"
+            :aria-label="requestingCompact ? '压缩上下文' : '发送消息'"
             ><LoaderCircleIcon
               v-if="state.sending"
               class="size-4 animate-spin"
@@ -676,7 +757,9 @@ onScopeDispose(() => {
           activeRun
             ? state.serviceError
               ? '连接已断开'
-              : runLabels[activeRun.status]
+              : compactingRun
+                ? '正在压缩上下文…'
+                : runLabels[activeRun.status]
             : composerNotice || 'Enter 发送，Shift + Enter 换行'
         }}
       </p>

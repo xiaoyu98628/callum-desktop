@@ -90,6 +90,12 @@ export interface ChatRun {
   error: string | null
   createdAt: number
   finishedAt: number | null
+  /** 仅在首个持久化步骤明确标记为手动压缩时提供。 */
+  compaction?: {
+    stepId: string
+    outcome: 'compressed' | 'skipped' | 'unknown' | null
+    error: string | null
+  }
 }
 /** 步骤快照包含有界的即时文字和工具输出；持久化详情通过专用查询读取。 */
 export interface ChatStep {
@@ -220,6 +226,10 @@ export interface SendMessageInput {
 export interface SendMessageResult {
   conversationId: string
   runId: string
+}
+export interface CompactConversationInput {
+  conversationId: string
+  modelId: string
 }
 export interface ResendMessageInput {
   conversationId: string
@@ -428,6 +438,13 @@ export function parseMessage(value: unknown): ChatMessage {
 }
 export function parseRun(value: unknown): ChatRun {
   const v = record(value)
+  const compaction = v.compaction === undefined ? null : record(v.compaction)
+  if (
+    compaction &&
+    compaction.outcome !== null &&
+    !['compressed', 'skipped', 'unknown'].includes(string(compaction.outcome))
+  )
+    throw new Error('压缩结果状态无效')
   const status = string(v.status)
   if (
     ![
@@ -449,6 +466,15 @@ export function parseRun(value: unknown): ChatRun {
     error: v.error === null ? null : string(v.error),
     createdAt: integer(v.createdAt),
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
+    ...(compaction
+      ? {
+          compaction: {
+            stepId: id(compaction.stepId),
+            outcome: compaction.outcome as 'compressed' | 'skipped' | 'unknown' | null,
+            error: compaction.error === null ? null : string(compaction.error),
+          },
+        }
+      : {}),
   }
 }
 function reasoningProjection(v: Record<string, unknown>): {
@@ -674,6 +700,12 @@ export function parseDetail(value: unknown): ConversationDetail {
     revision: integer(v.revision),
     warning: v.warning === null ? null : string(v.warning),
   }
+}
+export function parseCompactInput(value: unknown): CompactConversationInput {
+  const v = record(value)
+  if (Object.keys(v).some((key) => key !== 'conversationId' && key !== 'modelId'))
+    throw new Error('压缩参数无效')
+  return { conversationId: id(v.conversationId), modelId: id(v.modelId) }
 }
 export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)
