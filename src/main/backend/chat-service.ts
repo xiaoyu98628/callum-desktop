@@ -53,6 +53,7 @@ import {
   stepFromRpc,
   workspaceFromRpc,
   userInputFromRpc,
+  contextUsageFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
@@ -66,6 +67,8 @@ import { StepOutput, readStepDetails } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
 import { compactionOutcome, isManualCompactionStep } from '../../shared/manual-compaction.ts'
+import { parseContextUsageInput } from '../../shared/context-usage.ts'
+import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -86,6 +89,7 @@ export class ChatService {
   private readonly dirtySteps = new Map<string, ChatStep>()
   private readonly stepOutputs = new Map<string, StepOutput>()
   private readonly stepReads = new Map<string, Promise<StepDetails>>()
+  private readonly contextReads = new Map<string, Promise<ContextUsage>>()
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly history: { event: ChatEvent; bytes: number }[] = []
   private historyBytes = 0
@@ -467,6 +471,33 @@ export class ChatService {
       revision: this.revision,
     }
   }
+  async contextUsage(input: ContextUsageInput): Promise<ContextUsage> {
+    const parsed = parseContextUsageInput(input)
+    const key = JSON.stringify(parsed)
+    const pending = this.contextReads.get(key)
+    if (pending) return pending
+    if (this.contextReads.size >= 16) throw new Error('上下文统计请求较多，请稍后重试。')
+    const task = (async () => {
+      const value = contextUsageFromRpc(
+        await this.request('conversation.context_usage', {
+          conversation_id: parsed.conversationId ?? undefined,
+          workspace_id: parsed.workspaceId ?? undefined,
+          model_id: parsed.modelId,
+          draft: parsed.draft,
+        }),
+      )
+      if (value.conversationId !== parsed.conversationId || value.modelId !== parsed.modelId)
+        throw new Error('上下文统计归属不匹配')
+      return value
+    })()
+    this.contextReads.set(key, task)
+    try {
+      return await task
+    } finally {
+      this.contextReads.delete(key)
+    }
+  }
+
   async detail(conversationId: string): Promise<ConversationDetail> {
     const start = this.revision
     const [conversation, messages, runs] = await Promise.all([
@@ -787,7 +818,12 @@ export class ChatService {
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
-    if (method === 'conversation.created' || method === 'conversation.updated') {
+    if (method === 'conversation.context_usage.updated') {
+      const value = contextUsageFromRpc(p.context_usage)
+      if (value.conversationId !== id(p.conversation_id) || value.runId !== id(p.run_id))
+        throw new Error('上下文占用通知归属不匹配')
+      this.publish({ kind: 'context-usage', value })
+    } else if (method === 'conversation.created' || method === 'conversation.updated') {
       this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)

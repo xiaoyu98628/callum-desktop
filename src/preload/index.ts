@@ -26,6 +26,7 @@ import {
 } from '../shared/chat'
 import { parseCatalog } from '../shared/models'
 import { parseExecutionSettings } from '../shared/execution'
+import { parseContextUsage } from '../shared/context-usage'
 
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('无效的操作结果')
@@ -81,6 +82,12 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getChatOverview, offset),
       parseOverview,
+    )
+  },
+  async getContextUsage(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getContextUsage, input),
+      parseContextUsage,
     )
   },
   async getConversation(conversationId) {

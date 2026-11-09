@@ -165,6 +165,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'setModelEnabled',
     'deleteModel',
     'getChatOverview',
+    'getContextUsage',
     'getConversation',
     'chooseWorkspaceDirectories',
     'discardWorkspaceDirectories',
@@ -550,6 +551,10 @@ test.describe('真实 Go 对话交互', () => {
       await expect(list).toBeVisible()
       // 完成定位后 reka-ui 会聚焦当前选项；等到此时再开始悬停、导航或外部点击。
       await expect(page.getByRole('option', { selected: true })).toBeFocused()
+      // Reka 将外部指针监听延后注册；等待定位帧后的浏览器任务，避免焦点早于监听就绪。
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))),
+      )
     }
     await expect(picker).toHaveText('受控文本模型')
     const longName = await page.evaluate(async () => {
@@ -3104,51 +3109,257 @@ test.describe('会话与项目管理', () => {
 })
 
 test.describe('手动压缩上下文', () => {
+  async function hoverUsage(page: Page): Promise<void> {
+    await page.mouse.move(1, 1)
+    await page.getByRole('button', { name: '上下文使用情况', exact: true }).hover()
+    await expect(page.locator('[data-context-tooltip]')).toBeVisible()
+  }
+
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
 
-  test('/compact 候选支持键盘、鼠标和无操作结果，命令不会作为消息发送', async ({ desktop }) => {
+  test('圆环悬停提示精简、点击不打开窗口，命令候选支持鼠标及键盘压缩', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const ring = page.getByRole('button', { name: '上下文使用情况', exact: true })
+    const hint = page.locator('[data-context-tooltip]')
     await expect(input).toBeEnabled()
+    await expect(ring).toHaveText('')
+    await expect(ring.locator('svg')).toBeVisible()
     await input.fill('/')
-    const menu = page.getByRole('listbox', { name: '命令', exact: true })
-    const option = menu.getByRole('option', { name: /compact/ })
+    const option = page.getByRole('option', { name: /^压缩/ })
     await expect(option).toHaveAttribute('aria-disabled', 'true')
     await expect(option).toContainText('请先发送消息')
-    await input.press('Enter')
-    await expect(page.getByRole('article')).toHaveCount(0)
-    await input.press('Escape')
-    await expect(menu).toHaveCount(0)
+    await hoverUsage(page)
+    await expect(input).toBeFocused()
+    await expect(hint.locator('[data-context-estimate]')).toBeVisible()
+    await expect(hint).toContainText('背景信息窗口：')
+    await expect(hint.locator('[data-context-percentage]')).toContainText('已用')
+    await expect(hint.locator(':scope > p')).toHaveCount(3)
+    await expect(hint.getByRole('button')).toHaveCount(0)
+    await expect(hint.locator('dl')).toHaveCount(0)
+    await expect(hint).not.toContainText('输出 / 安全预留')
+    await expect(hint).not.toContainText('上次调用实际输入')
+    await expect
+      .poll(async () => option.getAttribute('data-context-percent'))
+      .toBe(await ring.getAttribute('data-context-percent'))
+    await expect(option.locator('[data-context-ring]')).toHaveAttribute(
+      'data-ratio',
+      (await ring.locator('[data-context-ring]').getAttribute('data-ratio')) ?? '',
+    )
+    await page.mouse.move(1, 1)
+    await expect(hint).toHaveCount(0)
+    await ring.focus()
+    await expect(hint).toBeVisible()
+    await ring.press('Escape')
+    await expect(hint).toHaveCount(0)
+    await expect(ring).toBeFocused()
+    await ring.click()
+    await expect(hint).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('[data-manual-compaction]')).toHaveCount(0)
     await input.fill('正文里的 /compact 保持为普通消息')
     await input.press('Enter')
     await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
       '你好，这是受控回答。',
     )
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
-    await input.fill('/com')
-    await expect(option).toHaveAttribute('aria-disabled', 'false')
-    await page.screenshot({ path: '.artifacts/screenshots/compact-command-light.png' })
-    await input.press('Tab')
-    await expect(input).toHaveValue('/compact')
-    await expect(input).toBeFocused()
-    await input.press('ArrowDown')
-    await input.press('Enter')
+    await input.fill('/comp')
+    await hoverUsage(page)
+    await expect(hint.locator('[data-context-estimate]')).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/context-usage-light.png' })
+    await page.keyboard.press('Escape')
+    await expect(option).toBeVisible()
+    await option.click()
     const row = page.locator('[data-manual-compaction]')
     await expect(row).toContainText('暂无可压缩的较早对话')
     await expect(input).toHaveValue('')
     await expect(page.getByRole('article')).toHaveCount(2)
+    await input.fill('/co')
+    await expect(option).toHaveAttribute('aria-disabled', 'false')
+    await expect(option).toContainText('压缩此聊天的上下文（已使用')
+    await expect(option).not.toContainText('/compact')
+    await expect(option.locator('[data-context-percentage]')).toHaveCount(0)
+    await expect(option.locator('svg')).toHaveCount(1)
+    const candidateHeight = (await option.boundingBox())?.height
+    expect(candidateHeight).toBeLessThanOrEqual(36)
+    await page.screenshot({ path: '.artifacts/screenshots/context-commands-light.png' })
+    await input.press('Tab')
+    await expect(input).toHaveValue('/compact')
+    await input.press('ArrowDown')
+    await input.press('Enter')
+    await expect(row).toHaveCount(2)
+    await expect(input).toHaveValue('')
     await page.reload()
     await page
       .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: '正文里的 /compact 保持为普通消息', exact: true })
       .click()
-    await expect(row).toContainText('暂无可压缩的较早对话')
-    await input.fill('/comp')
-    await option.click()
     await expect(row).toHaveCount(2)
     await expect(row.last()).toContainText('暂无可压缩的较早对话')
-    await expect(page.getByRole('article')).toHaveCount(2)
+  })
+
+  test('上下文圆环实时统计草稿和生成内容，统计失败可重试，断连不显示旧百分比', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    const ring = page.getByRole('button', { name: '上下文使用情况', exact: true })
+    const popup = page.locator('[data-context-tooltip]')
+    await hoverUsage(page)
+    const estimate = popup.locator('[data-context-estimate]')
+    await expect(estimate).toBeVisible()
+    const base = Number(await estimate.getAttribute('data-tokens'))
+    const modelCalls = modelEndpoint!.requests.length
+    await page.keyboard.press('Escape')
+    await input.fill('草稿约束'.repeat(100))
+    await hoverUsage(page)
+    await expect
+      .poll(async () => Number(await estimate.getAttribute('data-tokens')))
+      .toBeGreaterThan(base + 700)
+    expect(modelEndpoint!.requests.length).toBe(modelCalls)
+    await expect(page.getByRole('article')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
+    await hoverUsage(page)
+    await expect(estimate).toBeVisible()
+    const streaming = Number(await estimate.getAttribute('data-tokens'))
+    modelEndpoint!.appendStream('实时生成内容'.repeat(300))
+    await expect
+      .poll(async () => Number(await estimate.getAttribute('data-tokens')))
+      .toBeGreaterThan(streaming + 2000)
+    modelEndpoint!.appendReasoning('新增推理'.repeat(100))
+    await expect
+      .poll(async () => Number(await estimate.getAttribute('data-tokens')))
+      .toBeGreaterThan(streaming + 4000)
+    await page.keyboard.press('Escape')
+    await input.fill('/c')
+    const command = page.getByRole('option', { name: /^压缩/ })
+    await expect(command).toHaveAttribute('aria-disabled', 'true')
+    const beforeRatio = Number(
+      await command.locator('[data-context-ring]').getAttribute('data-ratio'),
+    )
+    modelEndpoint!.appendStream('候选比例更新'.repeat(100))
+    await expect
+      .poll(async () =>
+        Number(await command.locator('[data-context-ring]').getAttribute('data-ratio')),
+      )
+      .toBeGreaterThan(beforeRatio)
+    await expect
+      .poll(async () => command.getAttribute('data-context-percent'))
+      .toBe(await ring.getAttribute('data-context-percent'))
+    await input.fill('触发统计刷新')
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const known = await page.evaluate(async () => {
+      const state = await window.callum.getChatOverview(0)
+      if (!state.ok || !state.value.models[0]) throw new Error('缺少模型')
+      return window.callum.getContextUsage({
+        conversationId: null,
+        workspaceId: null,
+        modelId: state.value.models[0].id,
+        draft: '',
+      })
+    })
+    if (!known.ok) throw new Error(known.error)
+    await desktop.evaluate(
+      ({ ipcMain }, { channel, sample }) => {
+        let fail = true
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, (_event, input) => {
+          if (fail) {
+            fail = false
+            return { ok: false, error: '受控统计读取失败' }
+          }
+          return {
+            ok: true,
+            value: {
+              ...sample,
+              id: input.conversationId ?? '',
+              conversationId: input.conversationId,
+              state: 'ready',
+              estimatedTokens: 1234,
+              inputLimit: null,
+              contextWindow: null,
+              snapshotRevision: 99999999,
+            },
+          }
+        })
+      },
+      { channel: IPC_CHANNELS.getContextUsage, sample: known.value },
+    )
+    await input.fill('触发统计刷新')
+    await hoverUsage(page)
+    await expect(popup).toContainText('受控统计读取失败')
+    await page.mouse.move(1, 1)
+    await expect(popup).toHaveCount(0)
+    await hoverUsage(page)
+    await expect(popup).toContainText('未配置上下文容量')
+    await expect(ring).toHaveAttribute('data-context-percent', 'unknown')
+    await expect(estimate).toContainText('已用约 1k 标记，共 —')
+    await page.keyboard.press('Escape')
+    await interruptTestBackend(desktop)
+    await hoverUsage(page)
+    await expect(popup).toContainText('连接已断开')
+    await expect(estimate).toHaveCount(0)
+    await expect(ring).toHaveAttribute('data-context-percent', 'unknown')
+  })
+
+  test('草稿统计丢弃迟到响应，圆环在模型左侧', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    const ring = page.getByRole('button', { name: '上下文使用情况', exact: true })
+    const ringBox = await ring.boundingBox()
+    const modelBox = await page.getByRole('combobox', { name: '模型', exact: true }).boundingBox()
+    expect(ringBox && modelBox && ringBox.x + ringBox.width <= modelBox.x).toBe(true)
+    const sample = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.models[0]) throw new Error('缺少模型')
+      return window.callum.getContextUsage({
+        conversationId: null,
+        workspaceId: null,
+        modelId: overview.value.models[0].id,
+        draft: '',
+      })
+    })
+    if (!sample.ok) throw new Error(sample.error)
+    await desktop.evaluate(
+      ({ ipcMain }, { channel, value }) => {
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, (_event, request) => {
+          const result = {
+            ok: true,
+            value: {
+              ...value,
+              snapshotRevision: 99999999,
+              estimatedTokens: request.draft === '迟到草稿' ? 9999 : 4444,
+            },
+          }
+          if (request.draft === '迟到草稿')
+            return new Promise((resolve) =>
+              Reflect.set(globalThis, 'releaseContextUsage', () => resolve(result)),
+            )
+          return result
+        })
+      },
+      { channel: IPC_CHANNELS.getContextUsage, value: sample.value },
+    )
+    await input.fill('迟到草稿')
+    await expect
+      .poll(() => desktop.evaluate(() => typeof Reflect.get(globalThis, 'releaseContextUsage')))
+      .toBe('function')
+    await input.fill('最新草稿')
+    await desktop.evaluate(() => Reflect.get(globalThis, 'releaseContextUsage')())
+    await hoverUsage(page)
+    const estimate = page.locator('[data-context-tooltip]').locator('[data-context-estimate]')
+    await expect(estimate).toHaveAttribute('data-tokens', '4444')
+    await expect(input).toHaveValue('最新草稿')
+    await expect(page.getByRole('article')).toHaveCount(0)
   })
 
   test('手动压缩成功保留消息、草稿和位置，切换与重启后恢复并可继续对话', async ({
@@ -3161,18 +3372,31 @@ test.describe('手动压缩上下文', () => {
     const { conversationId, modelId } = await prepareManualCompaction(page, '手动压缩成功')
     modelEndpoint!.pauseCompaction()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('压缩前保留的草稿')
+    await hoverUsage(page)
+    const popup = page.locator('[data-context-tooltip]')
+    await expect(popup.locator('[data-context-estimate]')).toBeVisible()
+    const beforeTokens = Number(
+      await popup.locator('[data-context-estimate]').getAttribute('data-tokens'),
+    )
+    await expect(input).toHaveValue('压缩前保留的草稿')
+    await page.keyboard.press('Escape')
     await input.fill('/compact')
-    await input.press('Enter')
+    await page.getByRole('option', { name: /^压缩/ }).click()
     const row = page.locator('[data-manual-compaction]')
     await expect(row).toContainText('正在压缩上下文')
+    await expect(input).toHaveValue('')
     await expect.poll(() => modelEndpoint!.pendingCompaction).toBe(1)
     await expect(page.getByRole('button', { name: '停止压缩', exact: true })).toBeEnabled()
-    await input.fill('/compact')
-    await expect(page.getByRole('option', { name: /compact/ })).toHaveAttribute(
+    await hoverUsage(page)
+    await expect(popup.getByRole('button')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await input.fill('/com')
+    await expect(page.getByRole('option', { name: /^压缩/ })).toHaveAttribute(
       'aria-disabled',
       'true',
     )
-    await input.press('Enter')
+    await page.keyboard.press('Escape')
     const duplicate = await page.evaluate((input) => window.callum.compactConversation(input), {
       conversationId,
       modelId,
@@ -3191,6 +3415,13 @@ test.describe('手动压缩上下文', () => {
     await page.screenshot({ path: '.artifacts/screenshots/manual-compaction-running.png' })
     modelEndpoint!.finishCompaction()
     await expect(row).toContainText('上下文已压缩')
+    await hoverUsage(page)
+    await expect
+      .poll(async () =>
+        Number(await popup.locator('[data-context-estimate]').getAttribute('data-tokens')),
+      )
+      .toBeLessThan(beforeTokens)
+    await page.keyboard.press('Escape')
     await expect(page.getByRole('article')).toHaveCount(12)
     await expect(input).toHaveValue('压缩期间保留的草稿')
     await input.press('Enter')
@@ -3292,7 +3523,7 @@ test.describe('手动压缩上下文', () => {
       modelEndpoint!.pauseCompaction()
       const input = page.getByRole('textbox', { name: '消息', exact: true })
       await input.fill('/compact')
-      await page.getByRole('option', { name: /compact/ }).click()
+      await page.getByRole('option', { name: /^压缩/ }).click()
       const row = page.locator('[data-manual-compaction]')
       await expect(row).toContainText('正在压缩上下文')
       await expect.poll(() => modelEndpoint!.pendingCompaction).toBe(1)
@@ -3388,8 +3619,14 @@ test.describe('手动压缩上下文', () => {
     await desktop.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.setSize(860, 620)
     })
-    await expect(page.getByRole('listbox', { name: '命令', exact: true })).toBeVisible()
-    await page.screenshot({ path: '.artifacts/screenshots/compact-command-dark.png' })
+    await expect(page.getByRole('option', { name: /^压缩/ })).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/context-commands-dark.png' })
+    await hoverUsage(page)
+    await expect(page.locator('[data-context-tooltip]')).toBeVisible()
+    await expect(
+      page.locator('[data-context-tooltip]').locator('[data-context-estimate]'),
+    ).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/context-usage-dark.png' })
     expect(
       await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true)

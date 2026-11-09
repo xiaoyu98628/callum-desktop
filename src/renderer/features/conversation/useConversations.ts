@@ -4,6 +4,7 @@ import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
+import type { ContextUsage } from '@shared/context-usage'
 import type {
   ChatEvent,
   ApprovalScope,
@@ -85,6 +86,8 @@ function createConversations() {
     sending: false,
     resending: false,
     compacting: '',
+    contextUsageEvent: null as ContextUsage | null,
+    usageActivityRevision: 0,
     editing: null as {
       messageId: string
       originalText: string
@@ -341,6 +344,10 @@ function createConversations() {
 
   function apply(event: ChatEvent): void {
     const change = event.change
+    if (change.kind === 'context-usage') {
+      if (change.value.conversationId === state.selectedId) state.contextUsageEvent = change.value
+      return
+    }
     if (change.kind === 'service') {
       state.serviceError = change.error
       return
@@ -410,6 +417,7 @@ function createConversations() {
       event.revision <= detailRevision
     )
       return
+    state.usageActivityRevision++
     if (change.kind === 'messages-removed') {
       state.detail.messages = state.detail.messages.filter(
         (item) => !change.value.messageIds.includes(item.id),
@@ -901,7 +909,7 @@ function createConversations() {
   }
   async function send(): Promise<void> {
     if (isCompactCommand(draft.value)) {
-      await compact()
+      await compact(true)
       return
     }
     if (
@@ -946,7 +954,7 @@ function createConversations() {
       state.sending = false
     }
   }
-  async function compact(): Promise<void> {
+  async function compact(consumeCommand = false): Promise<void> {
     if (compactUnavailable.value || !state.selectedId) return
     const conversationId = state.selectedId,
       modelId = state.modelId,
@@ -959,7 +967,7 @@ function createConversations() {
       const result = unwrap(await getDesktopApi().compactConversation({ conversationId, modelId }))
       if (result.conversationId !== conversationId) throw new Error('压缩受理结果归属不匹配。')
       // 受理后仅消耗原命令；切换会话或期间输入的新草稿不能被清除。
-      if (state.drafts[key] === command && matchesCompactCommand(command)) {
+      if (consumeCommand && state.drafts[key] === command && matchesCompactCommand(command)) {
         delete state.drafts[key]
         draftWorkspaces.delete(key)
       }

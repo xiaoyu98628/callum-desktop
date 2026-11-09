@@ -27,6 +27,7 @@ import type {
 } from './chat'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
+import type { ContextUsage, ContextUsageInput } from './context-usage'
 
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
@@ -79,6 +80,7 @@ export interface DesktopApi {
   ): Promise<ChatResult<ConversationUpdate>>
   listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
+  getContextUsage(input: ContextUsageInput): Promise<ChatResult<ContextUsage>>
   getEarlierMessages(
     conversationId: string,
     beforeSequence: number,

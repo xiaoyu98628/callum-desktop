@@ -8,7 +8,7 @@ resources/backend/
     callum
 ```
 
-当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `6e11fe7` 及本次完整目录编辑与无目录项目改动。SHA-256 为 `5db21d8144720602de31f46b81358d257e928bf70a0df1c93736899a54606081`。
+当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `84c0cd3` 及本次上下文用量查询、实时数字快照和统一实际输入投影改动。SHA-256 为 `cc42e1d9a75217629a881d30bda2d86dfa76909ebe1ad6c5882beab1903a5c12`。
 
 当前数据库结构版本为 `2`。完整版本 `1` 数据库会在启动实例锁保护下事务升级：主目录允许为空，原项目、目录、对话、消息、索引和触发器保留；升级失败回滚，外键设置在返回前恢复。不兼容的旧结构会明确拒绝打开，不删除原数据。命令默认在只读 Seatbelt 沙箱执行，项目写入须逐次审批。内置文件工具和 Seatbelt 命令隔离应用数据目录。
 
@@ -38,3 +38,5 @@ resources/backend/
 当前随附程序将会话业务更新输入与仓储快照参数分开，审批决定集中到 policy，执行轨迹及中断工具输出恢复集中到 agent/transcript；历史读取和压缩检查点共用恢复规则。JSON-RPC 方法、请求和响应字段、审批原因标识及步骤的 context_message、reasoning、operation 格式保持兼容，客户端继续通过现有通信适配读取并展示这些字段。
 
 业务仓储的操作事实、最新检查点及恢复子查询使用 GORM 组合构造，JSON 与窗口表达式继续在 SQLite 内执行。查询保持最新结果的筛选顺序、当前分支隔离、容量检查和事务清理范围；检查点继续逐行读取。
+
+随附服务支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 实时通知。草稿仅参与估算，不调用模型或持久化；统计共用有效历史、摘要、工具定义与轨迹规则，执行结束清理数字缓存。原始 usage 保留，实际输入标量独立保存到现有主模型步骤，不增加数据库表或迁移。

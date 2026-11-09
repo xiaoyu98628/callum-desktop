@@ -28,6 +28,7 @@ export const IPC_CHANNELS = {
   setConversationArchived: 'callum:chat:set-archived',
   listArchivedConversations: 'callum:chat:archived',
   getConversation: 'callum:chat:conversation',
+  getContextUsage: 'callum:chat:context-usage',
   getEarlierMessages: 'callum:chat:earlier',
   listRunSteps: 'callum:chat:steps',
   getStepDetails: 'callum:chat:step-details',

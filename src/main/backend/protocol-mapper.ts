@@ -1,4 +1,6 @@
 import { truncateStepText } from '../../shared/steps.ts'
+import { parseContextUsage } from '../../shared/context-usage.ts'
+import type { ContextUsage } from '../../shared/context-usage.ts'
 import {
   array,
   id,
@@ -24,6 +26,29 @@ import type {
   Conversation,
   Workspace,
 } from '../../shared/chat.ts'
+
+export function contextUsageFromRpc(value: unknown): ContextUsage {
+  const v = record(value)
+  const conversationId = v.conversation_id === '' ? null : v.conversation_id
+  return parseContextUsage({
+    id: conversationId ?? '',
+    conversationId,
+    modelId: v.model_id,
+    runId: v.run_id == null || v.run_id === '' ? null : v.run_id,
+    snapshotRevision: v.revision,
+    updatedAt: v.updated_at,
+    state: v.state,
+    reason: v.reason ?? '',
+    estimatedTokens: v.estimated_tokens,
+    draftTokens: v.draft_tokens,
+    inputLimit: v.input_limit,
+    contextWindow: v.context_window,
+    outputReserve: v.output_reserve,
+    safetyMargin: v.safety_margin,
+    estimationMethod: v.estimation_method,
+    actualInputTokens: v.actual_input_tokens,
+  })
+}
 
 export function userInputFromRpc(value: unknown): ChatUserInput {
   const v = record(value)

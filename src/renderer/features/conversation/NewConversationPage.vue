@@ -17,6 +17,7 @@ import {
 import type { ApprovalScope, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
+import { useContextUsage } from './useContextUsage'
 import ModelSelector from './ModelSelector.vue'
 import ProjectSelector from './ProjectSelector.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
@@ -25,7 +26,9 @@ import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
 import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
+import ContextUsageControl from './ContextUsageControl.vue'
 import ComposerCommands from './ComposerCommands.vue'
+import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
 defineEmits<{ configureModels: [] }>()
 
@@ -121,6 +124,31 @@ const commandsOpen = computed(
   () => commandInputFocused.value && !commandsDismissed.value && matchesCompactCommand(draft.value),
 )
 const requestingCompact = computed(() => isCompactCommand(draft.value) || commandsOpen.value)
+const usageInput = computed<ContextUsageInput | null>(() =>
+  state.loading || state.modelsLoading || !state.modelId
+    ? null
+    : {
+        conversationId: state.selectedId,
+        workspaceId: state.selectedId ? null : state.workspaceId,
+        modelId: state.modelId,
+        draft: requestingCompact.value ? '' : draft.value,
+      },
+)
+const usageHintOpen = ref(false)
+const {
+  value: contextUsage,
+  error: contextUsageError,
+  loading: contextUsageLoading,
+} = useContextUsage(
+  usageInput,
+  computed(() => state.contextUsageEvent),
+  computed(() => state.usageActivityRevision),
+  computed(() => state.serviceError),
+  computed(() => usageHintOpen.value || commandsOpen.value),
+)
+const displayedUsage = computed(() =>
+  state.serviceError || contextUsageError.value ? null : contextUsage.value,
+)
 const compactingRun = computed(() => !!activeRun.value?.compaction)
 const stopLabel = computed(() => (compactingRun.value ? '停止压缩' : '停止生成'))
 let inputResizeObserver: ResizeObserver | undefined
@@ -181,6 +209,8 @@ watch(
 )
 function keydown(event: KeyboardEvent): void {
   if (event.isComposing) return
+  // 悬停提示打开时先由 Tooltip 处理 Esc，保留输入框中的命令候选。
+  if (event.key === 'Escape' && usageHintOpen.value) return
   if (commandsOpen.value) {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -204,7 +234,7 @@ function keydown(event: KeyboardEvent): void {
 }
 function submitMessage(): void {
   if (!canSend.value) return
-  if (requestingCompact.value) void compact()
+  if (requestingCompact.value) void compact(true)
   else void send()
 }
 function focusCommands(): void {
@@ -652,7 +682,8 @@ onScopeDispose(() => {
           v-if="commandsOpen"
           :disabled-reason="compactUnavailable"
           :busy="!!state.compacting"
-          @select="compact"
+          :usage="displayedUsage"
+          @select="compact(true)"
         />
         <label for="new-message" class="sr-only">消息</label>
         <textarea
@@ -686,6 +717,15 @@ onScopeDispose(() => {
         ></textarea>
         <div class="mt-2 flex items-center justify-end gap-2">
           <div class="flex min-w-0 items-center gap-2">
+            <ContextUsageControl
+              :usage="displayedUsage"
+              :error="contextUsageError"
+              :loading="contextUsageLoading"
+              :configured="!!usageInput"
+              :service-error="state.serviceError"
+              @update:open="usageHintOpen = $event"
+            />
+
             <Button
               v-if="!state.models.length"
               type="button"

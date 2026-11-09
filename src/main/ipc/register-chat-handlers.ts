@@ -20,6 +20,7 @@ import { isTrustedRendererUrl } from '../security/renderer-policy'
 import { ChatEventDelivery } from './chat-event-delivery'
 import { parseModelInput, parseProviderInput } from '../../shared/models'
 import { parseExecutionSettings } from '../../shared/execution'
+import { parseContextUsageInput } from '../../shared/context-usage'
 
 export function registerChatHandlers(
   getWindow: () => BrowserWindow | null,
@@ -254,6 +255,9 @@ export function registerChatHandlers(
     service.stepDetails(id(conversationId), id(runId), id(stepId)),
   )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
+  handle(IPC_CHANNELS.getContextUsage, 1, (input) =>
+    service.contextUsage(parseContextUsageInput(input)),
+  )
   handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.compactConversation, 1, (input) => service.compact(parseCompactInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
