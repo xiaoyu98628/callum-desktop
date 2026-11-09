@@ -124,12 +124,19 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         return
       }
       if (input.stream !== true) {
+        const isReview =
+          typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你独立审核')
+        const handoff = isReview && text.includes('AI 审批转人工')
+        const content = isReview
+          ? JSON.stringify({
+              decision: handoff ? 'handoff' : 'approved',
+              reason: handoff ? '受控审核需要用户确认。' : '用户明确要求查看当前目录。',
+            })
+          : ''
         response.setHeader('Content-Type', 'application/json')
         response.end(
           JSON.stringify({
-            choices: [
-              { index: 0, message: { role: 'assistant', content: '' }, finish_reason: 'stop' },
-            ],
+            choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
           }),
         )
         return
@@ -143,6 +150,23 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      if (role === 'user' && (text === 'AI 审批目录' || text === 'AI 审批转人工')) {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-review-command',
+              type: 'function',
+              function: {
+                name: 'run_command',
+                arguments: JSON.stringify({ command: ['/bin/pwd'], cwd: dirname(fixturePath) }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (text === '思考等待' || text === '思考长内容') {
         emit(response, { reasoning_content: '这是独立推理，' })
         emit(response, {
@@ -372,6 +396,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         }
         let content = '已读取测试文件。'
         if (prompt.startsWith('只读')) content = '已完成只读检查。'
+        else if (prompt.startsWith('AI 审批')) content = '已查看当前目录。'
         else if (prompt.includes('目录') && prompt.includes('审批')) content = '已修改测试文件。'
         else if (prompt.startsWith('命令')) content = '已完成命令检查。'
         if (text.includes('permission_denied')) content = '操作已拒绝。'

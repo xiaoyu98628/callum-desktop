@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { parseApprovalReview, record } from '@shared/chat'
 import { computed, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue'
 import { FileTextIcon, LoaderCircleIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
 import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
@@ -76,6 +77,16 @@ const live = computed(() =>
       step.conversationId === props.conversationId,
   ),
 )
+const review = computed(() => {
+  const input = detail.value?.value.input
+  if (!input || detail.value?.value.inputTruncated) return null
+  try {
+    const v = record(record(JSON.parse(input)).approval_review)
+    return parseApprovalReview({ stepId: v.step_id, decision: v.decision, reason: v.reason })
+  } catch {
+    return null
+  }
+})
 const savedResult = computed(() => stepResult(detail.value?.value.output ?? ''))
 let records: TimelineWindow | undefined
 let generation = 0,
@@ -682,6 +693,15 @@ onScopeDispose(() => {
                   连接已断开，步骤状态待核对。
                 </p>
                 <p v-if="step.error" class="text-destructive">{{ step.error }}</p>
+                <p v-if="data(step) && review" class="break-words text-muted-foreground">
+                  {{
+                    review.decision === 'approved'
+                      ? 'AI 审批通过'
+                      : review.decision === 'rejected'
+                        ? 'AI 审批拒绝'
+                        : 'AI 转交人工审核'
+                  }}。{{ review.reason }}
+                </p>
                 <p v-if="data(step)" class="font-medium">目标与参数</p>
                 <pre
                   v-if="data(step)"

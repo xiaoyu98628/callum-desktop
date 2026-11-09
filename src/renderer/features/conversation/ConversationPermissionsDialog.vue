@@ -11,12 +11,18 @@ import {
 import { XIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
-import { getDesktopApi } from '@/lib/desktop'
 import type { ExecutionSettings } from '@shared/execution'
 
 const props = defineProps<{ returnFocus: HTMLElement | null }>()
 const emit = defineEmits<{ close: [] }>()
-const { state, workspace, loadDirectories, revokeDirectory } = useConversations()
+const {
+  state,
+  workspace,
+  loadDirectories,
+  revokeDirectory,
+  refreshExecutionSettings,
+  saveExecutionSettings,
+} = useConversations()
 const conversationId = state.selectedId
 const grants = computed(() => state.detail?.directoryGrants ?? [])
 const execution = ref<ExecutionSettings | null>(null)
@@ -25,7 +31,9 @@ const executionLoading = ref(false),
   executionError = ref(''),
   executionSaved = ref(false)
 let disposed = false
-const busy = computed(() => !!state.revokingDirectory || executionSaving.value)
+const busy = computed(
+  () => !!state.revokingDirectory || state.executionSettingsSaving || executionSaving.value,
+)
 const unavailable = computed(() => state.directoriesLoading || !!state.serviceError || busy.value)
 function restoreFocus(event: Event): void {
   event.preventDefault()
@@ -38,9 +46,9 @@ async function loadExecution(): Promise<void> {
   executionError.value = ''
   executionSaved.value = false
   try {
-    const result = await getDesktopApi().getExecutionSettings()
-    if (!result.ok) throw new Error(result.error)
-    if (!disposed) execution.value = result.value
+    const result = await refreshExecutionSettings()
+    if (!result) throw new Error(state.executionSettingsError || '执行权限正在读取，请重试。')
+    if (!disposed) execution.value = { ...result }
   } catch (error) {
     if (!disposed)
       executionError.value = error instanceof Error ? error.message : '无法读取执行权限，请重试。'
@@ -61,10 +69,9 @@ async function saveExecution(): Promise<void> {
   executionError.value = ''
   executionSaved.value = false
   try {
-    const result = await getDesktopApi().updateExecutionSettings({ ...execution.value })
-    if (!result.ok) throw new Error(result.error)
+    const result = await saveExecutionSettings({ ...execution.value })
     if (!disposed) {
-      execution.value = result.value
+      execution.value = { ...result }
       executionSaved.value = true
     }
   } catch (error) {
@@ -74,6 +81,19 @@ async function saveExecution(): Promise<void> {
   } finally {
     if (!disposed) executionSaving.value = false
   }
+}
+function changeSandbox(): void {
+  if (
+    execution.value?.sandboxMode !== 'danger-full-access' &&
+    state.executionSettings?.sandboxMode === 'danger-full-access' &&
+    execution.value
+  )
+    execution.value.approvalPolicy = 'on-request'
+  executionSaved.value = false
+}
+function changePolicy(): void {
+  if (execution.value?.approvalPolicy === 'never') execution.value.approvalsReviewer = 'user'
+  executionSaved.value = false
 }
 watch(
   () => state.selectedId,
@@ -128,8 +148,15 @@ onScopeDispose(() => {
                   aria-label="沙箱访问范围"
                   class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
                   :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
-                  @change="executionSaved = false"
+                  @change="changeSandbox"
                 >
+                  <option
+                    v-if="execution.sandboxMode === 'danger-full-access'"
+                    value="danger-full-access"
+                    disabled
+                  >
+                    完全访问权限
+                  </option>
                   <option value="workspace-write">
                     项目写入：普通项目补丁可自动执行，命令写入需审批
                   </option>
@@ -142,15 +169,30 @@ onScopeDispose(() => {
                   v-model="execution.approvalPolicy"
                   aria-label="审批方式"
                   class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
-                  :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
-                  @change="executionSaved = false"
+                  :disabled="
+                    execution.sandboxMode === 'danger-full-access' ||
+                    executionLoading ||
+                    busy ||
+                    !!state.serviceError ||
+                    !!executionError
+                  "
+                  @change="changePolicy"
                 >
                   <option value="on-request">按需询问</option>
                   <option value="always">每次询问</option>
                   <option value="never">不询问：拒绝仍需审批的操作</option>
                 </select>
               </label>
-              <p class="text-muted-foreground">
+              <p v-if="execution.approvalsReviewer === 'auto_review'" class="text-muted-foreground">
+                已开启帮我审批。超出 AI 审核范围的操作仍由你决定。
+              </p>
+              <p
+                v-if="execution.sandboxMode === 'danger-full-access'"
+                class="text-muted-foreground"
+              >
+                命令以当前系统用户权限访问文件和网络，审批关闭。
+              </p>
+              <p v-else class="text-muted-foreground">
                 macOS
                 命令及子进程使用系统沙箱。未关联项目时仅允许读取及私有临时目录写入；其他平台的命令仍需独立审批。模型请求不受命令网络限制影响。
               </p>

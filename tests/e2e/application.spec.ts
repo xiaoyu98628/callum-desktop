@@ -868,6 +868,64 @@ test.describe('真实 Go 对话交互', () => {
   test.describe('逐次读取审批交互', () => {
     test.use({ approvalPolicy: 'always' })
 
+    test('输入框切换三种审批模式，AI 审批和转人工由 Go 服务执行', async ({ desktop }) => {
+      const page = await desktop.firstWindow()
+      const trigger = page.getByRole('button', { name: '审批模式', exact: true })
+      const menu = page.getByRole('menu')
+      const request = menu.getByRole('menuitemradio', { name: /^请求批准/ })
+      const assist = menu.getByRole('menuitemradio', { name: /^帮我审批/ })
+      const full = menu.getByRole('menuitemradio', { name: /^完全访问权限/ })
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(trigger).toHaveText('请求批准')
+      await trigger.focus()
+      await trigger.press('Enter')
+      await expect(menu.getByRole('menuitemradio')).toHaveCount(3)
+      await expect(request).toHaveAttribute('aria-checked', 'true')
+      await expect(assist).toBeEnabled()
+      await page.screenshot({ path: '.artifacts/screenshots/approval-mode-menu.png' })
+      await assist.click()
+      await expect(trigger).toHaveText('帮我审批')
+
+      await input.fill('AI 审批目录')
+      await input.press('Enter')
+      await expect(page.getByText('已查看当前目录。', { exact: true })).toBeVisible()
+      await expect(panel).toHaveCount(0)
+      const timeline = page.getByRole('region', { name: '调用过程', exact: true })
+      const disclosure = timeline.getByRole('button', { name: '调用过程', exact: true })
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+      await disclosure.click()
+      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
+      await timeline.getByRole('button', { name: '工具详情：已运行命令', exact: true }).click()
+      await expect(
+        page.getByText('AI 审批通过。用户明确要求查看当前目录。', { exact: true }),
+      ).toBeVisible()
+
+      await input.fill('AI 审批转人工')
+      await input.press('Enter')
+      await expect(panel).toContainText('受控审核需要用户确认。')
+      await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+      await expect(page.getByText('操作已拒绝。', { exact: true })).toBeVisible()
+      await trigger.click()
+      await full.click()
+      await expect(trigger).toHaveText('完全访问权限')
+      await page.reload()
+      await expect(trigger).toHaveText('完全访问权限')
+      await trigger.click()
+      await expect(full).toHaveAttribute('aria-checked', 'true')
+      await request.click()
+      await expect(trigger).toHaveText('请求批准')
+      const settings = await page.evaluate(() => window.callum.getExecutionSettings())
+      expect(settings).toMatchObject({
+        ok: true,
+        value: {
+          sandboxMode: 'workspace-write',
+          approvalPolicy: 'on-request',
+          approvalsReviewer: 'user',
+        },
+      })
+    })
+
     test('审批位于底部输入区，过程说明和工具步骤在完成及历史重载后保留', async ({
       desktop,
       modelEndpoint,

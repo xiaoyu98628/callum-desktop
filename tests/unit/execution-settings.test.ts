@@ -4,20 +4,37 @@ import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
-import { parseExecutionSettings, executionSettingsFromRpc } from '../../src/shared/execution.ts'
+import {
+  parseExecutionSettings,
+  executionSettingsFromRpc,
+  withApprovalMode,
+  approvalMode,
+} from '../../src/shared/execution.ts'
 import { approvalSummary } from '../../src/shared/approval-summary.ts'
 import { ChatService } from '../../src/main/backend/chat-service.ts'
 import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
 test('权限桥接拒绝未展示的权限、无效版本和审批人', () => {
-  const valid = { revision: 1, sandboxMode: 'workspace-write', approvalPolicy: 'on-request' }
-  assert.deepEqual(parseExecutionSettings(valid), valid)
+  const valid = parseExecutionSettings({
+    revision: 1,
+    sandboxMode: 'workspace-write',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+  })
+  assert.equal(approvalMode(valid), 'request')
+  const assisted = withApprovalMode(valid, 'assist')
+  assert.equal(approvalMode(parseExecutionSettings(assisted)), 'assist')
+  const full = withApprovalMode(assisted, 'full')
+  assert.equal(approvalMode(parseExecutionSettings(full)), 'full')
+  assert.deepEqual(withApprovalMode(full, 'request'), valid)
+  assert.equal(approvalMode({ ...valid, approvalPolicy: 'never' }), null)
   for (const value of [
     { ...valid, revision: 0 },
     { ...valid, sandboxMode: 'full-access' },
     { ...valid, approvalPolicy: 'allow-all' },
-    { ...valid, approvalsReviewer: 'auto_review' },
+    { ...valid, approvalsReviewer: 'untrusted' },
+    { ...valid, sandboxMode: 'danger-full-access' },
   ])
     assert.throws(() => parseExecutionSettings(value))
   assert.throws(() =>

@@ -27,6 +27,7 @@ import UserInputCard from './UserInputCard.vue'
 import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
 import ContextUsageControl from './ContextUsageControl.vue'
+import ApprovalModeSelector from './ApprovalModeSelector.vue'
 import ComposerCommands from './ComposerCommands.vue'
 import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
@@ -149,6 +150,16 @@ const {
 const displayedUsage = computed(() =>
   state.serviceError || contextUsageError.value ? null : contextUsage.value,
 )
+const reviewing = computed(
+  () =>
+    activeRun.value &&
+    state.detail?.steps.some(
+      (step) =>
+        step.runId === activeRun.value?.id &&
+        step.purpose === 'approval_review' &&
+        step.status === 'running',
+    ),
+)
 const compactingRun = computed(() => !!activeRun.value?.compaction)
 const stopLabel = computed(() => (compactingRun.value ? '停止压缩' : '停止生成'))
 let inputResizeObserver: ResizeObserver | undefined
@@ -167,6 +178,7 @@ const canSend = computed(
   () =>
     !state.loading &&
     !state.loadingList &&
+    !state.executionSettingsSaving &&
     !state.sending &&
     !state.resending &&
     !state.compacting &&
@@ -715,7 +727,8 @@ onScopeDispose(() => {
           @blur="commandInputFocused = false"
           @keydown="keydown"
         ></textarea>
-        <div class="mt-2 flex items-center justify-end gap-2">
+        <div class="mt-2 flex items-center gap-2">
+          <ApprovalModeSelector class="mr-auto" />
           <div class="flex min-w-0 items-center gap-2">
             <ContextUsageControl
               :usage="displayedUsage"
@@ -784,6 +797,13 @@ onScopeDispose(() => {
           /></Button>
         </div>
       </form>
+      <p
+        v-if="reviewing && !state.serviceError"
+        role="status"
+        class="mx-auto mt-1 max-w-3xl px-1 text-xs text-muted-foreground"
+      >
+        AI 正在审核工具操作…
+      </p>
       <p
         id="conversation-hint"
         :class="

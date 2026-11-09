@@ -184,7 +184,7 @@ export class ChatService {
           value: {
             approval_policy: value.approvalPolicy,
             sandbox_mode: value.sandboxMode,
-            approvals_reviewer: 'user',
+            approvals_reviewer: value.approvalsReviewer,
           },
         }),
       ),

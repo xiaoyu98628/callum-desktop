@@ -131,6 +131,7 @@ export function approvalFromRpc(value: unknown, conversationId: string): ChatApp
   const v = record(value),
     request = record(v.request)
   const tool = request.tool === undefined ? null : record(request.tool)
+  const review = v.review == null ? null : record(v.review)
   return parseApproval({
     id: v.id,
     conversationId,
@@ -138,6 +139,8 @@ export function approvalFromRpc(value: unknown, conversationId: string): ChatApp
     status: v.status,
     toolName: tool ? string(tool.name) : '工具操作',
     snapshot: JSON.stringify(request, null, 2),
+    decidedBy: v.decided_by,
+    review: review && { stepId: review.step_id, decision: review.decision, reason: review.reason },
     directoryScope:
       v.directory_scope == null
         ? null

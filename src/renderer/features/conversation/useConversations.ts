@@ -4,6 +4,7 @@ import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
+import type { ExecutionSettings } from '@shared/execution'
 import type { ContextUsage } from '@shared/context-usage'
 import type {
   ChatEvent,
@@ -86,6 +87,10 @@ function createConversations() {
     sending: false,
     resending: false,
     compacting: '',
+    executionSettings: null as ExecutionSettings | null,
+    executionSettingsLoading: false,
+    executionSettingsSaving: false,
+    executionSettingsError: '',
     contextUsageEvent: null as ContextUsage | null,
     usageActivityRevision: 0,
     editing: null as {
@@ -120,6 +125,7 @@ function createConversations() {
   let listRevision = 0,
     detailRevision = 0
   let modelGeneration = 0
+  let executionSettingsRequest: Promise<ExecutionSettings | null> | null = null
   let overviewGeneration = 0,
     workspaceGeneration = 0,
     workspaceOffset = 0,
@@ -173,6 +179,7 @@ function createConversations() {
     () => state.detail?.approvals.filter((item) => item.status === 'pending') ?? [],
   )
   const compactUnavailable = computed(() => {
+    if (state.executionSettingsSaving) return '正在保存审批模式，请稍候。'
     if (!state.selectedId) return '请先发送消息，建立对话后再压缩上下文。'
     if (state.serviceError) return '对话服务连接已中断，恢复连接后再压缩。'
     if (state.loading || state.loadingList || state.modelsLoading)
@@ -907,7 +914,55 @@ function createConversations() {
       }
     }
   }
+  function refreshExecutionSettings(): Promise<ExecutionSettings | null> {
+    if (executionSettingsRequest) return executionSettingsRequest
+    if (state.executionSettingsSaving) return Promise.resolve(null)
+    state.executionSettingsLoading = true
+    executionSettingsRequest = readExecutionSettings().finally(() => {
+      executionSettingsRequest = null
+      if (!disposed) state.executionSettingsLoading = false
+    })
+    return executionSettingsRequest
+  }
+  async function readExecutionSettings(): Promise<ExecutionSettings | null> {
+    try {
+      const settings = unwrap(await getDesktopApi().getExecutionSettings())
+      if (disposed) return null
+      state.executionSettings = settings
+      state.executionSettingsError = ''
+      return settings
+    } catch (error) {
+      if (!disposed) state.executionSettingsError = message(error)
+      return null
+    }
+  }
+  async function saveExecutionSettings(next: ExecutionSettings): Promise<ExecutionSettings> {
+    if (
+      state.executionSettingsSaving ||
+      state.executionSettingsLoading ||
+      state.sending ||
+      state.resending ||
+      state.compacting ||
+      state.serviceError
+    )
+      throw new Error('任务或权限设置正在更新，请稍后重试。')
+    state.executionSettingsSaving = true
+    try {
+      const settings = unwrap(await getDesktopApi().updateExecutionSettings({ ...next }))
+      if (!disposed) {
+        state.executionSettings = settings
+        state.executionSettingsError = ''
+      }
+      return settings
+    } catch (error) {
+      if (!disposed) state.executionSettingsError = message(error)
+      throw error
+    } finally {
+      if (!disposed) state.executionSettingsSaving = false
+    }
+  }
   async function send(): Promise<void> {
+    if (state.executionSettingsSaving) return
     if (isCompactCommand(draft.value)) {
       await compact(true)
       return
@@ -1002,7 +1057,7 @@ function createConversations() {
     const edit = state.editing,
       conversationId = state.selectedId,
       target = lastUserMessage.value
-    if (!edit || !conversationId || editUnavailable.value) return
+    if (!edit || !conversationId || editUnavailable.value || state.executionSettingsSaving) return
     if (
       !target ||
       edit.messageId !== target.id ||
@@ -1187,6 +1242,7 @@ function createConversations() {
     state.loading = false
     void refreshOverview()
     void refreshWorkspaces()
+    void refreshExecutionSettings()
   })
   onScopeDispose(() => {
     disposed = true
@@ -1242,6 +1298,8 @@ function createConversations() {
     selectDraftProject,
     openConversation,
     refreshOverview,
+    refreshExecutionSettings,
+    saveExecutionSettings,
     refreshModels,
     setModels,
     send,

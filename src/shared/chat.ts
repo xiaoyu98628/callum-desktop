@@ -161,6 +161,11 @@ export interface DirectoryGrant {
   revokedAt: number | null
 }
 export type ApprovalScope = 'once' | 'conversation_directory'
+export interface ApprovalReview {
+  stepId: string
+  decision: 'approved' | 'rejected' | 'handoff'
+  reason: string
+}
 export interface ChatApproval {
   id: string
   conversationId: string
@@ -169,6 +174,8 @@ export interface ChatApproval {
   toolName: string
   snapshot: string
   directoryScope: DirectoryScope | null
+  decidedBy?: string
+  review?: ApprovalReview
 }
 export interface UserInputAnswer {
   optionIndex: number | null
@@ -580,6 +587,15 @@ export function parseDirectoryGrant(value: unknown): DirectoryGrant {
     revokedAt: v.revokedAt === null ? null : integer(v.revokedAt),
   }
 }
+export function parseApprovalReview(value: unknown): ApprovalReview {
+  const v = record(value)
+  if (v.decision !== 'approved' && v.decision !== 'rejected' && v.decision !== 'handoff')
+    throw new Error('审批审核结论无效')
+  const reason = string(v.reason)
+  if (!reason.trim() || new TextEncoder().encode(reason).length > 512)
+    throw new Error('审批审核理由无效')
+  return { stepId: id(v.stepId), decision: v.decision, reason }
+}
 export function parseApproval(value: unknown): ChatApproval {
   const v = record(value)
   return {
@@ -590,6 +606,8 @@ export function parseApproval(value: unknown): ChatApproval {
     toolName: string(v.toolName),
     snapshot: string(v.snapshot),
     directoryScope: v.directoryScope == null ? null : parseDirectoryScope(v.directoryScope),
+    ...(v.decidedBy == null ? {} : { decidedBy: string(v.decidedBy) }),
+    ...(v.review == null ? {} : { review: parseApprovalReview(v.review) }),
   }
 }
 export function parseUserInputAnswer(value: unknown): UserInputAnswer {
