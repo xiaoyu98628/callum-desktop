@@ -60,35 +60,41 @@ onScopeDispose(() => {
     v-if="text || editable"
     class="mt-1 flex flex-wrap items-center gap-0.5 text-xs text-muted-foreground"
   >
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      class="size-7 rounded-lg aria-disabled:opacity-50"
-      :aria-label="label"
-      :title="copied ? '已复制' : label"
-      :disabled="!text"
-      :aria-disabled="copying"
-      :aria-busy="copying"
-      @click="copy"
+    <div
+      role="group"
+      aria-label="消息操作"
+      class="flex items-center gap-0.5 opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
     >
-      <LoaderCircleIcon v-if="copying" class="size-3.5 animate-spin" aria-hidden="true" />
-      <CheckIcon v-else-if="copied" class="size-3.5" aria-hidden="true" />
-      <CopyIcon v-else class="size-3.5" aria-hidden="true" />
-    </Button>
-    <Button
-      v-if="editable"
-      type="button"
-      variant="ghost"
-      size="icon"
-      class="size-7 rounded-lg"
-      aria-label="编辑提问"
-      title="编辑提问"
-      :disabled="editDisabled"
-      @click="$emit('edit')"
-    >
-      <PencilIcon class="size-3.5" aria-hidden="true" />
-    </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        class="size-7 rounded-lg aria-disabled:opacity-50"
+        :aria-label="label"
+        :title="copied ? '已复制' : label"
+        :disabled="!text"
+        :aria-disabled="copying"
+        :aria-busy="copying"
+        @click="copy"
+      >
+        <LoaderCircleIcon v-if="copying" class="size-3.5 animate-spin" aria-hidden="true" />
+        <CheckIcon v-else-if="copied" class="size-3.5" aria-hidden="true" />
+        <CopyIcon v-else class="size-3.5" aria-hidden="true" />
+      </Button>
+      <Button
+        v-if="editable"
+        type="button"
+        variant="ghost"
+        size="icon"
+        class="size-7 rounded-lg"
+        aria-label="编辑提问"
+        title="编辑提问"
+        :disabled="editDisabled"
+        @click="$emit('edit')"
+      >
+        <PencilIcon class="size-3.5" aria-hidden="true" />
+      </Button>
+    </div>
     <span v-if="copied" role="status" class="sr-only">已复制</span>
     <span v-if="error" role="alert" class="max-w-full break-words px-1 text-destructive">{{
       error

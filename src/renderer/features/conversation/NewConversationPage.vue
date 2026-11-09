@@ -405,6 +405,7 @@ onScopeDispose(() => {
           <article
             v-for="item in messages"
             :key="item.id"
+            class="group/message"
             :data-message-id="item.id"
             :aria-label="item.role === 'user' ? '你的消息' : 'Callum 的回答'"
             :class="
