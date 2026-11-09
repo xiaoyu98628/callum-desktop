@@ -119,9 +119,9 @@ const desktopApi: DesktopApi = {
       parseWorkspace,
     )
   },
-  async updateWorkspace(workspaceId, input) {
+  async updateWorkspace(workspaceId, input, selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.updateWorkspace, workspaceId, input),
+      await ipcRenderer.invoke(IPC_CHANNELS.updateWorkspace, workspaceId, input, selectionId),
       parseWorkspaceUpdate,
     )
   },

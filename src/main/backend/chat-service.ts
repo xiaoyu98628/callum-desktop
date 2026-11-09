@@ -253,6 +253,7 @@ export class ChatService {
     const paths: string[] = []
     const seen = new Set<string>()
     for (const path of [parsed.rootPath, ...(parsed.otherPaths ?? [])]) {
+      if (!path) continue
       if (selected && !selected.has(path)) throw new Error('请重新选择项目文件夹。')
       const directory = await resolveWorkspaceDirectory(path)
       if (selected && (path !== directory.path || selected.get(path) !== directory.identity))
@@ -261,8 +262,8 @@ export class ChatService {
       seen.add(directory.identity)
       paths.push(directory.path)
     }
-    const [rootPath, ...otherPaths] = paths
-    return this.mutate(`path:${rootPath}`, async () => {
+    const [rootPath = '', ...otherPaths] = paths
+    return this.mutate(rootPath ? `path:${rootPath}` : 'workspace:create-empty', async () => {
       const value = workspaceFromRpc(
         await this.request('workspace.create', {
           name: parsed.name,
@@ -274,11 +275,35 @@ export class ChatService {
       return value
     })
   }
-  async updateWorkspace(workspaceId: string, input: WorkspaceChange): Promise<WorkspaceUpdate> {
+  async updateWorkspace(
+    workspaceId: string,
+    input: WorkspaceChange,
+    selected?: ReadonlyMap<string, string>,
+  ): Promise<WorkspaceUpdate> {
     const identifier = id(workspaceId)
     const parsed = parseWorkspaceChange(input)
     return this.mutate(`workspace:${identifier}`, async () => {
-      if (parsed.rootPath !== undefined) {
+      if (parsed.otherPaths !== undefined) {
+        const current = workspaceFromRpc(await this.request('workspace.get', { id: identifier }))
+        const folders = [current.rootPath, ...current.otherPaths].filter(Boolean)
+        const known = new Set(folders)
+        const expected = parsed.expectedFolders ?? []
+        if (
+          expected.length !== folders.length ||
+          expected[0] !== folders[0] ||
+          expected.some((path) => !known.has(path))
+        )
+          throw new Error('项目文件夹已更新，请重新打开项目编辑。')
+        for (const path of [parsed.rootPath ?? '', ...parsed.otherPaths]) {
+          if (!path) continue
+          const directory = await resolveWorkspaceDirectory(path)
+          if (
+            directory.path !== path ||
+            (selected && !known.has(path) && selected.get(path) !== directory.identity)
+          )
+            throw new Error('新增的项目文件夹必须重新通过选择器选择。')
+        }
+      } else if (parsed.rootPath !== undefined) {
         const directory = await resolveWorkspaceDirectory(parsed.rootPath)
         if (directory.path !== parsed.rootPath)
           throw new Error('项目文件夹已变化，请重新打开项目编辑。')
@@ -288,6 +313,8 @@ export class ChatService {
           id: identifier,
           name: parsed.name,
           root_path: parsed.rootPath,
+          other_paths: parsed.otherPaths,
+          expected_folders: parsed.expectedFolders,
         }),
       )
       this.publish({ kind: 'workspace', value: workspace })

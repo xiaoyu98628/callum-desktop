@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onScopeDispose, ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   DialogRoot,
   DialogPortal,
@@ -8,11 +8,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from 'reka-ui'
-import { FolderIcon, FolderPlusIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
-import { MAX_WORKSPACE_FOLDERS, parseWorkspaceInput } from '@shared/chat'
+import { FolderIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
+import { parseWorkspaceInput } from '@shared/chat'
 import type { SelectedDirectory, WorkspaceInput } from '@shared/chat'
-import { getDesktopApi } from '@/lib/desktop'
 import { Button } from '@/components/ui/button'
+import ProjectFoldersField from './ProjectFoldersField.vue'
 
 const props = defineProps<{ busy: boolean; error: string; returnFocus: HTMLElement | null }>()
 const emit = defineEmits<{ close: []; create: [input: WorkspaceInput, selectionId: string] }>()
@@ -20,64 +20,12 @@ const name = ref('')
 const directories = ref<SelectedDirectory[]>([])
 const mainPath = ref('')
 const selectionId = crypto.randomUUID()
-const choosing = ref(false)
-const removing = ref(false)
+const foldersBusy = ref(false)
 const validationError = ref('')
-let disposed = false
-const blocked = computed(() => props.busy || choosing.value || removing.value)
-const canAdd = computed(() => !blocked.value && directories.value.length < MAX_WORKSPACE_FOLDERS)
-const canCreate = computed(() => !blocked.value && !!name.value.trim() && !!mainPath.value)
-const sortedDirectories = computed(() =>
-  directories.value.toSorted(
-    (a, b) => Number(b.path === mainPath.value) - Number(a.path === mainPath.value),
-  ),
-)
-async function selectMain(path: string, event: MouseEvent): Promise<void> {
-  if (blocked.value) return
-  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('li') : null
-  mainPath.value = path
-  // 切换后操作按钮会变成“主要”标记，将焦点留在置顶后的目录行。
-  await nextTick()
-  if (row?.isConnected) row.focus({ preventScroll: true })
-}
-async function chooseDirectories(): Promise<void> {
-  if (!canAdd.value) return
-  choosing.value = true
-  validationError.value = ''
-  try {
-    const result = await getDesktopApi().chooseWorkspaceDirectories(selectionId)
-    if (!result.ok) throw new Error(result.error)
-    const first = result.value[0]
-    if (!disposed && first) {
-      directories.value.push(...result.value)
-      if (!mainPath.value) {
-        mainPath.value = first.path
-        if (!name.value.trim()) name.value = first.name
-      }
-    }
-  } catch (error) {
-    if (!disposed)
-      validationError.value = error instanceof Error ? error.message : '无法选择文件夹。'
-  } finally {
-    if (!disposed) choosing.value = false
-  }
-}
-async function removeDirectory(path: string): Promise<void> {
-  if (blocked.value) return
-  removing.value = true
-  validationError.value = ''
-  try {
-    const result = await getDesktopApi().discardWorkspaceDirectories(selectionId, path)
-    if (!result.ok) throw new Error(result.error)
-    if (disposed) return
-    directories.value = directories.value.filter((directory) => directory.path !== path)
-    if (mainPath.value === path) mainPath.value = directories.value[0]?.path ?? ''
-  } catch (error) {
-    if (!disposed)
-      validationError.value = error instanceof Error ? error.message : '无法移除文件夹。'
-  } finally {
-    if (!disposed) removing.value = false
-  }
+const blocked = computed(() => props.busy || foldersBusy.value)
+const canCreate = computed(() => !blocked.value && !!name.value.trim())
+function setDefaultName(value: string): void {
+  if (!name.value.trim()) name.value = value
 }
 function create(): void {
   if (!canCreate.value) return
@@ -103,12 +51,6 @@ function restoreFocus(event: Event): void {
   if (props.returnFocus?.isConnected) props.returnFocus.focus()
   else document.getElementById('new-conversation')?.focus()
 }
-onScopeDispose(() => {
-  disposed = true
-  void getDesktopApi()
-    .discardWorkspaceDirectories(selectionId)
-    .catch(() => {})
-})
 </script>
 
 <template>
@@ -145,72 +87,15 @@ onScopeDispose(() => {
               autocomplete="off"
             />
           </div>
-          <p id="project-source-heading" class="mb-2 mt-3 text-sm font-medium">源文件夹</p>
-          <section
-            aria-labelledby="project-source-heading"
-            class="min-w-0 overflow-hidden rounded-xl border bg-card"
-          >
-            <ul v-if="directories.length" class="min-w-0 divide-y border-b">
-              <li
-                v-for="directory in sortedDirectories"
-                :key="directory.path"
-                class="group/folder flex h-12 min-w-0 items-center gap-2.5 px-3.5 focus-visible:outline-offset-[-2px]"
-                :title="directory.path"
-                :tabindex="directory.path === mainPath ? -1 : undefined"
-                :aria-label="directory.path === mainPath ? `主要目录 ${directory.name}` : undefined"
-              >
-                <div class="flex min-w-0 flex-1 items-center gap-2.5 text-sm">
-                  <FolderIcon class="size-4 shrink-0 text-muted-foreground/70" aria-hidden="true" />
-                  <span class="truncate">{{ directory.name }}</span>
-                </div>
-                <span
-                  v-if="directory.path === mainPath"
-                  class="shrink-0 rounded-[10px] border px-2.5 py-1 text-xs text-muted-foreground"
-                  >主要</span
-                >
-                <Button
-                  v-else
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  class="h-7 rounded-lg border px-2 font-normal text-foreground opacity-0 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100"
-                  :disabled="blocked"
-                  :aria-label="`将 ${directory.name} 设为主要`"
-                  @click="selectMain(directory.path, $event)"
-                  >设为主要</Button
-                >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  class="size-6 text-muted-foreground/70"
-                  :disabled="blocked"
-                  :aria-label="`移除 ${directory.name}`"
-                  @click="removeDirectory(directory.path)"
-                  ><XIcon class="size-3.5" aria-hidden="true"
-                /></Button>
-              </li>
-            </ul>
-            <Button
-              type="button"
-              variant="ghost"
-              class="h-12 w-full justify-start gap-2.5 rounded-none px-3.5 font-normal"
-              :disabled="!canAdd"
-              @click="chooseDirectories"
-              ><LoaderCircleIcon
-                v-if="choosing"
-                class="size-4 animate-spin text-muted-foreground/70"
-                aria-hidden="true"
-              /><FolderPlusIcon v-else class="size-4 text-muted-foreground/70" aria-hidden="true" />
-              {{ choosing ? '正在选择…' : '添加文件夹' }}</Button
-            >
-          </section>
-          <p
-            v-if="directories.length >= MAX_WORKSPACE_FOLDERS"
-            class="mt-2 text-xs text-muted-foreground"
-          >
-            最多可添加 {{ MAX_WORKSPACE_FOLDERS }} 个文件夹
-          </p>
+          <ProjectFoldersField
+            v-model:folders="directories"
+            v-model:main-path="mainPath"
+            :selection-id="selectionId"
+            :disabled="busy"
+            heading-id="project-source-heading"
+            @busy="foldersBusy = $event"
+            @first-directory="setDefaultName"
+          />
           <p
             v-if="validationError || error"
             role="alert"

@@ -29,10 +29,12 @@ export interface WorkspaceInput {
   rootPath: string
   otherPaths?: string[]
 }
-/** 编辑项目名称，可选地将已有源目录切换为主目录。 */
+/** 编辑项目；完整目录更新携带原目录快照，第一项为原主要目录。 */
 export interface WorkspaceChange {
   name: string
   rootPath?: string
+  otherPaths?: string[]
+  expectedFolders?: string[]
 }
 export interface SelectedDirectory {
   path: string
@@ -313,7 +315,7 @@ export function parseWorkspaceInput(value: unknown): WorkspaceInput {
   const v = record(value)
   if (Object.keys(v).some((key) => !['name', 'rootPath', 'otherPaths'].includes(key)))
     throw new Error('项目参数无效')
-  const rootPath = workspacePath(v.rootPath)
+  const rootPath = v.rootPath === '' ? '' : workspacePath(v.rootPath)
   return {
     name: parseName(v.name),
     rootPath,
@@ -324,16 +326,42 @@ export function parseWorkspaceInput(value: unknown): WorkspaceInput {
 }
 export function parseWorkspaceChange(value: unknown): WorkspaceChange {
   const v = record(value)
-  if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
+  if (
+    Object.keys(v).some(
+      (key) => !['name', 'rootPath', 'otherPaths', 'expectedFolders'].includes(key),
+    )
+  )
     throw new Error('项目更新参数无效')
+  const rootPath =
+    v.rootPath === undefined ? undefined : v.rootPath === '' ? '' : workspacePath(v.rootPath)
+  if (
+    (v.otherPaths === undefined) !== (v.expectedFolders === undefined) ||
+    (v.otherPaths !== undefined && rootPath === undefined)
+  )
+    throw new Error('项目目录更新必须包含完整列表和原目录快照')
+  if (rootPath === '' && v.otherPaths === undefined)
+    throw new Error('清空主要目录必须同时提交完整目录列表')
+  const expected =
+    v.expectedFolders === undefined ? undefined : array(v.expectedFolders, workspacePath)
+  if (
+    expected &&
+    (expected.length > MAX_WORKSPACE_FOLDERS || new Set(expected).size !== expected.length)
+  )
+    throw new Error('原项目目录快照无效')
   return {
     name: parseName(v.name),
-    ...(v.rootPath === undefined ? {} : { rootPath: workspacePath(v.rootPath) }),
+    ...(rootPath === undefined ? {} : { rootPath }),
+    ...(v.otherPaths === undefined
+      ? {}
+      : {
+          otherPaths: otherWorkspacePaths(rootPath ?? '', v.otherPaths),
+          expectedFolders: expected ?? [],
+        }),
   }
 }
 export function parseWorkspace(value: unknown): Workspace {
   const v = record(value)
-  const rootPath = workspacePath(v.rootPath)
+  const rootPath = v.rootPath === '' ? '' : workspacePath(v.rootPath)
   return {
     id: id(v.id),
     name: string(v.name),
@@ -353,6 +381,7 @@ function workspacePath(value: unknown): string {
 }
 function otherWorkspacePaths(rootPath: string, value: unknown): string[] {
   const paths = array(value, workspacePath)
+  if (!rootPath && paths.length) throw new Error('没有主要目录时不能包含其他目录')
   if (paths.length >= MAX_WORKSPACE_FOLDERS)
     throw new Error(`项目最多可添加 ${MAX_WORKSPACE_FOLDERS} 个文件夹。`)
   if (new Set([rootPath, ...paths]).size !== paths.length + 1)

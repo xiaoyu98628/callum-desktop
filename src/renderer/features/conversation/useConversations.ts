@@ -645,8 +645,14 @@ function createConversations() {
     }
     return result
   }
-  async function updateWorkspace(workspaceId: string, input: WorkspaceChange): Promise<void> {
-    const result = await manage(() => getDesktopApi().updateWorkspace(workspaceId, input))
+  async function updateWorkspace(
+    workspaceId: string,
+    input: WorkspaceChange,
+    selectionId?: string,
+  ): Promise<void> {
+    const result = await manage(() =>
+      getDesktopApi().updateWorkspace(workspaceId, input, selectionId),
+    )
     if (!disposed)
       apply({ revision: result.revision, change: { kind: 'workspace', value: result.workspace } })
   }

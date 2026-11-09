@@ -43,7 +43,7 @@ function itemName(item: Conversation | Workspace): string {
   return 'title' in item ? item.title : item.name
 }
 function itemDescription(item: Conversation | Workspace): string {
-  if ('rootPath' in item) return item.rootPath
+  if ('rootPath' in item) return item.rootPath || '未添加文件夹'
   return item.workspaceId
     ? (props.workspaces.find((workspace) => workspace.id === item.workspaceId)?.name ?? '项目会话')
     : '独立会话'

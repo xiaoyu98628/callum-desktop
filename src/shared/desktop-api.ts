@@ -57,7 +57,11 @@ export interface DesktopApi {
     offset: number,
   ): Promise<ChatResult<ConversationPage>>
   createWorkspace(input: WorkspaceInput, selectionId: string): Promise<ChatResult<Workspace>>
-  updateWorkspace(workspaceId: string, input: WorkspaceChange): Promise<ChatResult<WorkspaceUpdate>>
+  updateWorkspace(
+    workspaceId: string,
+    input: WorkspaceChange,
+    selectionId?: string,
+  ): Promise<ChatResult<WorkspaceUpdate>>
   deleteWorkspace(workspaceId: string): Promise<ChatResult<Workspace>>
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<ChatResult<WorkspaceUpdate>>
   setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<ChatResult<WorkspaceUpdate>>

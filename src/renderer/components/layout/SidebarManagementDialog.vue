@@ -10,7 +10,7 @@ export interface ManagementTarget {
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   DialogRoot,
   DialogPortal,
@@ -21,7 +21,9 @@ import {
 } from 'reka-ui'
 import { FolderIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
 import { parseName } from '@shared/chat'
+import type { WorkspaceChange, SelectedDirectory } from '@shared/chat'
 import { Button } from '@/components/ui/button'
+import ProjectFoldersField from './ProjectFoldersField.vue'
 
 const props = defineProps<{
   target: ManagementTarget
@@ -29,7 +31,11 @@ const props = defineProps<{
   error: string
   returnFocus: HTMLElement | null
 }>()
-const emit = defineEmits<{ close: []; confirm: [name: string, rootPath?: string]; remove: [] }>()
+const emit = defineEmits<{
+  close: []
+  confirm: [name: string, folders?: Omit<WorkspaceChange, 'name'>, selectionId?: string]
+  remove: []
+}>()
 const name = ref(props.target.name)
 const mainPath = ref(props.target.rootPath)
 const validationError = ref('')
@@ -39,10 +45,23 @@ const previousFocus =
   props.returnFocus ??
   (document.activeElement instanceof HTMLElement ? document.activeElement : null)
 const editingWorkspace = computed(() => props.target.kind === 'workspace' && !props.target.deleting)
-const directories = computed(() =>
-  [props.target.rootPath, ...props.target.otherPaths]
-    .toSorted((a, b) => Number(b === mainPath.value) - Number(a === mainPath.value))
-    .map((path) => ({ path, name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? path })),
+const originalFolders = [props.target.rootPath, ...props.target.otherPaths].filter(Boolean)
+const directories = ref<SelectedDirectory[]>(
+  originalFolders.map((path) => ({
+    path,
+    name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? path,
+  })),
+)
+const selectionId = crypto.randomUUID()
+const foldersBusy = ref(false)
+const blocked = computed(() => props.busy || foldersBusy.value)
+const foldersChanged = computed(
+  () =>
+    mainPath.value !== props.target.rootPath ||
+    directories.value
+      .map((folder) => folder.path)
+      .toSorted()
+      .join('\0') !== originalFolders.toSorted().join('\0'),
 )
 const title = computed(() =>
   props.target.kind === 'conversation'
@@ -56,34 +75,35 @@ const title = computed(() =>
 const description = computed(() =>
   props.target.deleting
     ? props.target.kind === 'workspace'
-      ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一主目录可恢复项目及对话，其他目录以新选择为准。'
+      ? props.target.rootPath
+        ? '项目及其对话将从列表移除，磁盘文件保留。重新添加同一主目录可恢复项目及对话，其他目录以新选择为准。'
+        : '项目及其对话将从列表移除。'
       : '此会话将从列表移除，当前窗口中的对应草稿也会清除。'
     : props.target.kind === 'workspace'
-      ? '修改项目名称，点击“设为主要”可切换主要目录，主要目录始终排在首行。保存后作为相对路径的基准。'
+      ? '修改项目名称，添加或移除源文件夹。悬停文件夹可设为主要，主要目录始终排在首行。移除全部文件夹后仍保留项目和对话。'
       : '保持简短且易于识别',
 )
 function confirm(): void {
-  if (props.busy) return
+  if (blocked.value) return
   validationError.value = ''
   try {
     emit(
       'confirm',
       props.target.deleting ? props.target.name : parseName(name.value),
-      editingWorkspace.value && mainPath.value !== props.target.rootPath
-        ? mainPath.value
+      editingWorkspace.value && foldersChanged.value
+        ? {
+            rootPath: mainPath.value,
+            otherPaths: directories.value
+              .filter((folder) => folder.path !== mainPath.value)
+              .map((folder) => folder.path),
+            expectedFolders: originalFolders,
+          }
         : undefined,
+      selectionId,
     )
   } catch (error) {
     validationError.value = error instanceof Error ? error.message : '请检查名称。'
   }
-}
-async function selectMain(path: string, event: MouseEvent): Promise<void> {
-  if (props.busy) return
-  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('li') : null
-  mainPath.value = path
-  // 操作按钮切换为“主要”标记后，将焦点留在置顶后的目录行。
-  await nextTick()
-  if (row?.isConnected) row.focus({ preventScroll: true })
 }
 function initialFocus(event: Event): void {
   event.preventDefault()
@@ -111,7 +131,7 @@ watch(
 </script>
 
 <template>
-  <DialogRoot :open="true" @update:open="!$event && !busy && emit('close')">
+  <DialogRoot :open="true" @update:open="!$event && !blocked && emit('close')">
     <DialogPortal>
       <DialogOverlay
         class="fixed inset-0 z-40"
@@ -123,7 +143,7 @@ watch(
         class="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-3xl border bg-background p-5 shadow-lg"
         :class="editingWorkspace ? 'max-w-[520px]' : 'max-w-[420px]'"
         @interact-outside.prevent
-        @escape-key-down="busy && $event.preventDefault()"
+        @escape-key-down="blocked && $event.preventDefault()"
         @open-auto-focus="initialFocus"
         @close-auto-focus="restoreFocus"
       >
@@ -158,57 +178,22 @@ watch(
                 ref="nameInput"
                 v-model="name"
                 class="h-full min-w-0 flex-1 bg-transparent px-3 text-sm outline-none disabled:opacity-50"
-                :disabled="busy"
+                :disabled="blocked"
                 maxlength="1024"
                 required
                 autocomplete="off"
               />
             </div>
           </div>
-          <template v-if="editingWorkspace">
-            <p id="management-source-heading" class="mb-2 mt-3 text-sm font-medium">源文件夹</p>
-            <section
-              aria-labelledby="management-source-heading"
-              class="min-w-0 overflow-hidden rounded-xl border bg-card"
-            >
-              <ul class="min-w-0 divide-y">
-                <li
-                  v-for="directory in directories"
-                  :key="directory.path"
-                  class="group/folder flex h-12 min-w-0 items-center gap-2.5 px-3.5 focus-visible:outline-offset-[-2px]"
-                  :title="directory.path"
-                  :tabindex="directory.path === mainPath ? -1 : undefined"
-                  :aria-label="
-                    directory.path === mainPath ? `主要目录 ${directory.name}` : undefined
-                  "
-                >
-                  <div class="flex min-w-0 flex-1 items-center gap-2.5 text-sm">
-                    <FolderIcon
-                      class="size-4 shrink-0 text-muted-foreground/70"
-                      aria-hidden="true"
-                    />
-                    <span class="truncate">{{ directory.name }}</span>
-                  </div>
-                  <span
-                    v-if="directory.path === mainPath"
-                    class="shrink-0 rounded-[10px] border px-2.5 py-1 text-xs text-muted-foreground"
-                    >主要</span
-                  >
-                  <Button
-                    v-else
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    class="h-7 rounded-lg border px-2 font-normal text-foreground opacity-0 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100"
-                    :disabled="busy"
-                    :aria-label="`将 ${directory.name} 设为主要`"
-                    @click="selectMain(directory.path, $event)"
-                    >设为主要</Button
-                  >
-                </li>
-              </ul>
-            </section>
-          </template>
+          <ProjectFoldersField
+            v-if="editingWorkspace"
+            v-model:folders="directories"
+            v-model:main-path="mainPath"
+            :selection-id="selectionId"
+            :disabled="busy"
+            heading-id="management-source-heading"
+            @busy="foldersBusy = $event"
+          />
           <div v-else-if="target.rootPath" class="mt-4 space-y-1">
             <p class="text-xs text-muted-foreground">文件夹</p>
             <p class="break-all text-sm leading-6">{{ target.rootPath }}</p>
@@ -227,7 +212,7 @@ watch(
               variant="ghost"
               size="sm"
               class="mr-auto rounded-[10px] bg-destructive/10 px-4 text-destructive hover:bg-destructive/15 hover:text-destructive"
-              :disabled="busy"
+              :disabled="blocked"
               @click="emit('remove')"
               >移除本地项目</Button
             >
@@ -238,7 +223,7 @@ watch(
               size="sm"
               class="rounded-[10px] px-4"
               :class="editingWorkspace ? 'text-muted-foreground' : ''"
-              :disabled="busy"
+              :disabled="blocked"
               @click="emit('close')"
               >取消</Button
             >
@@ -248,7 +233,7 @@ watch(
               size="sm"
               class="gap-2 rounded-[10px] px-4"
               :class="target.deleting ? '' : 'bg-foreground text-background hover:bg-foreground/90'"
-              :disabled="busy"
+              :disabled="blocked"
               ><LoaderCircleIcon v-if="busy" class="size-3.5 animate-spin" aria-hidden="true" />{{
                 target.deleting ? '确认删除' : '保存'
               }}</Button
@@ -261,7 +246,7 @@ watch(
           size="icon"
           class="absolute right-3 top-3 size-7 text-muted-foreground"
           aria-label="关闭对话框"
-          :disabled="busy"
+          :disabled="blocked"
           @click="emit('close')"
           ><XIcon class="size-4" aria-hidden="true"
         /></Button>

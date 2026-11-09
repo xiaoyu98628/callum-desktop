@@ -182,7 +182,11 @@ onScopeDispose(() => {
           <div v-if="state.workspaceId" class="rounded-lg bg-muted/50 p-3">
             <p class="font-medium">当前项目</p>
             <p class="break-all text-muted-foreground">
-              {{ workspace?.rootPath ?? '项目详情尚未加载' }}
+              {{
+                workspace
+                  ? workspace.rootPath || '未添加文件夹，请使用绝对路径'
+                  : '项目详情尚未加载'
+              }}
             </p>
           </div>
           <div>

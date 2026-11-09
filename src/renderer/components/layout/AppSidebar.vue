@@ -11,7 +11,7 @@ import {
   SquarePenIcon,
 } from '@lucide/vue'
 import type { AppInfo } from '@shared/desktop-api'
-import type { Conversation, Workspace, WorkspaceInput } from '@shared/chat'
+import type { Conversation, Workspace, WorkspaceInput, WorkspaceChange } from '@shared/chat'
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import { useConversations } from '@/features/conversation/useConversations'
@@ -152,7 +152,11 @@ async function createProject(input: WorkspaceInput, selectionId: string): Promis
     managementError.value = error instanceof Error ? error.message : '无法创建项目，请重试。'
   }
 }
-async function confirmManagement(name: string, rootPath?: string): Promise<void> {
+async function confirmManagement(
+  name: string,
+  folders?: Omit<WorkspaceChange, 'name'>,
+  selectionId?: string,
+): Promise<void> {
   const target = managementTarget.value
   if (!target || state.managing) return
   managementError.value = ''
@@ -162,8 +166,7 @@ async function confirmManagement(name: string, rootPath?: string): Promise<void>
       else await renameConversation(target.id, name)
     } else if (target.id) {
       if (target.deleting) await deleteWorkspace(target.id)
-      else
-        await updateWorkspace(target.id, { name, ...(rootPath === undefined ? {} : { rootPath }) })
+      else await updateWorkspace(target.id, { name, ...folders }, selectionId)
     }
     managementTarget.value = null
   } catch (error) {

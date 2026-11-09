@@ -163,21 +163,39 @@ export function registerChatHandlers(
   )
   handle(IPC_CHANNELS.createWorkspace, 2, async (input, selectionId) => {
     const parsed = parseWorkspaceInput(input)
-    const current = selection
-    if (!current || current.id !== selectionId || choosingDirectory || creatingWorkspace)
+    const current = selection?.id === selectionId ? selection : null
+    if (
+      (parsed.rootPath && (!current || current.id !== selectionId)) ||
+      choosingDirectory ||
+      creatingWorkspace
+    )
       throw new Error('请重新选择项目文件夹。')
     creatingWorkspace = true
     try {
-      const workspace = await service.createWorkspace(parsed, current.paths)
+      const workspace = await service.createWorkspace(parsed, current?.paths ?? new Map())
       if (selection === current) selection = null
       return workspace
     } finally {
       creatingWorkspace = false
     }
   })
-  handle(IPC_CHANNELS.updateWorkspace, 2, (workspaceId, input) =>
-    service.updateWorkspace(id(workspaceId), parseWorkspaceChange(input)),
-  )
+  handle(IPC_CHANNELS.updateWorkspace, 3, async (workspaceId, input, selectionId) => {
+    const parsed = parseWorkspaceChange(input)
+    if (choosingDirectory || creatingWorkspace) throw new Error('正在处理文件夹，请稍候。')
+    const current = selection?.id === selectionId ? selection : null
+    creatingWorkspace = true
+    try {
+      const result = await service.updateWorkspace(
+        id(workspaceId),
+        parsed,
+        current?.paths ?? new Map(),
+      )
+      if (current && selection === current) selection = null
+      return result
+    } finally {
+      creatingWorkspace = false
+    }
+  })
   handle(IPC_CHANNELS.deleteWorkspace, 1, (workspaceId) => service.deleteWorkspace(id(workspaceId)))
   handle(IPC_CHANNELS.setWorkspacePinned, 2, (workspaceId, pinned) => {
     if (typeof pinned !== 'boolean') throw new Error('项目置顶状态无效')

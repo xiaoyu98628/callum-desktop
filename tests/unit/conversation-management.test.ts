@@ -78,12 +78,32 @@ test('会话与工作区输入按 UTF-8 限制名称，拒绝未知字段及发�
     rootPath: '/tmp/source',
   })
   assert.deepEqual(parseWorkspaceChange({ name: '仅改名' }), { name: '仅改名' })
+  assert.deepEqual(parseWorkspaceInput({ name: '无目录项目', rootPath: '' }), {
+    name: '无目录项目',
+    rootPath: '',
+  })
+  assert.deepEqual(
+    parseWorkspaceChange({
+      name: '清空目录',
+      rootPath: '',
+      otherPaths: [],
+      expectedFolders: ['/tmp/source'],
+    }),
+    {
+      name: '清空目录',
+      rootPath: '',
+      otherPaths: [],
+      expectedFolders: ['/tmp/source'],
+    },
+  )
   for (const value of [
     { name: '', rootPath: '/tmp' },
     { name: '项目', rootPath: '' },
     { name: '项目', rootPath: '/tmp\0' },
     { name: '项目', rootPath: null },
     { name: '项目', otherPaths: [] },
+    { name: '项目', rootPath: '', otherPaths: ['/tmp'], expectedFolders: [] },
+    { name: '项目', rootPath: '/tmp', otherPaths: [], expectedFolders: ['/tmp', '/tmp'] },
     { name: '项目', pinned: true },
   ])
     assert.throws(() => parseWorkspaceChange(value))
@@ -145,6 +165,38 @@ test(
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const restored = (await service.listWorkspaces(0)).workspaces[0]
       assert.deepEqual(restored, changed.workspace)
+      const snapshot = [changed.workspace.rootPath, ...changed.workspace.otherPaths]
+      await assert.rejects(
+        service.updateWorkspace(
+          created.id,
+          {
+            name: '未经选择的文件夹',
+            rootPath: await realpath(unbound),
+            otherPaths: [],
+            expectedFolders: snapshot,
+          },
+          new Map(),
+        ),
+        /选择器/,
+      )
+      const cleared = await service.updateWorkspace(
+        created.id,
+        { name: '已切换', rootPath: '', otherPaths: [], expectedFolders: snapshot },
+        new Map(),
+      )
+      assert.equal(cleared.workspace.rootPath, '')
+      assert.deepEqual(cleared.workspace.otherPaths, [])
+      await assert.rejects(
+        service.updateWorkspace(created.id, {
+          name: '旧快照',
+          rootPath: changed.workspace.rootPath,
+          otherPaths: changed.workspace.otherPaths,
+          expectedFolders: snapshot,
+        }),
+      )
+      await service.close()
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      assert.deepEqual((await service.listWorkspaces(0)).workspaces[0], cleared.workspace)
     } finally {
       await service?.close()
       await rm(profile, { recursive: true, force: true })
