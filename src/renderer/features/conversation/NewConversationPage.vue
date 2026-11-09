@@ -554,7 +554,10 @@ onScopeDispose(() => {
                 </div>
               </div>
               <MessageActions
-                v-if="state.editing?.messageId !== item.id"
+                v-if="
+                  state.editing?.messageId !== item.id &&
+                  (item.role === 'user' || activeRun?.id !== item.runId)
+                "
                 :message="item"
                 :editable="
                   item.role === 'user' &&

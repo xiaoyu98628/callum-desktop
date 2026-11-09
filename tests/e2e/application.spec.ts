@@ -9,7 +9,13 @@ import type { ElectronApplication, Page } from '@playwright/test'
 import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
-import { MARKDOWN_CODE, MARKDOWN_CODE_START, MARKDOWN_UNSAFE } from '../helpers/markdown-fixture'
+import {
+  MARKDOWN_CODE,
+  MARKDOWN_CODE_START,
+  MARKDOWN_END,
+  MARKDOWN_START,
+  MARKDOWN_UNSAFE,
+} from '../helpers/markdown-fixture'
 import { IPC_CHANNELS } from '../../src/shared/ipc-channels'
 import type { ChatResult, SendMessageInput, SendMessageResult } from '../../src/shared/chat'
 
@@ -458,10 +464,13 @@ test.describe('真实 Go 对话交互', () => {
     await input.press('Enter')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeDisabled()
-    await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
-    expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
+    await expect(answers.last()).toContainText('仅属于等待甲的内容')
+    const copyAnswer = answers.last().getByRole('button', { name: '复制回答', exact: true })
+    await expect(copyAnswer).toHaveCount(0)
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeEnabled()
+    await copyAnswer.click()
+    expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
     await input.focus()
     await input.hover()
     await page.screenshot({ path: '.artifacts/screenshots/message-actions-light.png' })
@@ -4204,13 +4213,17 @@ test.describe('Markdown 回答展示', () => {
     await input.fill('Markdown 流式\n# 用户消息保留原文')
     await input.press('Enter')
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
-    await expect(answer.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
+    const heading = answer.getByRole('heading', { name: 'Markdown 示例', exact: true })
+    const copyAnswer = answer.getByRole('button', { name: '复制回答', exact: true })
+    await expect(heading).toBeVisible()
     await expect(answer.locator('strong')).toHaveText('粗体')
     await expect(answer.locator('blockquote')).toContainText('引用内容')
     await expect(answer.locator('li')).toHaveCount(4)
     await expect(answer.locator('ul ul')).toHaveCount(1)
     await expect(answer.locator('code .hljs-keyword').first()).toHaveText('const')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
+    await heading.hover()
+    await expect(copyAnswer).toHaveCount(0)
     await expect(
       page.getByRole('article', { name: '你的消息', exact: true }).locator('h1'),
     ).toHaveCount(0)
@@ -4238,6 +4251,16 @@ test.describe('Markdown 回答展示', () => {
     expect(
       await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies),
     ).toEqual([MARKDOWN_CODE_START, MARKDOWN_CODE])
+    const actions = answer.getByRole('group', { name: '消息操作', exact: true })
+    await input.focus()
+    await input.hover()
+    await expect(actions).toHaveCSS('opacity', '0')
+    await heading.hover()
+    await expect(actions).toHaveCSS('opacity', '1')
+    await copyAnswer.click()
+    expect(
+      await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies.at(-1)),
+    ).toBe(MARKDOWN_START + MARKDOWN_END)
     await answer
       .getByRole('heading', { name: 'Markdown 示例', exact: true })
       .scrollIntoViewIfNeeded()
