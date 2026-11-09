@@ -1017,6 +1017,26 @@ test.describe('真实 Go 对话交互', () => {
     })
   })
 
+  test('沙箱内项目写入审批展示范围并只执行本次命令', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    await addTestWorkspace(desktop, page, profile, '受控命令项目')
+    const project = page.getByRole('region', { name: '受控命令项目', exact: true })
+    await project.getByRole('button', { name: '在受控命令项目中新建对话', exact: true }).click()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const panel = page.getByRole('region', { name: '工具审批', exact: true })
+    await input.fill('沙箱申请项目写入')
+    await input.press('Enter')
+    await expect(panel.getByText('沙箱内项目写入', { exact: true })).toBeVisible()
+    await expect(panel.getByText('可修改或删除项目内的文件', { exact: false })).toBeVisible()
+    const projectPath = await realpath(profile)
+    await expect(panel.locator('dd').filter({ hasText: projectPath }).first()).toBeVisible()
+    const target = join(profile, 'sandbox-write.txt')
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' })
+    await panel.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    await expect.poll(() => readFile(target, 'utf8').catch(() => '')).toBe('controlled')
+    await expect(panel).not.toBeVisible()
+  })
+
   test('会话目录写授权覆盖子目录、其他会话隔离并可撤销', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })

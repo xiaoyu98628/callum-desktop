@@ -479,7 +479,12 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                         sandbox_permissions: 'require_escalated',
                         justification: '验证本次受控沙箱外写入审批',
                       }
-                    : {}),
+                    : text.includes('申请项目写入')
+                      ? {
+                          sandbox_permissions: 'workspace_write',
+                          justification: '验证本次沙箱内项目写入审批',
+                        }
+                      : {}),
                 }),
               },
             },

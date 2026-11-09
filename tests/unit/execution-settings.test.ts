@@ -33,19 +33,29 @@ test('权限桥接拒绝未展示的权限、无效版本和审批人', () => {
   )
 })
 
-test('审批展示区分沙箱内危险确认和本次沙箱外执行', () => {
-  const summary = (sandboxed: boolean, escalated: boolean) =>
+test('审批展示区分只读、项目写入和沙箱外执行', () => {
+  const summary = (sandboxed: boolean, escalated: boolean, mode = 'workspace-write') =>
     approvalSummary(
       JSON.stringify({
         details: {
           executable: '/bin/pwd',
           cwd: '/project',
           justification: '受控原因',
-          execution_boundary: { sandboxed, escalated, sandbox_mode: 'workspace-write' },
+          execution_boundary: { sandboxed, escalated, sandbox_mode: mode },
+          writable_roots: mode === 'workspace-write' ? ['/project'] : [],
         },
       }),
     )
-  assert.match(summary(true, false).executionNotice ?? '', /仍在系统沙箱内/)
+  assert.match(summary(true, false, 'read-only').executionNotice ?? '', /只读沙箱/)
+  const project = summary(true, false)
+  assert.match(project.executionNotice ?? '', /可修改或删除项目内的文件/)
+  assert.deepEqual(
+    project.fields.find((field) => field.label === '可写项目'),
+    {
+      label: '可写项目',
+      value: '/project',
+    },
+  )
   assert.match(summary(false, true).executionNotice ?? '', /本次请求在沙箱外运行/)
   assert.match(summary(false, true).executionNotice ?? '', /不会保存/)
   assert.match(summary(false, false).executionNotice ?? '', /未使用系统沙箱/)
@@ -101,7 +111,23 @@ test(
       const initial = await service.executionSettings()
       assert.equal(initial.sandboxMode, 'workspace-write')
       assert.equal((await report('沙箱 pwd')).exit_code, 0)
-      assert.equal((await report('沙箱项目写入')).exit_code, 0)
+      assert.notEqual((await report('沙箱项目写入')).exit_code, 0)
+      const marker = join(profile, 'project', 'sandbox-write.txt')
+      await assert.rejects(readFile(marker))
+      const writing = await send('沙箱申请项目写入')
+      const writingDetail = await wait(writing.conversationId, (d) => d.approvals.length > 0)
+      const projectApproval = writingDetail.approvals[0]!
+      const summary = approvalSummary(projectApproval.snapshot)
+      assert.match(summary.executionNotice ?? '', /可修改或删除项目内的文件/)
+      assert.equal(
+        summary.fields.find((field) => field.label === '可写项目')?.value,
+        workspace.rootPath,
+      )
+      await assert.rejects(readFile(marker))
+      await service.decide(projectApproval.id, 'approved')
+      await wait(writing.conversationId, (d) =>
+        d.runs.some((r) => r.id === writing.runId && r.status === 'completed'),
+      )
       assert.equal(
         await readFile(join(profile, 'project', 'sandbox-write.txt'), 'utf8'),
         'controlled',

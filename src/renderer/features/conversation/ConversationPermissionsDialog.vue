@@ -102,7 +102,7 @@ onScopeDispose(() => {
       >
         <DialogTitle class="pr-8 text-base font-semibold">会话权限</DialogTitle>
         <DialogDescription class="mt-2 text-xs leading-6 text-muted-foreground">
-          沙箱与审批策略分别控制命令的访问范围和询问时机。下方默认设置影响所有会话的新任务，已受理任务保持原权限；额外目录授权仅关联当前会话。
+          命令默认使用只读沙箱。允许项目写入时，命令仍需单次审批。下方设置影响所有会话的新任务，已受理任务保持原权限。额外目录授权仅关联当前会话。
         </DialogDescription>
         <Button
           variant="ghost"
@@ -130,8 +130,10 @@ onScopeDispose(() => {
                   :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
                   @change="executionSaved = false"
                 >
-                  <option value="workspace-write">项目自动：项目内可读写，命令网络关闭</option>
-                  <option value="read-only">只读：读取可自动执行，修改需要审批</option>
+                  <option value="workspace-write">
+                    项目写入：普通项目补丁可自动执行，命令写入需审批
+                  </option>
+                  <option value="read-only">只读：文件修改需审批，命令使用只读沙箱</option>
                 </select>
               </label>
               <label class="block"
