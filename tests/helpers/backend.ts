@@ -1,6 +1,8 @@
-import { join } from 'node:path'
+import { join, relative, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
+import { realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveBackendExecutable } from '../../src/main/backend/chat-service.ts'
@@ -103,5 +105,40 @@ export async function seedModel(
     return id(model.id)
   } finally {
     await client.close()
+  }
+}
+
+/** 只回收当前临时配置拥有的系统主密钥；不枚举系统凭据。服务须先关闭。 */
+export async function cleanupTestCredentials(profile: string): Promise<void> {
+  const root = await realpath(tmpdir())
+  const actual = await realpath(profile)
+  const rel = relative(root, actual)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('只能清理临时测试配置的凭据')
+  let directory: string
+  try {
+    directory = await realpath(join(actual, 'backend'))
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+    throw error
+  }
+  const name = createHash('sha256').update(join(directory, 'callum.db')).digest('hex')
+  if (process.platform === 'darwin') {
+    try {
+      await promisify(execFile)(
+        '/usr/bin/security',
+        ['delete-generic-password', '-s', 'org.callum.credentials.v1', '-a', name],
+        { timeout: 5000, maxBuffer: 16384 },
+      )
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 44) return
+      throw error
+    }
+  } else if (process.platform === 'win32') {
+    const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class CallumTestCredential { [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CredDeleteW(string target,int type,int flags); }'; if (-not [CallumTestCredential]::CredDeleteW('org.callum.credentials.v1:${name}',1,0) -and [Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 1168) { throw '测试凭据清理失败' }`
+    await promisify(execFile)(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { timeout: 10000, maxBuffer: 16384 },
+    )
   }
 }

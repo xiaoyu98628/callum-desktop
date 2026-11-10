@@ -229,6 +229,15 @@ export interface ConversationDetail {
   userInputs: ChatUserInput[]
   revision: number
   warning: string | null
+  history?: { beforeRunId: string; hasMore: boolean }
+}
+/** 消息和独立执行共用游标，单页最多 25 个执行、50 条消息。 */
+export interface ConversationHistory {
+  messages: ChatMessage[]
+  runs: ChatRun[]
+  beforeRunId: string
+  hasMore: boolean
+  revision: number
 }
 export interface SendMessageInput {
   conversationId: string | null
@@ -699,7 +708,38 @@ export function parseDetail(value: unknown): ConversationDetail {
     userInputs: array(v.userInputs, parseUserInput),
     revision: integer(v.revision),
     warning: v.warning === null ? null : string(v.warning),
+    ...(v.history === undefined ? {} : { history: parseHistoryCursor(v.history) }),
   }
+}
+function parseHistoryCursor(value: unknown): { beforeRunId: string; hasMore: boolean } {
+  const v = record(value)
+  if (typeof v.hasMore !== 'boolean') throw new Error('历史分页格式无效')
+  return { beforeRunId: v.beforeRunId === '' ? '' : id(v.beforeRunId), hasMore: v.hasMore }
+}
+export function parseConversationHistory(value: unknown): ConversationHistory {
+  const v = record(value)
+  const cursor = parseHistoryCursor(v)
+  const messages = array(v.messages, parseMessage),
+    runs = array(v.runs, parseRun)
+  if (
+    messages.length > 50 ||
+    runs.length > 25 ||
+    (cursor.hasMore && !runs.length) ||
+    cursor.beforeRunId !== (runs[0]?.id ?? '') ||
+    runs.some(
+      (run, index) =>
+        (index > 0 && run.id <= runs[index - 1]!.id) ||
+        run.conversationId !== runs[0]?.conversationId,
+    ) ||
+    messages.some(
+      (message, index) =>
+        !runs.some(
+          (run) => run.id === message.runId && run.conversationId === message.conversationId,
+        ) || message.sequence <= (messages[index - 1]?.sequence ?? 0),
+    )
+  )
+    throw new Error('历史分页顺序或归属无效')
+  return { messages, runs, ...cursor, revision: integer(v.revision) }
 }
 export function parseCompactInput(value: unknown): CompactConversationInput {
   const v = record(value)

@@ -84,15 +84,20 @@ export function manualCompactionStatus(
 }
 
 /** UUIDv7 执行标识保留创建顺序；同一执行的用户和回答消息保持相邻。 */
-export function messageCompactions(messages: ChatMessage[], runs: ChatRun[]) {
+export function messageCompactions(
+  messages: ChatMessage[],
+  runs: ChatRun[],
+  range?: { oldestRunId: string; newestRunId: string },
+) {
   const rows = messages.map((message) => ({ message, compactions: [] as ChatRun[] }))
   const before: ChatRun[] = []
   for (const run of runs
     .filter((item) => item.compaction)
     .toSorted((a, b) => a.id.localeCompare(b.id))) {
+    if (range && (run.id < range.oldestRunId || run.id > range.newestRunId)) continue
     const row = rows.findLast((item) => item.message.runId.localeCompare(run.id) < 0)
     if (row) row.compactions.push(run)
-    else if (!messages.length || messages[0]?.sequence === 1) before.push(run)
+    else if (range || !messages.length || messages[0]?.sequence === 1) before.push(run)
   }
   return { before, rows }
 }

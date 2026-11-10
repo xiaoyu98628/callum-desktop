@@ -10,6 +10,7 @@ import type {
   ChatOverview,
   ChatResult,
   ConversationDetail,
+  ConversationHistory,
   Conversation,
   ConversationPage,
   ConversationUpdate,
@@ -85,6 +86,10 @@ export interface DesktopApi {
     conversationId: string,
     beforeSequence: number,
   ): Promise<ChatResult<ChatMessage[]>>
+  getConversationHistory(
+    conversationId: string,
+    beforeRunId: string,
+  ): Promise<ChatResult<ConversationHistory>>
   listRunSteps(
     conversationId: string,
     runId: string,

@@ -114,3 +114,9 @@ CALLUM_USER_DATA_DIR=/absolute/path/to/isolated-profile npm run dev
 ## 已知依赖审计项
 
 2026-11-04 检查：`npm audit --omit=dev` 无报告项。完整审计仍报告开发工具链中的 [minimatch 中危公告](https://github.com/advisories/GHSA-g3hv-75wg-m249)，关联 14 个开发依赖包。组件生成 CLI 已从常驻依赖中移除；未使用强制修复或跨主版本覆盖来改变检查工具的依赖契约，后续应随兼容的上游修复评估更新。
+
+## 系统凭据验证
+
+非空 API Key 需要当前用户可用的系统凭据库；保存和迁移失败会显示错误，不回退明文。后端的加密及平台要求见 [Go 服务接入](backend-integration.md#模型配置适配)。macOS 原生钥匙串读写已用随机专用条目验证；Windows 和 Linux 的原生凭据读写仍需对应环境验证，交叉编译不代表原生验收。
+
+Node / Electron 集成测试使用隔离临时目录。需要保存非空测试 API Key 的场景会创建该目录专属的系统主密钥，关闭服务后只删除该精确条目，不枚举、清理真实用户凭据。普通后端 Go 测试注入凭据替身。历史回归覆盖超过 200 轮的原执行读取、无消息压缩页、页边界和推理缓存容量；Electron 测试继续验证真实随附服务和桌面桥接。

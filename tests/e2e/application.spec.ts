@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { cleanupTestCredentials } from '../helpers/backend.ts'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,6 +45,7 @@ const test = base.extend<{
     try {
       await use(profile)
     } finally {
+      await cleanupTestCredentials(profile)
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   },
@@ -90,6 +92,10 @@ const test = base.extend<{
     }
   },
 })
+
+// 在声明阶段跳过非目标平台，避免为跳过的用例创建无须运行的应用资源。
+const testOnMacOS = process.platform === 'darwin' ? test : test.skip
+const testOnWindows = process.platform === 'win32' ? test : test.skip
 
 async function prepareManualCompaction(page: Page, title: string, turns = 6) {
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
@@ -176,6 +182,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'setConversationArchived',
     'listArchivedConversations',
     'getEarlierMessages',
+    'getConversationHistory',
     'listRunSteps',
     'getStepDetails',
     'sendMessage',
@@ -303,8 +310,7 @@ test('发布环境保持隔离、沙箱、CSP 和新窗口限制', async ({ desk
   )
 })
 
-test('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ desktop }) => {
-  test.skip(process.platform !== 'darwin', '仅验证 macOS 的应用激活行为')
+testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ desktop }) => {
   const page = await desktop.firstWindow()
   await expect(page.getByText('v0.1.0', { exact: true })).toBeVisible()
   await page.close()
@@ -1337,57 +1343,55 @@ test.describe('真实 Go 对话交互', () => {
     await page.screenshot({ path: '.artifacts/screenshots/conversation-compact.png' })
   })
 
-  test('macOS 关闭窗口保留执行，应用退出释放服务数据锁', async ({
-    desktop,
-    profile,
-    modelEndpoint,
-  }) => {
-    test.skip(process.platform !== 'darwin')
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('等待窗口恢复')
-    await input.press('Enter')
-    await expect(page.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
-    await page.close()
-    expect(modelEndpoint?.cancelled).toBe(0)
-    const nextWindow = desktop.waitForEvent('window')
-    await desktop.evaluate(({ app }) => {
-      app.emit('activate')
-    })
-    const reopened = await nextWindow
-    await reopened
-      .getByRole('region', { name: '最近', exact: true })
-      .getByRole('button', { name: '等待窗口恢复', exact: true })
-      .click()
-    await expect(reopened.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
-    await desktop.close()
-    // 同一目录能再次启动并写入，证明旧服务已释放实例锁；端点仍限定在本机。
-    if (!modelEndpoint) throw new Error('测试模型端点不存在')
-    expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
-  })
+  testOnMacOS(
+    'macOS 关闭窗口保留执行，应用退出释放服务数据锁',
+    async ({ desktop, profile, modelEndpoint }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('等待窗口恢复')
+      await input.press('Enter')
+      await expect(page.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
+      await page.close()
+      expect(modelEndpoint?.cancelled).toBe(0)
+      const nextWindow = desktop.waitForEvent('window')
+      await desktop.evaluate(({ app }) => {
+        app.emit('activate')
+      })
+      const reopened = await nextWindow
+      await reopened
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: '等待窗口恢复', exact: true })
+        .click()
+      await expect(reopened.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
+      await desktop.close()
+      // 同一目录能再次启动并写入，证明旧服务已释放实例锁；端点仍限定在本机。
+      if (!modelEndpoint) throw new Error('测试模型端点不存在')
+      expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
+    },
+  )
 
-  test('Windows 关闭最后窗口取消执行、退出应用并释放服务数据锁', async ({
-    desktop,
-    profile,
-    modelEndpoint,
-  }) => {
-    test.skip(process.platform !== 'win32', '验证 Windows 关闭最后窗口时的退出语义')
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('等待窗口退出')
-    await input.press('Enter')
-    await expect(page.getByText('仅属于等待窗口退出的内容', { exact: true })).toBeVisible()
-    const closing = desktop.waitForEvent('close')
-    await page.close()
-    await closing
-    await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
-    if (!modelEndpoint) throw new Error('测试模型端点不存在')
-    expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
-  })
+  testOnWindows(
+    'Windows 关闭最后窗口取消执行、退出应用并释放服务数据锁',
+    async ({ desktop, profile, modelEndpoint }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('等待窗口退出')
+      await input.press('Enter')
+      await expect(page.getByText('仅属于等待窗口退出的内容', { exact: true })).toBeVisible()
+      const closing = desktop.waitForEvent('close')
+      await page.close()
+      await closing
+      await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
+      if (!modelEndpoint) throw new Error('测试模型端点不存在')
+      expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
+    },
+  )
 
-  test('消息历史按真实序号向前翻页，并可返回最新页面', async ({ desktop }) => {
+  test('超过 200 轮的历史保留执行状态，逐页回读后可返回最新页面', async ({ desktop }) => {
+    // 实际生成并持久化 205 轮，验证旧执行而非只测试协议替身。
+    test.setTimeout(60_000)
     const page = await desktop.firstWindow()
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
     await page.evaluate(async () => {
@@ -1395,7 +1399,7 @@ test.describe('真实 Go 对话交互', () => {
       if (!overview.ok || !overview.value.models[0]) throw new Error('测试模型不存在')
       const modelId = overview.value.models[0].id
       let conversationId: string | null = null
-      for (let index = 0; index < 26; index++) {
+      for (let index = 0; index < 205; index++) {
         const accepted = await window.callum.sendMessage({
           conversationId,
           modelId,
@@ -1421,12 +1425,17 @@ test.describe('真实 Go 对话交互', () => {
       .getByRole('button', { name: '分页-0', exact: true })
       .click()
     const messages = page.getByLabel('消息记录', { exact: true })
-    await expect(messages.getByText('分页-1', { exact: true })).toBeVisible()
+    await expect(messages.getByText('分页-180', { exact: true })).toBeVisible()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
-    await page.getByRole('button', { name: '更早的消息', exact: true }).click()
+    for (let oldest = 155; oldest >= 0; oldest = Math.max(0, oldest - 25)) {
+      await page.getByRole('button', { name: '更早的消息', exact: true }).click()
+      await expect(messages.getByText(`分页-${oldest}`, { exact: true })).toBeVisible()
+      if (oldest === 0) break
+    }
+    await expect(messages.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(5)
     await expect(messages.getByText('分页-0', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
-    await expect(messages.getByText('分页-25', { exact: true })).toBeInViewport()
+    await expect(messages.getByText('分页-204', { exact: true })).toBeInViewport()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
   })
 
@@ -4577,7 +4586,7 @@ test.describe('Markdown 回答展示', () => {
     })
     const sidebar = page.getByRole('region', { name: '最近', exact: true })
     const conversation = sidebar.locator('button[aria-current="page"]')
-    const title = await conversation.getAttribute('title')
+    const title = (await conversation.innerText()).trim()
     if (!title) throw new Error('会话标题不存在')
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await page.getByText('深色', { exact: true }).click()

@@ -60,7 +60,15 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
-const messageTimeline = computed(() => messageCompactions(messages.value, state.detail?.runs ?? []))
+const messageTimeline = computed(() => {
+  const runs = state.detail?.runs ?? []
+  const ids = runs.map((run) => run.id).toSorted()
+  return messageCompactions(
+    messages.value,
+    runs,
+    ids.length ? { oldestRunId: ids[0]!, newestRunId: ids.at(-1)! } : undefined,
+  )
+})
 const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
 )
@@ -504,7 +512,7 @@ onScopeDispose(() => {
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
         <div
-          v-if="state.selectedId && !state.loading && (messages[0]?.sequence ?? 0) > 1"
+          v-if="state.selectedId && !state.loading && state.detail?.history?.hasMore"
           class="mb-4 flex justify-center"
         >
           <Button
