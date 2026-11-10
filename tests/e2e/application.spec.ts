@@ -4195,6 +4195,29 @@ test.describe('Markdown 回答展示', () => {
           Math.abs(element.scrollHeight - element.scrollTop - element.clientHeight),
         )
       await expect.poll(distanceFromBottom).toBeLessThan(1)
+      const composer = page.locator('[data-conversation-composer]')
+      const runningIndicator = composer.getByRole('button', { name: '正在执行', exact: true })
+      const dots = runningIndicator.locator('.conversation-progress-dots > span')
+      await expect(runningIndicator).toBeDisabled()
+      await expect(dots).toHaveCount(3)
+      await expect(dots.first()).toHaveCSS('animation-iteration-count', 'infinite')
+      expect(
+        new Set(
+          await dots.evaluateAll((items) =>
+            items.map((dot) => getComputedStyle(dot).animationDelay),
+          ),
+        ).size,
+      ).toBe(3)
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await expect(dots.first()).toHaveCSS('animation-name', 'none')
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
+      const indicatorBounds = (await runningIndicator.boundingBox())!
+      const inputArea = (await composer.boundingBox())!
+      expect(indicatorBounds.x + indicatorBounds.width / 2).toBeCloseTo(
+        inputArea.x + inputArea.width / 2,
+      )
+      expect(indicatorBounds.y + indicatorBounds.height).toBeLessThan(inputArea.y)
+
       await scroller.evaluate((element) => {
         element.scrollTop = 120
       })
@@ -4202,14 +4225,23 @@ test.describe('Markdown 回答展示', () => {
       modelEndpoint.appendStream('\n\n阅读期间的新段落。'.repeat(15))
       await expect(answer).toContainText('阅读期间的新段落。')
       await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(120)
-      await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
+      const latest = composer.getByRole('button', { name: '回到最新消息', exact: true })
+      await expect(latest.locator('.conversation-progress-dots > span')).toHaveCount(3)
+      await latest.click()
       await expect.poll(distanceFromBottom).toBeLessThan(1)
+      await scroller.evaluate((element) => {
+        element.scrollTop = 120
+      })
+      await expect(latest).toBeEnabled()
       modelEndpoint.finishStream()
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
+      await expect(latest.locator('svg')).toBeVisible()
+      await latest.press('Enter')
+      await expect.poll(distanceFromBottom).toBeLessThan(1)
+      await expect(latest).toHaveCount(0)
       await expect(answer.locator('pre')).toHaveCount(12)
       await page.evaluate(() => Reflect.get(window, 'stopStreamObservation')())
 
-      const composer = page.locator('[data-conversation-composer]')
       const viewportBounds = (await scroller.boundingBox())!
       const composerBounds = (await composer.boundingBox())!
       expect(viewportBounds.y + viewportBounds.height).toBeCloseTo(

@@ -170,6 +170,18 @@ let inputResizeFrame: number | undefined
 let conversationResizeObserver: ResizeObserver | undefined
 const follow = ref(true)
 const awayFromLatest = ref(false)
+const canReturnToLatest = computed(
+  () =>
+    !!state.selectedId &&
+    !state.loading &&
+    (state.historical || (!follow.value && awayFromLatest.value)),
+)
+const showRunningIndicator = computed(
+  () =>
+    !state.loading &&
+    !state.serviceError &&
+    (activeRun.value?.status === 'pending' || activeRun.value?.status === 'running'),
+)
 const availableModel = computed(() => state.models.some((item) => item.id === state.modelId))
 const composerNotice = computed(() =>
   state.loadingList || state.modelsLoading
@@ -459,20 +471,11 @@ onScopeDispose(() => {
     class="conversation-page relative flex h-full min-h-0 flex-col justify-end"
     aria-label="对话内容"
   >
-    <Button
-      v-if="state.selectedId && !follow && awayFromLatest && !state.historical"
-      variant="outline"
-      size="sm"
-      class="absolute right-8 top-3 z-10 gap-1.5 rounded-full shadow-sm"
-      aria-label="回到最新消息"
-      @click="showLatest"
-    >
-      <ArrowDownIcon class="size-4" aria-hidden="true" />回到最新消息
-    </Button>
     <div
       ref="scroller"
       data-conversation-scroll
       :data-scrolling="scrollbarVisible ? '' : undefined"
+      :data-running="showRunningIndicator ? '' : undefined"
       class="absolute inset-0 overflow-y-auto px-6 pt-6 [overflow-anchor:none] lg:px-12"
       @scroll="trackScroll"
       @wheel.passive="stopFollowing"
@@ -501,23 +504,15 @@ onScopeDispose(() => {
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
         <div
-          v-if="
-            state.selectedId &&
-            !state.loading &&
-            ((messages[0]?.sequence ?? 0) > 1 || state.historical)
-          "
-          class="mb-4 flex justify-center gap-3"
+          v-if="state.selectedId && !state.loading && (messages[0]?.sequence ?? 0) > 1"
+          class="mb-4 flex justify-center"
         >
           <Button
-            v-if="messages[0] && messages[0].sequence > 1"
             variant="ghost"
             size="sm"
             :disabled="!!state.editing || state.resending"
             @click="earlier"
             >更早的消息</Button
-          >
-          <Button v-if="state.historical" variant="outline" size="sm" @click="showLatest"
-            >回到最新消息</Button
           >
         </div>
         <div class="space-y-4" aria-label="消息记录">
@@ -682,6 +677,26 @@ onScopeDispose(() => {
       data-conversation-composer
       class="relative z-10 me-[var(--conversation-scrollbar-width)] shrink-0 bg-background px-6 pb-3 lg:px-12"
     >
+      <Button
+        v-if="canReturnToLatest || showRunningIndicator"
+        type="button"
+        variant="outline"
+        size="icon-sm"
+        class="absolute bottom-full left-1/2 mb-1.5 -translate-x-1/2 rounded-full bg-card shadow-none disabled:opacity-100 dark:bg-card"
+        :aria-label="canReturnToLatest ? '回到最新消息' : '正在执行'"
+        :title="canReturnToLatest ? '回到最新消息' : undefined"
+        :disabled="!canReturnToLatest"
+        @click="showLatest"
+      >
+        <span
+          v-if="showRunningIndicator"
+          class="conversation-progress-dots flex items-center gap-1 text-muted-foreground"
+          aria-hidden="true"
+        >
+          <span v-for="dot in 3" :key="dot" class="size-1 rounded-full bg-current" />
+        </span>
+        <ArrowDownIcon v-else class="size-4" aria-hidden="true" />
+      </Button>
       <ApprovalComposer
         v-if="currentApproval"
         :key="currentApproval.id"
@@ -874,13 +889,44 @@ onScopeDispose(() => {
 }
 
 [data-conversation-scroll] {
+  --conversation-bottom-inset: calc(
+    var(--conversation-composer-height, 0px) + var(--conversation-indicator-inset, 0px)
+  );
   scrollbar-gutter: stable;
-  scroll-padding-bottom: var(--conversation-composer-height, 0px);
+  scroll-padding-bottom: var(--conversation-bottom-inset);
   transition: --conversation-scrollbar-thumb 180ms ease-out;
 }
 
+[data-conversation-scroll][data-running] {
+  --conversation-indicator-inset: 2.375rem;
+}
+
 .conversation-messages {
-  padding-bottom: calc(1rem + var(--conversation-composer-height, 0px));
+  padding-bottom: calc(1rem + var(--conversation-bottom-inset));
+}
+
+.conversation-progress-dots > span {
+  animation: conversation-progress-dot 1.2s ease-in-out infinite both;
+}
+
+.conversation-progress-dots > span:nth-child(2) {
+  animation-delay: 160ms;
+}
+
+.conversation-progress-dots > span:nth-child(3) {
+  animation-delay: 320ms;
+}
+
+@keyframes conversation-progress-dot {
+  0%,
+  65%,
+  100% {
+    opacity: 0.35;
+  }
+
+  30% {
+    opacity: 1;
+  }
 }
 
 [data-conversation-scroll][data-scrolling] {
