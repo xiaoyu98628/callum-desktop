@@ -78,6 +78,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: ContentBlock[]
   status: string
+  createdAt: number | null
+  completedAt: number | null
 }
 export type RunStatus =
   | 'pending'
@@ -432,7 +434,15 @@ export function parseMessage(value: unknown): ChatMessage {
       return { type: string(b.type), text: string(b.text), path: string(b.path) }
     }),
     status: string(v.status),
+    createdAt: messageTimestamp(v.createdAt),
+    completedAt: messageTimestamp(v.completedAt),
   }
+}
+function messageTimestamp(value: unknown): number | null {
+  if (value === undefined || value === null) return null
+  const time = integer(value)
+  if (time > 8_640_000_000_000_000) throw new Error('消息时间无效')
+  return time
 }
 export function parseRun(value: unknown): ChatRun {
   const v = record(value)

@@ -34,6 +34,8 @@ export interface AppInfo {
   name: string
   version: string
   platform: 'darwin' | 'win32' | 'linux'
+  /** 主进程读取的真实用户目录，用于路径显示。 */
+  homeDirectory: string
 }
 
 /** 应用持有的服务生命周期；失败与正常关闭分别展示。 */
@@ -155,11 +157,19 @@ export function parseAppInfo(value: unknown): AppInfo {
     !('version' in value) ||
     typeof value.version !== 'string' ||
     value.version.length === 0 ||
+    !('homeDirectory' in value) ||
+    typeof value.homeDirectory !== 'string' ||
+    value.homeDirectory.length === 0 ||
     !('platform' in value) ||
     (value.platform !== 'darwin' && value.platform !== 'win32' && value.platform !== 'linux')
   ) {
     throw new Error('无效的应用信息')
   }
 
-  return { name: value.name, version: value.version, platform: value.platform }
+  return {
+    name: value.name,
+    version: value.version,
+    platform: value.platform,
+    homeDirectory: value.homeDirectory,
+  }
 }

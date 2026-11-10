@@ -217,6 +217,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   ])
   expect(bridge.info.name).toBe('Callum')
   expect(bridge.info.version).toBe('0.1.0')
+  expect(bridge.info.homeDirectory).toBe(await desktop.evaluate(({ app }) => app.getPath('home')))
   expect(await page.evaluate(() => window.callum.getServiceState())).toEqual({ status: 'ready' })
   expect(await desktop.evaluate(({ app }) => app.getPath('userData'))).toContain(
     'callum-desktop-e2e-',
@@ -593,6 +594,21 @@ test.describe('真实 Go 对话交互', () => {
     const copyQuestion = users.first().getByRole('button', { name: '复制提问', exact: true })
     const questionActions = users.first().getByRole('group', { name: '消息操作', exact: true })
     const answerActions = answers.first().getByRole('group', { name: '消息操作', exact: true })
+    const questionTime = questionActions.locator('time'),
+      answerTime = answerActions.locator('time')
+    await expect(questionTime).toHaveAttribute('aria-label', '发送时间')
+    await expect(answerTime).toHaveAttribute('aria-label', '完成时间')
+    await expect(questionTime).toHaveText(/^\d{2}:\d{2}$/)
+    const savedTimes = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.conversations[0]) throw new Error('会话不存在')
+      const detail = await window.callum.getConversation(overview.value.conversations[0].id)
+      if (!detail.ok) throw new Error(detail.error)
+      return detail.value.messages.map((message) => message.completedAt)
+    })
+    expect(savedTimes.every((time) => time !== null)).toBe(true)
+    await expect(questionTime).toHaveAttribute('datetime', new Date(savedTimes[0]!).toISOString())
+    await expect(answerTime).toHaveAttribute('datetime', new Date(savedTimes[1]!).toISOString())
     await input.focus()
     await input.hover()
     await expect(questionActions).toHaveCSS('opacity', '0')
@@ -601,8 +617,16 @@ test.describe('真实 Go 对话交互', () => {
     await users.first().hover()
     await expect(questionActions).toHaveCSS('opacity', '1')
     await expect(answerActions).toHaveCSS('opacity', '0')
+    await questionTime.hover()
+    await expect(page.getByRole('tooltip')).toContainText('发送时间')
+    await expect(page.getByRole('tooltip')).toContainText(
+      /\d{4}年\d{1,2}月\d{1,2}日.*\d{2}:\d{2}:\d{2}/,
+    )
+    await page.screenshot({ path: '.artifacts/screenshots/message-time-tooltip.png' })
     await answers.first().hover()
     await expect(answerActions).toHaveCSS('opacity', '1')
+    await answerTime.hover()
+    await expect(page.getByRole('tooltip')).toContainText('完成时间')
     await expect(questionActions).toHaveCSS('opacity', '0')
     await input.hover()
     await expect(answerActions).toHaveCSS('opacity', '0')
@@ -704,6 +728,8 @@ test.describe('真实 Go 对话交互', () => {
     await expect(users.last()).toContainText('修正后的最后一条提问')
     await expect(answers.last()).toContainText('你好，这是受控回答。')
     await expect(input).toHaveValue('普通输入草稿')
+    const resentTime = await users.last().locator('time').getAttribute('datetime')
+    const answerCompleted = await answers.last().locator('time').getAttribute('datetime')
     await page.reload()
     await page
       .getByRole('region', { name: '最近', exact: true })
@@ -712,6 +738,8 @@ test.describe('真实 Go 对话交互', () => {
     await expect(users.last()).toContainText('修正后的最后一条提问')
     await expect(answers).toHaveCount(2)
     await expect(answers.last()).toContainText('你好，这是受控回答。')
+    await expect(users.last().locator('time')).toHaveAttribute('datetime', resentTime!)
+    await expect(answers.last().locator('time')).toHaveAttribute('datetime', answerCompleted!)
     await input.fill('等待甲')
     await input.press('Enter')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
@@ -719,9 +747,11 @@ test.describe('真实 Go 对话交互', () => {
     await expect(answers.last()).toContainText('仅属于等待甲的内容')
     const copyAnswer = answers.last().getByRole('button', { name: '复制回答', exact: true })
     await expect(copyAnswer).toHaveCount(0)
+    await expect(answers.last().locator('time')).toHaveCount(0)
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeEnabled()
     await copyAnswer.click()
+    await expect(answers.last().locator('time')).toHaveAttribute('aria-label', '创建时间')
     expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
     await input.focus()
     await input.hover()
@@ -1935,10 +1965,21 @@ test.describe('会话与项目管理', () => {
 
   test('项目与会话悬停卡片展示现有资料，支持操作、键盘和细滚动条', async ({ desktop, profile }) => {
     const page = await desktop.firstWindow()
+    await expect(page.getByRole('button', { name: '添加项目', exact: true })).toBeEnabled()
+    await desktop.evaluate(
+      ({ app }, homeDirectory) => {
+        const getPath = app.getPath.bind(app)
+        Reflect.set(app, 'getPath', (name: Parameters<typeof app.getPath>[0]) =>
+          name === 'home' ? homeDirectory : getPath(name),
+        )
+      },
+      await realpath(profile),
+    )
+    await page.reload()
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     const folder = join(profile, 'hover-primary'),
-      otherFolder = join(profile, 'hover-secondary')
+      otherFolder = join(profile, 'hover-secondary-' + 'long-source-folder-'.repeat(4))
     await Promise.all([mkdir(folder), mkdir(otherFolder)])
     await chooseTestDirectory(desktop, [folder, otherFolder])
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
@@ -1952,8 +1993,19 @@ test.describe('会话与项目管理', () => {
     const preview = page.getByRole('dialog', { name: '项目预览', exact: true })
     await row.hover()
     await expect(preview).toBeVisible()
-    await expect(preview).toContainText(await realpath(folder))
-    await expect(preview).toContainText(await realpath(otherFolder))
+    await expect(preview).toContainText('~/hover-primary')
+    const paths = preview.locator('[data-project-path]')
+    const longPath = paths.nth(1)
+    await expect(longPath).toHaveText('~/hover-secondary-' + 'long-source-folder-'.repeat(4))
+    await expect(longPath).toHaveCSS('text-overflow', 'ellipsis')
+    expect(await longPath.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+      true,
+    )
+    expect(
+      await longPath.evaluate((element) => element.getBoundingClientRect().height),
+    ).toBeLessThanOrEqual(20)
+    await longPath.hover()
+    await expect(page.getByRole('tooltip')).toContainText(await realpath(otherFolder))
     await expect(preview).not.toContainText('次聊天')
     const rowBounds = (await row.boundingBox())!,
       previewBounds = (await preview.boundingBox())!
@@ -1974,6 +2026,11 @@ test.describe('会话与项目管理', () => {
     await expect(row).toBeFocused()
     await row.press('ArrowRight')
     await expect(preview.getByRole('button', { name: '取消项目置顶', exact: true })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(paths.first()).toBeFocused()
+    await expect(page.getByRole('tooltip')).toContainText(await realpath(folder))
+    await page.keyboard.press('Tab')
+    await expect(paths.last()).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(preview.getByRole('button', { name: '编辑项目', exact: true })).toBeFocused()
     await page.keyboard.press('Escape')

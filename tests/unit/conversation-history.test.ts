@@ -187,6 +187,8 @@ test('消息窗口按整轮淘汰，不留下缺少提问的回答', () => {
     role: n % 2 ? ('assistant' as const) : ('user' as const),
     content: [],
     status: 'completed' as const,
+    createdAt: null,
+    completedAt: null,
   }))
   const retained = boundMessages(messages)
   assert.equal(retained.length, 200)

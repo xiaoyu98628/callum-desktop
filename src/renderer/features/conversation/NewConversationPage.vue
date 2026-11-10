@@ -126,6 +126,8 @@ const messageRuns = computed(() => {
   return result
 })
 const scroller = ref<HTMLElement | null>(null)
+const messageTimeNow = ref(Date.now())
+let messageTimeTimer: number | undefined
 const composer = ref<HTMLElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
@@ -435,6 +437,9 @@ watch(
   },
 )
 onMounted(() => {
+  messageTimeTimer = window.setInterval(() => {
+    messageTimeNow.value = Date.now()
+  }, 60_000)
   resizeMessageInput()
   let previousWidth = 0
   inputResizeObserver = new ResizeObserver((entries) => {
@@ -466,6 +471,7 @@ onMounted(() => {
   void scrollToBottom()
 })
 onScopeDispose(() => {
+  window.clearInterval(messageTimeTimer)
   window.clearTimeout(scrollbarTimer)
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   inputResizeObserver?.disconnect()
@@ -590,6 +596,7 @@ onScopeDispose(() => {
                   (item.role === 'user' || activeRun?.id !== item.runId)
                 "
                 :message="item"
+                :now="messageTimeNow"
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&

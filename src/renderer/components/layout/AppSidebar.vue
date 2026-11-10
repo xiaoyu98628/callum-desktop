@@ -421,6 +421,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                   <SidebarHoverCard
                     v-slot="{ triggerEvents }"
                     :item="workspace"
+                    :home-directory="appInfo?.homeDirectory ?? ''"
                     :disabled="state.managing || !!state.serviceError"
                     :suspended="
                       !!managementTarget || creatingProject || state.archivesOpen || !projectsOpen

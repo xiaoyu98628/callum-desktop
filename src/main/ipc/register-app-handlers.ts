@@ -32,7 +32,12 @@ export function registerAppHandlers(
   }
   ipcMain.handle(IPC_CHANNELS.getAppInfo, (event, ...args: unknown[]) => {
     if (!validSource(event, args, 0)) throw new Error('拒绝无效的应用信息请求')
-    return parseAppInfo({ name: app.name, version: app.getVersion(), platform: process.platform })
+    return parseAppInfo({
+      name: app.name,
+      version: app.getVersion(),
+      platform: process.platform,
+      homeDirectory: app.getPath('home'),
+    })
   })
   ipcMain.handle(IPC_CHANNELS.getServiceState, (event, ...args: unknown[]) => {
     if (!validSource(event, args, 0)) throw new Error('拒绝无效的服务状态请求')

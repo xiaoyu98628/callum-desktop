@@ -35,12 +35,14 @@ describe('桌面通信契约', () => {
         name: 'Callum',
         version: '0.1.0',
         platform: 'darwin',
+        homeDirectory: '/Users/tester',
         privatePath: '/private',
       }),
       {
         name: 'Callum',
         version: '0.1.0',
         platform: 'darwin',
+        homeDirectory: '/Users/tester',
       },
     )
   })
@@ -52,9 +54,12 @@ describe('桌面通信契约', () => {
       [],
       'Callum',
       {},
-      { name: 'Callum', version: 1, platform: 'darwin' },
-      { name: '', version: '0.1.0', platform: 'linux' },
-      { name: 'Callum', version: '0.1.0', platform: 'unknown' },
+      { name: 'Callum', version: 1, platform: 'darwin', homeDirectory: '/Users/tester' },
+      { name: '', version: '0.1.0', platform: 'linux', homeDirectory: '/home/tester' },
+      { name: 'Callum', version: '0.1.0', platform: 'unknown', homeDirectory: '/Users/tester' },
+      { name: 'Callum', version: '0.1.0', platform: 'darwin' },
+      { name: 'Callum', version: '0.1.0', platform: 'darwin', homeDirectory: 1 },
+      { name: 'Callum', version: '0.1.0', platform: 'darwin', homeDirectory: '' },
     ]) {
       assert.throws(() => parseAppInfo(value))
     }
