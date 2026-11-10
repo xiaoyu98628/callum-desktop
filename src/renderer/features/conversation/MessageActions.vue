@@ -18,6 +18,7 @@ const props = defineProps<{
   message: ChatMessage
   editable: boolean
   editDisabled: boolean
+  alwaysShowCopy: boolean
   now: number
 }>()
 defineEmits<{ edit: [] }>()
@@ -77,7 +78,12 @@ onScopeDispose(() => {
     <div
       role="group"
       aria-label="消息操作"
-      class="flex items-center gap-0.5 opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+      class="flex items-center gap-0.5"
+      :class="
+        alwaysShowCopy
+          ? ''
+          : 'opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100'
+      "
     >
       <Button
         type="button"
@@ -115,7 +121,7 @@ onScopeDispose(() => {
               tabindex="0"
               :datetime="new Date(timestamp.value).toISOString()"
               :aria-label="timestamp.label"
-              class="ml-1.5 inline-flex min-h-7 cursor-default items-center rounded px-1 text-xs font-normal tabular-nums text-muted-foreground/70 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              class="ml-1.5 inline-flex min-h-7 cursor-default items-center rounded px-1 text-xs font-normal tabular-nums text-muted-foreground/70 opacity-0 outline-none group-hover/message:opacity-100 group-focus-within/message:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50"
               >{{ formatMessageTime(timestamp.value, now) }}</time
             >
           </TooltipTrigger>

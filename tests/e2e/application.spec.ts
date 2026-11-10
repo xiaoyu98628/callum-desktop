@@ -612,11 +612,18 @@ test.describe('真实 Go 对话交互', () => {
     await input.focus()
     await input.hover()
     await expect(questionActions).toHaveCSS('opacity', '0')
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answers.first().getByRole('button', { name: '复制回答', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answerTime).toHaveCSS('opacity', '0')
+    await answerActions.screenshot({ path: '.artifacts/screenshots/latest-answer-actions.png' })
     const questionHeight = await users.first().evaluate((element) => element.clientHeight)
     await users.first().hover()
     await expect(questionActions).toHaveCSS('opacity', '1')
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '0')
     await questionTime.hover()
     await expect(page.getByRole('tooltip')).toContainText('发送时间')
     await expect(page.getByRole('tooltip')).toContainText(
@@ -625,11 +632,16 @@ test.describe('真实 Go 对话交互', () => {
     await page.screenshot({ path: '.artifacts/screenshots/message-time-tooltip.png' })
     await answers.first().hover()
     await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '1')
+    await answerActions.screenshot({
+      path: '.artifacts/screenshots/latest-answer-actions-hover.png',
+    })
     await answerTime.hover()
     await expect(page.getByRole('tooltip')).toContainText('完成时间')
     await expect(questionActions).toHaveCSS('opacity', '0')
     await input.hover()
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '0')
     expect(await users.first().evaluate((element) => element.clientHeight)).toBe(questionHeight)
     await copyQuestion.focus()
     await expect(questionActions).toHaveCSS('opacity', '1')
@@ -655,6 +667,18 @@ test.describe('真实 Go 对话交互', () => {
     await input.press('Enter')
     await expect(answers).toHaveCount(2)
     await expect(input).toBeEnabled()
+    await input.focus()
+    await input.hover()
+    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
+    await answers.first().hover()
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await input.hover()
+    await expect(answerActions).toHaveCSS('opacity', '0')
     await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
     expect((await copies()).at(-1)).toBe(MARKDOWN_UNSAFE)
     await desktop.evaluate(() => {
@@ -666,8 +690,9 @@ test.describe('真实 Go 对话交互', () => {
     await input.hover()
     await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
       'opacity',
-      '0',
+      '1',
     )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await expect(answers.last().getByRole('alert')).toBeVisible()
     await desktop.evaluate(() => {
       Reflect.get(globalThis, 'messageActionsTest').fail = false
@@ -740,11 +765,22 @@ test.describe('真实 Go 对话交互', () => {
     await expect(answers.last()).toContainText('你好，这是受控回答。')
     await expect(users.last().locator('time')).toHaveAttribute('datetime', resentTime!)
     await expect(answers.last().locator('time')).toHaveAttribute('datetime', answerCompleted!)
+    await input.focus()
+    await input.hover()
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await input.fill('等待甲')
     await input.press('Enter')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeDisabled()
     await expect(answers.last()).toContainText('仅属于等待甲的内容')
+    await expect(answers.nth(1).getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '0',
+    )
     const copyAnswer = answers.last().getByRole('button', { name: '复制回答', exact: true })
     await expect(copyAnswer).toHaveCount(0)
     await expect(answers.last().locator('time')).toHaveCount(0)
@@ -755,6 +791,11 @@ test.describe('真实 Go 对话交互', () => {
     expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
     await input.focus()
     await input.hover()
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '0',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await page.screenshot({ path: '.artifacts/screenshots/message-actions-light.png' })
     await users.last().hover()
     await page.screenshot({ path: '.artifacts/screenshots/message-actions-hover.png' })
@@ -1698,11 +1739,23 @@ test.describe('真实 Go 对话交互', () => {
       .getByRole('button', { name: '分页-0', exact: true })
       .click()
     const messages = page.getByLabel('消息记录', { exact: true })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const lastAnswerActions = messages
+      .getByRole('article', { name: 'Callum 的回答', exact: true })
+      .last()
+      .getByRole('group', { name: '消息操作', exact: true })
     await expect(messages.getByText('分页-180', { exact: true })).toBeVisible()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
+    await input.focus()
+    await input.hover()
+    await expect(lastAnswerActions).toHaveCSS('opacity', '1')
+    await expect(lastAnswerActions.locator('time')).toHaveCSS('opacity', '0')
     for (let oldest = 155; oldest >= 0; oldest = Math.max(0, oldest - 25)) {
       await page.getByRole('button', { name: '更早的消息', exact: true }).click()
       await expect(messages.getByText(`分页-${oldest}`, { exact: true })).toBeVisible()
+      await input.focus()
+      await input.hover()
+      await expect(lastAnswerActions).toHaveCSS('opacity', '0')
       if (oldest === 0) break
     }
     await expect(messages.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(5)
@@ -1710,6 +1763,10 @@ test.describe('真实 Go 对话交互', () => {
     await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
     await expect(messages.getByText('分页-204', { exact: true })).toBeInViewport()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
+    await input.focus()
+    await input.hover()
+    await expect(lastAnswerActions).toHaveCSS('opacity', '1')
+    await expect(lastAnswerActions.locator('time')).toHaveCSS('opacity', '0')
   })
 
   test('自有服务异常退出后保留部分回答，不重发请求，重启可读取中断状态', async ({
@@ -4855,9 +4912,12 @@ test.describe('Markdown 回答展示', () => {
     const actions = answer.getByRole('group', { name: '消息操作', exact: true })
     await input.focus()
     await input.hover()
-    await expect(actions).toHaveCSS('opacity', '0')
+    await expect(actions).toHaveCSS('opacity', '1')
+    await expect(copyAnswer).toHaveCSS('opacity', '1')
+    await expect(actions.locator('time')).toHaveCSS('opacity', '0')
     await heading.hover()
     await expect(actions).toHaveCSS('opacity', '1')
+    await expect(actions.locator('time')).toHaveCSS('opacity', '1')
     await copyAnswer.click()
     expect(
       await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies.at(-1)),

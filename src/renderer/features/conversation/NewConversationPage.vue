@@ -597,6 +597,12 @@ onScopeDispose(() => {
                 "
                 :message="item"
                 :now="messageTimeNow"
+                :always-show-copy="
+                  !state.historical &&
+                  messages.at(-1)?.id === item.id &&
+                  item.role === 'assistant' &&
+                  item.status === 'completed'
+                "
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&

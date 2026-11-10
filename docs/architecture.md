@@ -102,6 +102,7 @@ TypeScript 环境分别管理，ESLint 检查进程导入边界。`@/` 指向界
 
 ## 对话交互与卡片
 
+- `NewConversationPage.vue` 仅为最新消息页末尾且已完成的回答启用 `MessageActions.vue` 的 `alwaysShowCopy`；时间保持独立的悬停／键盘聚焦显隐。提问、旧回答及历史页沿用悬停操作栏，活动回答仍不挂载操作栏。
 - `MessageActions.vue` 在既有悬停操作栏中展示消息时间，`shared/message-time.ts` 统一选择实际发送／完成时间及创建时间回退、格式化本地日期。`NewConversationPage.vue` 持有每分钟更新的共享时钟，跨午夜时刷新日期标签，页面卸载时释放定时器。项目路径由 `shared/display-path.ts` 按真实用户目录及路径边界缩写；用户目录来自现有应用信息 IPC 的 `homeDirectory` 字段，由主进程读取 `app.getPath('home')`，渲染进程只负责展示。
 - `MessageEditor.vue` 展示行内编辑表单，`useConversations` 单独持有编辑正文、原文校验及受理状态，普通草稿不被覆盖；只允许最新页最后一条纯文本提问，发送／执行期间禁用，取消恢复编辑入口焦点，切换会话清理编辑状态。失败保留本次修改，迟到结果通过选择代次校验，不能跳转或写入其他会话；受理后重新查询历史，不自动重试写请求。
 - `MessageActions.vue` 复制点击时的文本块快照，回答保留原始 Markdown，非文本块不加入复制正文。`copyMessage` 为独立固定 IPC，主进程按 8 MiB UTF-8 校验文本和来源后写入剪贴板，不静默截断；已有代码复制保持 1 MiB 上限。反馈与清理定时器属于消息组件，内容变化、切换和卸载会使旧复制反馈失效。无头验证使用内存剪贴板替身，不访问用户剪贴板。
