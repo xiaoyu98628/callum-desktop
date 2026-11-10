@@ -1,8 +1,34 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { parseAppInfo } from '../../src/shared/desktop-api.ts'
+import { parseAppInfo, parseServiceState } from '../../src/shared/desktop-api.ts'
 
 describe('桌面通信契约', () => {
+  it('服务状态只接受已知生命周期，并保留失败原因', () => {
+    for (const status of ['starting', 'ready', 'closing'])
+      assert.deepEqual(parseServiceState({ status, privatePath: '/private' }), { status })
+    assert.deepEqual(parseServiceState({ status: 'failed', error: '无法启动服务' }), {
+      status: 'failed',
+      error: '无法启动服务',
+    })
+    assert.deepEqual(parseServiceState({ status: 'startup-failed', error: '服务程序缺失' }), {
+      status: 'startup-failed',
+      error: '服务程序缺失',
+    })
+    for (const value of [
+      null,
+      {},
+      'ready',
+      { status: 'unknown' },
+      { status: 'failed' },
+      { status: 'failed', error: '' },
+      { status: 'failed', error: 1 },
+      { status: 'failed', error: 'x'.repeat(4097) },
+      { status: 'startup-failed' },
+      { status: 'startup-failed', error: '' },
+    ])
+      assert.throws(() => parseServiceState(value))
+  })
+
   it('接受有效信息并仅返回契约中的字段', () => {
     assert.deepEqual(
       parseAppInfo({

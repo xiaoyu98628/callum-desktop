@@ -1,5 +1,8 @@
 export const IPC_CHANNELS = {
   getAppInfo: 'callum:app:get-info',
+  getServiceState: 'callum:app:get-service-state',
+  retryServiceStart: 'callum:app:retry-service-start',
+  serviceState: 'callum:app:service-state',
   copyCode: 'callum:message:copy-code',
   copyMessage: 'callum:message:copy-text',
   openWebLink: 'callum:message:open-web-link',

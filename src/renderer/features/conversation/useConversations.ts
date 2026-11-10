@@ -1022,11 +1022,12 @@ function createConversations() {
   }
   onMounted(() => {
     unsubscribe = getDesktopApi().onChatEvent(receive)
-    state.loading = false
-    void refreshOverview()
-    void refreshWorkspaces()
-    void refreshExecutionSettings()
   })
+  async function initialize(): Promise<void> {
+    // 仅在服务就绪后由根组件调用；失败重试后重新读取，不保留旧启动的错误。
+    state.loading = false
+    await Promise.all([refreshOverview(), refreshWorkspaces(), refreshExecutionSettings()])
+  }
   onScopeDispose(() => {
     disposed = true
     selection++
@@ -1042,6 +1043,7 @@ function createConversations() {
     workspaceUpdates.clear()
   })
   return {
+    initialize,
     state,
     draft,
     activeRun,

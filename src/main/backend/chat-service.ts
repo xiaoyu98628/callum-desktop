@@ -54,7 +54,7 @@ import {
   userInputFromRpc,
   contextUsageFromRpc,
 } from './protocol-mapper.ts'
-import { RpcClient, RpcError } from './rpc-client.ts'
+import { RpcClient, RpcConnectionError, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
 import {
   boundSteps,
@@ -72,16 +72,43 @@ import { MutationGate } from './mutation-gate.ts'
 export { resolveWorkspaceDirectory } from './workspace-catalog.ts'
 import { parseContextUsageInput } from '../../shared/context-usage.ts'
 import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage.ts'
+import type { ServiceState } from '../../shared/desktop-api.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
+}
+
+function startupError(error: unknown, phase: string): string {
+  if (error instanceof RpcConnectionError) return error.message
+  const code = error instanceof Error && 'code' in error ? error.code : undefined
+  if (phase === 'path') return '服务数据目录必须是绝对路径。'
+  if (phase === 'platform') return '当前平台没有配套的对话服务程序。'
+  if (phase === 'executable') {
+    if (code === 'ENOENT' || code === 'ENOTDIR')
+      return '未找到对话服务程序，请检查客户端服务资源是否完整。'
+    if (code === 'EACCES' || code === 'EPERM') return '没有执行对话服务程序的权限，请检查文件权限。'
+    return '无法访问对话服务程序，请检查客户端服务资源。'
+  }
+  if (phase === 'directory') {
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS')
+      return '服务数据目录不可写，请检查目录权限。'
+    if (code === 'ENOSPC' || code === 'EDQUOT') return '磁盘空间或配额不足，无法创建服务数据目录。'
+    if (code === 'ENOTDIR' || code === 'EEXIST') return '服务数据目录路径被文件占用，无法创建目录。'
+    return '无法创建服务数据目录，请检查路径及磁盘状态。'
+  }
+  return '无法完成对话服务启动，请重试启动。'
 }
 
 /** 应用持有服务；RPC 细节、增量装配、快照一致性均止于此处。 */
 export class ChatService {
   readonly catalog = new ModelCatalog((method, params) => this.request(method, params))
   private client: RpcClient | null = null
-  private readonly ready: Promise<void>
+  private ready: Promise<void>
+  private readonly dataDirectory: string
+  private readonly resourceRoot: string
+  private retryTask: Promise<ServiceState> | null = null
+  private state: ServiceState = { status: 'starting' }
+  private readonly stateListeners = new Set<(state: ServiceState) => void>()
   private error: string | null = null
   private revision = 0
   private readonly listeners = new Set<(event: ChatEvent) => void>()
@@ -117,33 +144,114 @@ export class ChatService {
   private closeTask: Promise<void> | null = null
 
   constructor(dataDirectory: string, resourceRoot: string) {
+    this.dataDirectory = dataDirectory
+    this.resourceRoot = resourceRoot
     this.ready = this.initialize(dataDirectory, resourceRoot)
     void this.ready.catch(() => undefined)
   }
   private async initialize(dataDirectory: string, resourceRoot: string): Promise<void> {
+    let phase = 'path'
     try {
       if (!isAbsolute(dataDirectory)) throw new Error('服务数据目录必须是绝对路径')
+      phase = 'platform'
       const executable = resolveBackendExecutable(resourceRoot)
+      phase = 'executable'
       await access(executable, constants.X_OK)
+      phase = 'directory'
       await mkdir(dataDirectory, { recursive: true, mode: 0o700 })
       if (this.closing) return
-      this.client = new RpcClient(
+      phase = 'handshake'
+      const client = new RpcClient(
         executable,
         ['--data-dir', dataDirectory],
         (method, params) => this.receive(method, params),
-        () => {
+        (error) => {
+          if (this.closing || this.client !== client) return
+          if (this.state.status === 'starting') {
+            this.error = error.message
+            return
+          }
           this.error =
             '对话服务连接已中断，未完成请求的结果可能未知。请重新打开应用核对历史，避免重复发送。'
+          this.setState({ status: 'failed', error: this.error })
           this.flush()
           this.publish({ kind: 'service', error: this.error })
         },
       )
-      await this.client.ready
-    } catch {
-      this.error ??= '无法启动对话服务，请检查客户端是否包含适用于本机的服务程序。'
-      if (this.client) await this.client.close()
-      throw new Error(this.error)
+      this.client = client
+      await client.ready
+      if (this.error) throw new RpcConnectionError(this.error)
+      if (!this.closing) this.setState({ status: 'ready' })
+    } catch (error) {
+      this.error ??= startupError(error, phase)
+      if (!this.closing) this.setState({ status: 'startup-failed', error: this.error })
+      try {
+        if (this.client) await this.client.close()
+      } catch (cleanupError) {
+        this.error += ' 上一次服务进程未能完全退出，暂时无法重新启动。'
+        if (!this.closing) this.setState({ status: 'startup-failed', error: this.error })
+        throw new AggregateError([error, cleanupError], this.error, { cause: cleanupError })
+      }
+      throw new Error(this.error, { cause: error })
     }
+  }
+  /** 仅允许重试未曾就绪的失败启动；共享一次在途重试，关闭后不再创建进程。 */
+  retryStart(): Promise<ServiceState> {
+    if (this.closing) return Promise.reject(new Error('应用正在退出，无法重新启动服务。'))
+    if (this.retryTask) return this.retryTask
+    if (this.state.status !== 'startup-failed')
+      return Promise.reject(new Error('仅支持重试启动失败的服务。'))
+    this.retryTask = this.restart().finally(() => {
+      this.retryTask = null
+    })
+    return this.retryTask
+  }
+  private async restart(): Promise<ServiceState> {
+    this.setState({ status: 'starting' })
+    // 失败状态可以早于清理完成发布；必须等待旧初始化及连接结束，避免进程或实例锁重叠。
+    try {
+      await this.ready
+    } catch {
+      /* 原始启动失败已经保存，下面单独确认进程清理结果。 */
+    }
+    if (this.closing) return this.getState()
+    try {
+      await this.client?.close()
+    } catch {
+      this.setState({
+        status: 'startup-failed',
+        error: this.error ?? '上一次服务进程未能完全退出，无法重新启动。',
+      })
+      return this.getState()
+    }
+    if (this.closing) return this.getState()
+    this.client = null
+    this.error = null
+    this.ready = this.initialize(this.dataDirectory, this.resourceRoot)
+    try {
+      await this.ready
+    } catch {
+      /* 初始化发布具体失败原因，重试结果以当前生命周期快照为准。 */
+    }
+    return this.getState()
+  }
+  getState(): ServiceState {
+    return { ...this.state }
+  }
+  subscribeState(listener: (state: ServiceState) => void): () => void {
+    this.stateListeners.add(listener)
+    return () => {
+      this.stateListeners.delete(listener)
+    }
+  }
+  private setState(state: ServiceState): void {
+    if (
+      this.state.status === state.status &&
+      (!('error' in state) || ('error' in this.state && this.state.error === state.error))
+    )
+      return
+    this.state = state
+    for (const listener of this.stateListeners) listener(this.getState())
   }
   subscribe(listener: (event: ChatEvent) => void): () => void {
     this.listeners.add(listener)
@@ -152,7 +260,9 @@ export class ChatService {
     }
   }
   private async request(method: string, params: unknown): Promise<unknown> {
-    await this.ready
+    const ready = this.ready
+    await ready
+    if (ready !== this.ready) throw new Error('服务状态已变化，请重新加载。')
     if (this.error) throw new Error(this.error)
     if (this.closing || !this.client) throw new Error('对话服务正在关闭。')
     return this.client.request(method, params)
@@ -881,6 +991,7 @@ export class ChatService {
   }
   private async shutdown(): Promise<void> {
     this.closing = true
+    this.setState({ status: 'closing' })
     // 退出可能发生在握手期间，先关闭已创建的进程，不能等待就绪超时后才取消启动。
     const closeClient = this.client?.close() ?? Promise.resolve()
     void closeClient.catch(() => undefined)
@@ -890,7 +1001,11 @@ export class ChatService {
       /* 初始化错误已记录，仍需清理已创建的子进程。 */
     }
     try {
-      await closeClient
+      const results = await Promise.allSettled([closeClient, this.retryTask])
+      const errors = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      )
+      if (errors.length) throw new AggregateError(errors, '对话服务关闭失败。')
     } finally {
       clearTimeout(this.flushTimer)
       this.dirty.clear()
@@ -902,6 +1017,7 @@ export class ChatService {
       this.persistenceFailures.clear()
       this.history.length = 0
       this.listeners.clear()
+      this.stateListeners.clear()
     }
   }
 }

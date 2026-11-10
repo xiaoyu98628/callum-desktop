@@ -37,9 +37,19 @@ export interface AppInfo {
   platform: 'darwin' | 'win32' | 'linux'
 }
 
+/** 应用持有的服务生命周期；失败与正常关闭分别展示。 */
+export type ServiceState =
+  | { status: 'starting' | 'ready' | 'closing' }
+  | { status: 'startup-failed' | 'failed'; error: string }
+
 /** preload 暴露的能力清单，每个方法对应固定的用途。 */
 export interface DesktopApi {
   getAppInfo(): Promise<AppInfo>
+  getServiceState(): Promise<ServiceState>
+  /** 仅重试尚未就绪的失败启动，不重放业务请求。 */
+  retryServiceStart(): Promise<ChatResult<ServiceState>>
+  /** 根组件先订阅再查询快照；卸载时取消订阅。 */
+  onServiceState(listener: (state: ServiceState) => void): () => void
   copyCode(text: string): Promise<ChatResult<boolean>>
   copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
@@ -118,6 +128,23 @@ export interface DesktopApi {
   revokeDirectoryGrant(conversationId: string, grantId: string): Promise<ChatResult<DirectoryGrant>>
   /** 每个窗口一个订阅，由根组件持有；返回可重复调用的取消订阅函数。 */
   onChatEvent(listener: (event: ChatEvent) => void): () => void
+}
+
+/** 仅接收已知生命周期，不将任意错误对象传入界面。 */
+export function parseServiceState(value: unknown): ServiceState {
+  if (typeof value === 'object' && value !== null && 'status' in value) {
+    if (value.status === 'starting' || value.status === 'ready' || value.status === 'closing')
+      return { status: value.status }
+    if (
+      (value.status === 'startup-failed' || value.status === 'failed') &&
+      'error' in value &&
+      typeof value.error === 'string' &&
+      value.error.length > 0 &&
+      value.error.length <= 4096
+    )
+      return { status: value.status, error: value.error }
+  }
+  throw new Error('无效的服务状态')
 }
 
 /** 通信边界使用运行时校验，不能仅信任静态类型。 */

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { RpcClient } from '../../src/main/backend/rpc-client.ts'
+import { RpcClient, RpcConnectionError } from '../../src/main/backend/rpc-client.ts'
 
 const ready = `const ready={jsonrpc:'2.0',method:'system.ready',params:{service:'callum',protocol_version:1,max_request_bytes:1048576,max_response_bytes:8388608}};`
 function client(
@@ -80,4 +80,71 @@ test('启动失败会释放连接，不遗留待处理请求', async () => {
   )
   await assert.rejects(rpc.ready)
   await rpc.close()
+})
+
+for (const [name, diagnostic, expected] of [
+  [
+    '已知实例锁原因',
+    JSON.stringify({
+      level: 'ERROR',
+      module: 'main',
+      error: '该数据目录已有运行中的 Callum 服务\nsecret-private-path',
+    }),
+    /已有运行中的 Callum 服务/,
+  ],
+  [
+    '未知内部错误',
+    JSON.stringify({ level: 'ERROR', module: 'main', error: 'secret-key-and-private-path' }),
+    /在就绪前退出/,
+  ],
+  [
+    '诊断容量边界',
+    'x'.repeat(16 * 1024) +
+      '\n' +
+      JSON.stringify({
+        level: 'ERROR',
+        module: 'main',
+        error: '该数据目录已有运行中的 Callum 服务',
+      }),
+    /在就绪前退出/,
+  ],
+] as const) {
+  test(`启动失败识别${name}，不泄露原始诊断`, async () => {
+    const rpc = client(
+      `process.stderr.write(${JSON.stringify(diagnostic + '\n')}, () => process.exit(1))`,
+    )
+    try {
+      await assert.rejects(rpc.ready, (error: unknown) => {
+        assert.ok(error instanceof RpcConnectionError)
+        assert.match(error.message, expected)
+        assert.doesNotMatch(error.message, /secret|private-path/)
+        return true
+      })
+    } finally {
+      await rpc.close()
+    }
+  })
+}
+
+test('启动握手失败保留安全的协议原因', async () => {
+  const rpc = client(
+    `process.stdout.write(JSON.stringify({...ready, params: {...ready.params, protocol_version: 999}})+'\\n');process.stdin.resume()`,
+  )
+  try {
+    await assert.rejects(rpc.ready, /启动握手失败/)
+  } finally {
+    await rpc.close()
+  }
+})
+
+test('启动超时结束等待并释放子进程', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const rpc = client('process.stdin.resume()')
+  try {
+    const rejected = assert.rejects(rpc.ready, /启动超时/)
+    t.mock.timers.tick(15_000)
+    await rejected
+  } finally {
+    await rpc.close()
+  }
 })
