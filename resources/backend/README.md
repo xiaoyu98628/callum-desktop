@@ -14,14 +14,14 @@ resources/backend/
     callum.exe
 ```
 
-两平台程序来自后端工作区基准提交 `d49c9ca1e7a42aa67e1ea03c19b79f320bcc8448` 及本次历史分页、凭据加密、审核原始结果和迁移校验改动，保留已有 Windows 原生沙箱实现。源码指纹 SHA-256 为 `c8826143bfbe1d1aa009ee3f7ce8960e81c89788cd9a29995de007a5d55ed919`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于识别未提交工作区源码。
+两平台程序均由后端提交 `68151f4d805fdd5ad6910f4f410036d1caabf511` 的干净工作区构建，包含执行游标历史分页、凭据加密及旧消息分页 RPC 的移除，保留已有 Windows 原生沙箱实现。源码指纹 SHA-256 为 `7bfb3a84056e4ca5ea359c14d967ebff6366583301c3caccc1dbf488d05cdb2f`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                            | SHA-256                                                            |
 | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `bbc06aff2381d31eba0136d9c76048ab28691913bb0e3137d12c546e5befed98` |
-| Windows x86         | `GOOS=windows GOARCH=386 CGO_ENABLED=0 -tags release -trimpath`  | `f1bd8fd233184ed131bf19b58ac285f793a9d412d726431b2c2d75c259921a23` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `f4f3d6163278ea7fc12a685d5f4dcc292161046c96a896775b00e502cae24bfd` |
+| Windows x86         | `GOOS=windows GOARCH=386 CGO_ENABLED=0 -tags release -trimpath`  | `bb50d48979fefc9cfc596fe7318396ee10642ac4cf55fe810724cd1dc471eea1` |
 
-Windows x64 Electron 客户端固定使用 x86 服务，通过 WOW64 启动。两份程序均已验证交叉编译、文件格式和哈希；macOS 程序用于隔离桌面回归，Windows 原生启动及桌面联调仍待 Windows 环境验证。Linux amd64、Windows amd64 另做纯 Go 交叉编译检查，未作为桌面资源随附。
+Windows x64 Electron 客户端固定使用 x86 服务，通过 WOW64 启动。两份程序均已验证交叉编译、文件格式和哈希；macOS 程序用于隔离桌面回归，Windows 原生启动及桌面联调仍待 Windows 环境验证。
 
 ## 随附程序兼容说明
 
@@ -35,7 +35,7 @@ Windows x64 Electron 客户端固定使用 x86 服务，通过 WOW64 启动。�
 | 独立推理     | `reasoning.delta` 与统一 `output.reasoning` 和回答正文分开；旧记录缺失时保持缺失，不改写实际 usage                                                                       |
 | 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复；保留原始轨迹，恢复不重放工具操作                                                                                         |
 | 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                       |
-| 协议兼容     | 会话更新、审批策略集中与轨迹恢复的内部调整保持现有 JSON-RPC 字段以及步骤的 `context_message`、`reasoning`、`operation` 格式兼容                                          |
+| 协议接口     | 消息历史统一使用 `conversation.history`；`conversation.messages` 已移除并返回 `-32601`，现有事件字段及步骤的 `context_message`、`reasoning`、`operation` 保持原有格式    |
 
 Go 的模块拆分、GORM 查询、压缩算法、审批判定及 ACL 回收细节由后端仓库 `docs/architecture.md`、`docs/storage.md`、`docs/context-compaction.md`、`docs/tools-and-approvals.md` 和 `docs/design/conversations.md` 维护；请求及通知以其 `docs/jsonrpc.md` 为准。客户端接入与平台验收边界见 [Go 服务接入](../../docs/backend-integration.md#联调与验证边界)。
 
