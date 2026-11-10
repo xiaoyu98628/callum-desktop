@@ -18,6 +18,7 @@ import {
 } from 'reka-ui'
 import type { Conversation } from '@shared/chat'
 import { Button } from '@/components/ui/button'
+import SidebarHoverCard from './SidebarHoverCard.vue'
 
 const props = defineProps<{
   items: Conversation[]
@@ -25,6 +26,8 @@ const props = defineProps<{
   active: boolean
   collapsed: boolean
   disabled: boolean
+  workspaceName?: string
+  previewSuspended?: boolean
 }>()
 const emit = defineEmits<{
   select: [id: string]
@@ -114,35 +117,45 @@ onScopeDispose(() => titleObserver?.disconnect())
         @mouseenter="startTitleScroll"
         @mouseleave="stopTitleScroll"
       >
-        <ContextMenuTrigger as-child :disabled="disabled">
-          <Button
-            variant="ghost"
-            class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
-            :class="
-              collapsed ? 'justify-center px-0' : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
-            "
-            :data-conversation-id="item.id"
-            :aria-current="active && selectedId === item.id ? 'page' : undefined"
-            :aria-haspopup="disabled ? undefined : 'menu'"
-            :aria-expanded="disabled ? undefined : openMenuId === item.id"
-            :aria-keyshortcuts="disabled ? undefined : 'Shift+F10'"
-            :title="item.title"
-            @click="$event.detail < 2 && emit('select', item.id)"
-            @dblclick="rename(item, $event)"
-            @keydown="handleMenuKey(item.id, $event)"
-            @contextmenu="disabled && $event.preventDefault()"
-          >
-            <MessageSquareIcon
-              v-if="collapsed"
-              class="size-3.5 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <span v-if="collapsed" class="sr-only">{{ item.title }}</span>
-            <span v-else class="conversation-title min-w-0 truncate">
-              <span class="conversation-title-text">{{ item.title }}</span>
-            </span>
-          </Button>
-        </ContextMenuTrigger>
+        <SidebarHoverCard
+          v-slot="{ triggerEvents }"
+          :item="item"
+          :workspace-name="workspaceName ?? ''"
+          :disabled="disabled"
+          :suspended="previewSuspended || openMenuId !== null"
+        >
+          <ContextMenuTrigger as-child :disabled="disabled">
+            <Button
+              variant="ghost"
+              class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
+              :class="
+                collapsed
+                  ? 'justify-center px-0'
+                  : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
+              "
+              :data-conversation-id="item.id"
+              :aria-current="active && selectedId === item.id ? 'page' : undefined"
+              :aria-haspopup="disabled ? undefined : 'menu'"
+              :aria-expanded="disabled ? undefined : openMenuId === item.id"
+              :aria-keyshortcuts="disabled ? 'ArrowRight' : 'Shift+F10 ArrowRight'"
+              v-on="triggerEvents"
+              @click="$event.detail < 2 && emit('select', item.id)"
+              @dblclick="rename(item, $event)"
+              @keydown="handleMenuKey(item.id, $event)"
+              @contextmenu="disabled && $event.preventDefault()"
+            >
+              <MessageSquareIcon
+                v-if="collapsed"
+                class="size-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <span v-if="collapsed" class="sr-only">{{ item.title }}</span>
+              <span v-else class="conversation-title min-w-0 truncate">
+                <span class="conversation-title-text">{{ item.title }}</span>
+              </span>
+            </Button>
+          </ContextMenuTrigger>
+        </SidebarHoverCard>
         <div v-if="!collapsed" class="absolute right-1 flex items-center">
           <Button
             type="button"

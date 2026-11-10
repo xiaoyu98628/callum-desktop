@@ -1691,6 +1691,135 @@ test.describe('会话与项目管理', () => {
     await expect(independent).toBeVisible()
   })
 
+  test('项目与会话悬停卡片展示现有资料，支持操作、键盘和细滚动条', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    const folder = join(profile, 'hover-primary'),
+      otherFolder = join(profile, 'hover-secondary')
+    await Promise.all([mkdir(folder), mkdir(otherFolder)])
+    await chooseTestDirectory(desktop, [folder, otherFolder])
+    await page.getByRole('button', { name: '添加项目', exact: true }).click()
+    const create = page.getByRole('dialog', { name: '创建项目', exact: true })
+    await create.getByRole('textbox', { name: '项目名称', exact: true }).fill('悬停项目')
+    await create.getByRole('button', { name: '添加文件夹', exact: true }).click()
+    await create.getByRole('button', { name: '创建项目', exact: true }).click()
+    await expect(create).toHaveCount(0)
+    const project = page.getByRole('region', { name: '悬停项目', exact: true })
+    const row = project.getByRole('button', { name: '悬停项目', exact: true })
+    const preview = page.getByRole('dialog', { name: '项目预览', exact: true })
+    await row.hover()
+    await expect(preview).toBeVisible()
+    await expect(preview).toContainText(await realpath(folder))
+    await expect(preview).toContainText(await realpath(otherFolder))
+    await expect(preview).not.toContainText('次聊天')
+    const rowBounds = (await row.boundingBox())!,
+      previewBounds = (await preview.boundingBox())!
+    expect(previewBounds.x).toBeGreaterThan(rowBounds.x + rowBounds.width)
+    await preview.hover()
+    await preview.getByRole('button', { name: '置顶项目', exact: true }).click()
+    await expect(
+      preview.getByRole('button', { name: '取消项目置顶', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true')
+    await page.screenshot({ path: '.artifacts/screenshots/project-hover-light.png' })
+    await preview.getByRole('button', { name: '编辑项目', exact: true }).click()
+    const edit = page.getByRole('dialog', { name: '编辑项目', exact: true })
+    await expect(edit.getByRole('textbox', { name: '项目名称', exact: true })).toHaveValue(
+      '悬停项目',
+    )
+    await expect(preview).toHaveCount(0)
+    await edit.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(row).toBeFocused()
+    await row.press('ArrowRight')
+    await expect(preview.getByRole('button', { name: '取消项目置顶', exact: true })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(preview.getByRole('button', { name: '编辑项目', exact: true })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(row).toBeFocused()
+    await expect(preview).toHaveCount(0)
+
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('项目悬停会话')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const chat = project.getByRole('button', { name: '项目悬停会话', exact: true })
+    const chatPreview = page.getByRole('dialog', { name: '会话预览', exact: true })
+    await chat.hover()
+    await expect(chatPreview).toContainText('项目悬停会话')
+    await expect(chatPreview).toContainText('悬停项目')
+    await expect(chatPreview.locator('time')).toHaveText('刚刚')
+    await expect(chatPreview.getByRole('button')).toHaveCount(0)
+    await chat.click({ button: 'right' })
+    await expect(chatPreview).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('独立悬停会话')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const independent = page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '独立悬停会话', exact: true })
+    await independent.hover()
+    await expect(chatPreview).toContainText('独立悬停会话')
+    await expect(chatPreview).not.toContainText('悬停项目')
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await independent.hover()
+    await expect(chatPreview).toBeVisible()
+    await expect(chatPreview).toHaveCSS('background-color', 'rgb(31, 32, 39)')
+    const smallCard = (await chatPreview.boundingBox())!
+    const windowWidth = await page.evaluate(() => innerWidth)
+    expect(smallCard.x).toBeGreaterThanOrEqual(0)
+    expect(smallCard.x + smallCard.width).toBeLessThanOrEqual(windowWidth)
+    await page.screenshot({ path: '.artifacts/screenshots/conversation-hover-dark.png' })
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).click()
+    await independent.hover()
+    await expect(chatPreview).toContainText('独立悬停会话')
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
+
+    await page.evaluate(async () => {
+      for (let index = 0; index < 12; index++) {
+        const result = await window.callum.createWorkspace(
+          { name: `滚动项目 ${index}`, rootPath: '' },
+          '00000000-0000-7000-8000-000000000001',
+        )
+        if (!result.ok) throw new Error(result.error)
+      }
+    })
+    const empty = page
+      .getByRole('region', { name: '滚动项目 11', exact: true })
+      .getByRole('button', { name: '滚动项目 11', exact: true })
+    await empty.hover()
+    await expect(preview).toContainText('未添加文件夹')
+    const scroller = page.locator('[data-sidebar-scroll]')
+    await scroller.hover()
+    await page.mouse.wheel(0, 300)
+    await expect(preview).toHaveCount(0)
+    await expect(scroller).toHaveAttribute('data-scrolling', '')
+    expect(
+      await scroller.evaluate((element) => getComputedStyle(element, '::-webkit-scrollbar').width),
+    ).toBe('6px')
+    await expect(scroller).not.toHaveAttribute('data-scrolling')
+    await expect
+      .poll(() =>
+        scroller.evaluate((element) =>
+          getComputedStyle(element).getPropertyValue('--sidebar-scrollbar-thumb').trim(),
+        ),
+      )
+      .toBe('rgba(0, 0, 0, 0)')
+    expect(errors).toEqual([])
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused()),
+      ),
+    ).toBe(false)
+  })
+
   test('无目录项目可持续添加、移除源文件夹，取消和并发冲突保留原设置及对话', async ({
     desktop,
     profile,
@@ -2482,10 +2611,10 @@ test.describe('会话与项目管理', () => {
     )
     expect(
       await recent
-        .locator('button[title]')
+        .locator('button[data-conversation-id]')
         .evaluateAll((buttons) =>
           buttons
-            .map((button) => button.getAttribute('title'))
+            .map((button) => button.textContent?.trim())
             .filter((title) => ['需要置顶的会话', '较新的会话'].includes(title ?? '')),
         ),
     ).toEqual(['需要置顶的会话', '较新的会话'])

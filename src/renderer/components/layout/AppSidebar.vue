@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onScopeDispose, ref } from 'vue'
 import {
   ArchiveIcon,
   ChevronRightIcon,
@@ -17,6 +17,7 @@ import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import { useConversations } from '@/features/conversation/useConversations'
 import ConversationList from './ConversationList.vue'
+import SidebarHoverCard from './SidebarHoverCard.vue'
 import SidebarItemMenu from './SidebarItemMenu.vue'
 import SidebarManagementDialog from './SidebarManagementDialog.vue'
 import type { ManagementTarget } from './SidebarManagementDialog.vue'
@@ -67,6 +68,16 @@ const restoreNotice = ref('')
 const restoringId = ref('')
 const projectsOpen = ref(true)
 const recentOpen = ref(true)
+const scrollbarVisible = ref(false)
+let scrollbarTimer: number | undefined
+function trackSidebarScroll(): void {
+  scrollbarVisible.value = true
+  window.clearTimeout(scrollbarTimer)
+  scrollbarTimer = window.setTimeout(() => {
+    scrollbarVisible.value = false
+  }, 700)
+}
+onScopeDispose(() => window.clearTimeout(scrollbarTimer))
 let workspaceClick: { id: string; expanded: boolean } | null = null
 function startConversation(workspaceId: string | null = null): void {
   if (workspaceId) expandWorkspace(workspaceId)
@@ -304,7 +315,12 @@ async function restoreConversation(item: Conversation): Promise<void> {
         <span :class="collapsed ? 'sr-only' : ''">新对话</span>
       </Button>
 
-      <div class="mt-7 min-h-0 flex-1 space-y-7 overflow-y-auto">
+      <div
+        data-sidebar-scroll
+        :data-scrolling="scrollbarVisible ? '' : undefined"
+        class="mt-7 min-h-0 flex-1 space-y-7 overflow-y-auto"
+        @scroll="trackSidebarScroll"
+      >
         <p v-if="sidebarError" role="alert" class="break-words px-3 text-xs text-destructive">
           {{ sidebarError }}
         </p>
@@ -402,32 +418,44 @@ async function restoreConversation(item: Conversation): Promise<void> {
                       : 'hover:bg-accent/70'
                   "
                 >
-                  <Button
-                    variant="ghost"
-                    class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
-                    :class="collapsed ? 'justify-center px-0' : 'pl-3 pr-16 has-[>svg]:pr-16'"
-                    :title="workspace.name"
-                    :aria-expanded="
-                      collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
+                  <SidebarHoverCard
+                    v-slot="{ triggerEvents }"
+                    :item="workspace"
+                    :disabled="state.managing || !!state.serviceError"
+                    :suspended="
+                      !!managementTarget || creatingProject || state.archivesOpen || !projectsOpen
                     "
-                    :aria-controls="
-                      collapsed ? undefined : `workspace-conversations-${workspace.id}`
-                    "
-                    @click="selectWorkspace(workspace, $event)"
-                    @dblclick="editWorkspace(workspace, $event)"
+                    @pin="pinWorkspace(workspace)"
+                    @edit="manageWorkspace(workspace, false, $event)"
                   >
-                    <FolderOpenIcon
-                      v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
-                      class="size-3.5 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <FolderIcon
-                      v-else
-                      class="size-3.5 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <span :class="collapsed ? 'sr-only' : 'truncate'">{{ workspace.name }}</span>
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
+                      :class="collapsed ? 'justify-center px-0' : 'pl-3 pr-16 has-[>svg]:pr-16'"
+                      :aria-expanded="
+                        collapsed ? undefined : !!state.workspaceGroups[workspace.id]?.expanded
+                      "
+                      :aria-controls="
+                        collapsed ? undefined : `workspace-conversations-${workspace.id}`
+                      "
+                      aria-keyshortcuts="ArrowRight"
+                      v-on="triggerEvents"
+                      @click="selectWorkspace(workspace, $event)"
+                      @dblclick="editWorkspace(workspace, $event)"
+                    >
+                      <FolderOpenIcon
+                        v-if="!collapsed && state.workspaceGroups[workspace.id]?.expanded"
+                        class="size-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <FolderIcon
+                        v-else
+                        class="size-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span :class="collapsed ? 'sr-only' : 'truncate'">{{ workspace.name }}</span>
+                    </Button>
+                  </SidebarHoverCard>
                   <div v-if="!collapsed" class="absolute right-3 flex items-center">
                     <SidebarItemMenu
                       :label="workspace.name"
@@ -465,6 +493,14 @@ async function restoreConversation(item: Conversation): Promise<void> {
                     <div v-if="state.workspaceGroups[workspace.id]" class="ml-6 pt-0.5">
                       <ConversationList
                         :items="state.workspaceGroups[workspace.id]?.items ?? []"
+                        :workspace-name="workspace.name"
+                        :preview-suspended="
+                          !!managementTarget ||
+                          creatingProject ||
+                          state.archivesOpen ||
+                          !projectsOpen ||
+                          !state.workspaceGroups[workspace.id]?.expanded
+                        "
                         :selected-id="state.selectedId"
                         :active="activePage === 'conversation'"
                         :collapsed="false"
@@ -592,6 +628,9 @@ async function restoreConversation(item: Conversation): Promise<void> {
               </p>
               <ConversationList
                 :items="state.conversations"
+                :preview-suspended="
+                  !!managementTarget || creatingProject || state.archivesOpen || !recentOpen
+                "
                 :selected-id="state.selectedId"
                 :active="activePage === 'conversation'"
                 :collapsed="collapsed"
@@ -693,6 +732,36 @@ async function restoreConversation(item: Conversation): Promise<void> {
 </template>
 
 <style scoped>
+@property --sidebar-scrollbar-thumb {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
+[data-sidebar-scroll] {
+  transition: --sidebar-scrollbar-thumb 180ms ease-out;
+}
+
+[data-sidebar-scroll][data-scrolling] {
+  --sidebar-scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  transition-duration: 0ms;
+}
+
+[data-sidebar-scroll]::-webkit-scrollbar {
+  width: 6px;
+  background: transparent;
+}
+
+[data-sidebar-scroll]::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background-color: var(--sidebar-scrollbar-thumb);
+}
+
+[data-sidebar-scroll]::-webkit-scrollbar-thumb:hover,
+[data-sidebar-scroll]::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
+}
+
 .sidebar-disclosure {
   display: grid;
   grid-template-rows: 0fr;
