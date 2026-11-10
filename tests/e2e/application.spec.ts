@@ -904,8 +904,8 @@ test.describe('真实 Go 对话交互', () => {
       const disclosure = timeline.getByRole('button', { name: '调用过程', exact: true })
       await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
       await disclosure.click()
-      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
-      await timeline.getByRole('button', { name: '工具详情：已运行命令', exact: true }).click()
+      await timeline.getByRole('button', { name: '工具详情：已运行 /bin/pwd', exact: true }).click()
+      await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
       await expect(
         page.getByText('AI 审批通过。用户明确要求查看当前目录。', { exact: true }),
       ).toBeVisible()
@@ -947,6 +947,12 @@ test.describe('真实 Go 对话交互', () => {
       await input.press('Enter')
       await expect(page.getByRole('heading', { name: '允许读取文件？' })).toBeVisible()
       const panel = page.getByRole('region', { name: '工具审批', exact: true })
+      await expect(
+        page.getByRole('button', {
+          name: '工具详情：读取文件 · 等待审批 fixture.txt',
+          exact: true,
+        }),
+      ).toBeVisible()
       await expect(input).toBeVisible()
       await expect(input).toBeDisabled()
       await expect(panel).toBeFocused()
@@ -999,9 +1005,11 @@ test.describe('真实 Go 对话交互', () => {
       )
       await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
-      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
-      await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
-      await timeline.getByRole('button', { name: '工具详情：已读取文件', exact: true }).click()
+      const readStep = timeline.getByRole('button', {
+        name: '工具详情：已读取 fixture.txt',
+        exact: true,
+      })
+      await readStep.click()
       await expect(timeline.getByText('已保存的结果', { exact: true })).toBeVisible()
       await expect(timeline.getByLabel('工具结果', { exact: true })).toContainText(
         'controlled-file',
@@ -1017,8 +1025,8 @@ test.describe('真实 Go 对话交互', () => {
       )
       await timeline.getByRole('button', { name: '调用过程', exact: true }).click()
       await expect(timeline.getByText('准备检查文件。', { exact: true })).toBeVisible()
-      await timeline.getByRole('button', { name: /^操作分组：/ }).click()
-      await expect(timeline.getByText('已读取文件', { exact: true })).toBeVisible()
+      await expect(readStep).toBeVisible()
+      await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
       await expect(page.getByRole('button', { name: '仅本次允许' })).not.toBeVisible()
       await expect(input).toBeVisible()
       expect(
@@ -4424,10 +4432,7 @@ test.describe('Codex 风格过程展示', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
 
-  test('运行中显示思考与操作分组，结束收起，标题支持键盘展开', async ({
-    desktop,
-    modelEndpoint,
-  }) => {
+  test('运行中直接显示单条操作，结束收起，标题支持键盘展开', async ({ desktop, modelEndpoint }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
@@ -4461,14 +4466,18 @@ test.describe('Codex 风格过程展示', () => {
     await expect(thinking.locator('svg')).toHaveCSS('opacity', '1')
     await thinking.press('Space')
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
-    const group = overview.getByRole('button', { name: /^操作分组：/ })
-    await expect(group).toHaveAttribute('aria-expanded', 'false')
-    await group.press('Enter')
-    const command = overview.getByRole('button', { name: '工具详情：已运行命令', exact: true })
+    const command = overview.getByRole('button', {
+      name: '工具详情：已运行 /bin/echo controlled-fold-output',
+      exact: true,
+    })
     await expect(command).toBeVisible()
+    await expect(overview.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
+    await expect(command).toHaveAttribute('aria-expanded', 'false')
     await command.focus()
     await command.press('Enter')
-    await expect(overview).toContainText('controlled-fold-output')
+    await expect(overview.getByLabel('工具结果', { exact: true })).toContainText(
+      'controlled-fold-output',
+    )
     await overview.getByRole('button', { name: '刷新结果', exact: true }).focus()
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
@@ -4480,10 +4489,20 @@ test.describe('Codex 风格过程展示', () => {
     await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(1)
     await toggle.press('Enter')
     await expect(overview).toContainText('命令检查已完成')
+    await expect(command).toBeVisible()
+    await expect(
+      overview.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }),
+    ).toBeVisible()
     await expect(
       overview.getByRole('button', { name: '思考过程', exact: true }).first(),
     ).toContainText('已思考')
     await expect(overview.locator('[data-tool-details]')).toHaveCount(0)
+    await expect(timeline.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    await input.focus()
+    await page.mouse.move(1, 1)
+    await timeline.screenshot({
+      path: '.artifacts/screenshots/activity-single-operation-light.png',
+    })
     await toggle.click()
     await expect(overview).toHaveCount(0)
     await input.focus()
@@ -4552,17 +4571,21 @@ test.describe('Codex 风格过程展示', () => {
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstToggle).toContainText('已查看目录 1 次、读取文件 1 次、运行命令 2 次')
+    await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')
     await expect(firstGroup.getByRole('region', { name: '本组操作', exact: true })).toHaveCount(0)
     await firstToggle.focus()
     await firstToggle.press('Enter')
-    const command = firstGroup
-      .getByRole('button', { name: '工具详情：已运行命令', exact: true })
-      .first()
+    await expect(firstGroup.getByRole('button', { name: /^工具详情：/ })).toHaveCount(4)
+    const command = firstGroup.getByRole('button', {
+      name: '工具详情：已运行 /bin/echo controlled-group-output',
+      exact: true,
+    })
     await expect(command).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstGroup).not.toContainText('controlled-group-output')
+    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
     await command.press('Enter')
-    await expect(firstGroup).toContainText('controlled-group-output')
+    await expect(firstGroup.getByLabel('工具结果', { exact: true })).toContainText(
+      'controlled-group-output',
+    )
     await firstToggle.press('Space')
     await firstToggle.press('Enter')
     await expect(command).toHaveAttribute('aria-expanded', 'false')
@@ -4776,7 +4799,7 @@ test.describe('过程自动读取与固定分隔线', () => {
     await expect(groupToggle).not.toContainText('次')
     await groupToggle.click()
     await expect(
-      group.getByRole('button', { name: '工具详情：已读取文件', exact: true }).first(),
+      group.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }).first(),
     ).toBeVisible()
     await expect(group.locator('.activity-reveal-enter-active')).toHaveCount(0)
     const seen = new Set<string>()

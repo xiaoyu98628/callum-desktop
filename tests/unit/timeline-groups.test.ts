@@ -83,7 +83,7 @@ test('当前组由实际最新步骤确定，下一模型阶段及未加载的�
   assert.equal(currentOperationGroup(items, undefined), null)
 })
 
-test('操作摘要按动作统计，失败、审批、取消和中断均不能伪装成成功', () => {
+test('完成动作在摘要中去重，失败、审批、取消和中断按实际状态汇总', () => {
   const summary = operationSummary([
     step(1),
     step(2),
@@ -97,7 +97,7 @@ test('操作摘要按动作统计，失败、审批、取消和中断均不能�
     step(10, 'run_command', 'running'),
     step(11, 'run_command', 'pending'),
   ])
-  assert.equal(summary.label, '已读取文件 2 次、运行命令 1 次、编辑文件 1 次')
+  assert.equal(summary.label, '已读取文件、运行命令、编辑文件')
   for (const text of [
     '1 项等待审批',
     '1 项等待补充输入',
@@ -110,14 +110,14 @@ test('操作摘要按动作统计，失败、审批、取消和中断均不能�
   assert.equal(summary.danger, true)
   assert.equal(summary.waiting, true)
   const waiting = operationSummary([step(1, 'run_command', 'awaiting_approval')])
-  assert.equal(waiting.label, '1 项操作')
+  assert.equal(waiting.label, '操作记录')
   assert.equal(waiting.danger, false)
   assert.equal(waiting.waiting, true)
-  assert.equal(operationSummary([step(1, 'custom-tool')]).label, '已执行其他操作 1 次')
-  assert.equal(operationSummary([step(1, 'request_user_input')]).label, '已结束补充输入 1 次')
+  assert.equal(operationSummary([step(1, 'custom-tool')]).label, '已执行其他操作')
+  assert.equal(operationSummary([step(1, 'request_user_input')]).label, '已结束补充输入')
 })
 
-test('跨批长组保持身份且只统计窗口内记录；前后读取后概述边界仍正确', async () => {
+test('跨批长组保持身份，前后读取后概述边界仍正确', async () => {
   const source: ChatStep[] = [
     model(1),
     ...Array.from({ length: 220 }, (_, index) => step(index + 2)),
@@ -150,7 +150,7 @@ test('跨批长组保持身份且只统计窗口内记录；前后读取后概�
   )
   const first = items[0]!
   assert.ok(first.kind === 'operations')
-  assert.equal(operationSummary(first.steps).label, `已读取文件 ${first.steps.length} 次`)
+  assert.equal(operationSummary(first.steps).label, '已读取文件')
   assert.ok(first.steps.length < 220)
   while (window.hasPrevious) await window.previous()
   assert.equal(groupTimeline(window.steps)[0]?.kind, 'model')
@@ -196,7 +196,7 @@ test('连续压缩独立成行，不进入工具分组，阶段顺序与原始�
     items
       .filter((item) => item.kind === 'operations')
       .map((item) => operationSummary(item.steps).label),
-    ['已读取文件 1 次', '已读取文件 1 次'],
+    ['已读取文件', '已读取文件'],
   )
 })
 

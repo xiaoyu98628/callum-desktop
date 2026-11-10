@@ -54,7 +54,10 @@ export function stepTarget(step: ChatStep): string {
     if (typeof input !== 'object' || input === null || !('arguments' in input)) return ''
     const args = input.arguments
     if (typeof args !== 'object' || args === null) return ''
-    if ('path' in args && typeof args.path === 'string') return args.path
+    if (step.name === 'search_text' && 'query' in args && typeof args.query === 'string')
+      return JSON.stringify(args.query)
+    if ('path' in args && typeof args.path === 'string')
+      return args.path.replace(/\/+$/, '').split('/').at(-1) || args.path
     if (
       'command' in args &&
       Array.isArray(args.command) &&

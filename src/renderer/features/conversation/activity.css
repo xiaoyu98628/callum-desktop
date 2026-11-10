@@ -21,6 +21,10 @@
   background: transparent;
   transition: color 160ms ease;
 }
+.activity-tool > .activity-heading,
+.activity-operation-group > .activity-heading {
+  color: var(--muted-foreground);
+}
 .activity-trigger:is(:hover, :focus-visible) {
   color: var(--foreground);
 }
@@ -101,13 +105,17 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 .activity-commentary {
-  color: var(--muted-foreground);
+  color: var(--foreground);
+}
+.activity-tool-waiting {
+  color: var(--foreground);
+  font-weight: 500;
 }
 .activity-tool-label {
-  display: inline-flex;
+  display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
@@ -139,8 +147,8 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 2px 20px;
+  gap: 2px;
+  padding: 3px 0 2px 20px;
 }
 .activity-shimmer {
   color: transparent;

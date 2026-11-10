@@ -4,6 +4,7 @@ import { STEP_PAGE_SIZE, stepTarget, truncateStepText } from './steps.ts'
 const PAGE_CACHE_SIZE = 3
 const CURSOR_CACHE_SIZE = 128
 const OVERVIEW_TEXT_LIMIT = 16 * 1024
+const TARGET_LABEL_LIMIT = 240
 
 export interface TimelineStep extends ChatStep {
   targetLabel: string
@@ -25,13 +26,17 @@ function compactionTrigger(step: ChatStep): 'automatic' | 'manual' | null {
 }
 
 function overview(step: ChatStep): TimelineStep {
+  const target = stepTarget(step).replace(/[\t\r\n]+/g, ' ')
   return {
     ...step,
     // 概述不持有参数和输出原文；二次展开时通过专用详情接口读取。
     input: '',
     output: '',
     compactionTrigger: compactionTrigger(step),
-    targetLabel: step.name === 'run_command' ? '' : truncateStepText(stepTarget(step), 1024),
+    targetLabel:
+      target.length > TARGET_LABEL_LIMIT
+        ? truncateStepText(target, TARGET_LABEL_LIMIT - 1) + '…'
+        : target,
     reasoning: truncateStepText(step.reasoning ?? '', OVERVIEW_TEXT_LIMIT),
     reasoningTruncated:
       step.reasoningTruncated || (step.reasoning?.length ?? 0) > OVERVIEW_TEXT_LIMIT,

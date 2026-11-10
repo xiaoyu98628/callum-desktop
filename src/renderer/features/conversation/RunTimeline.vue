@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { parseApprovalReview, record } from '@shared/chat'
 import { computed, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue'
-import { FileTextIcon, LoaderCircleIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
+import {
+  FileTextIcon,
+  FolderOpenIcon,
+  LoaderCircleIcon,
+  PencilIcon,
+  SearchIcon,
+  TerminalIcon,
+} from '@lucide/vue'
 import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
 import { STEP_PAGE_SIZE, stepLabel, stepParameters, stepResult } from '@shared/steps'
 import { TimelineWindow } from '@shared/timeline-window'
@@ -88,6 +95,16 @@ const review = computed(() => {
   }
 })
 const savedResult = computed(() => stepResult(detail.value?.value.output ?? ''))
+const completedActionLabels = new Map([
+  ['run_command', '已运行'],
+  ['read_file', '已读取'],
+  ['search_text', '已搜索'],
+])
+function operationLabel(step: TimelineStep): string {
+  if (step.status === 'completed' && step.targetLabel)
+    return completedActionLabels.get(step.name) ?? stepLabel(step)
+  return stepLabel(step)
+}
 let records: TimelineWindow | undefined
 let generation = 0,
   disposed = false,
@@ -650,9 +667,10 @@ onScopeDispose(() => {
             <ActivityDisclosure
               v-for="step in item.steps"
               :key="step.id"
+              class="activity-tool"
               :data-step-id="step.id"
               :expanded="opened === step.id"
-              :aria-label="`工具详情：${stepLabel(step)}`"
+              :aria-label="`工具详情：${operationLabel(step)}${step.targetLabel ? ` ${step.targetLabel}` : ''}`"
               @toggle="toggle(step)"
               @changed="changed"
               @collapsed="clearToolDetail(step)"
@@ -666,11 +684,19 @@ onScopeDispose(() => {
                   />
                   <TerminalIcon v-else-if="step.name === 'run_command'" aria-hidden="true" />
                   <PencilIcon v-else-if="step.name === 'apply_patch'" aria-hidden="true" />
+                  <SearchIcon v-else-if="step.name === 'search_text'" aria-hidden="true" />
+                  <FolderOpenIcon v-else-if="step.name === 'list_directory'" aria-hidden="true" />
                   <FileTextIcon v-else aria-hidden="true" />
                   <span
                     class="shrink-0"
-                    :class="step.status === 'failed' ? 'text-destructive' : ''"
-                    >{{ stepLabel(step) }}</span
+                    :class="{
+                      'text-destructive': step.status === 'failed',
+                      'activity-tool-waiting': [
+                        'awaiting_approval',
+                        'awaiting_user_input',
+                      ].includes(step.status),
+                    }"
+                    >{{ operationLabel(step) }}</span
                   >
                   <span
                     v-if="step.targetLabel"
