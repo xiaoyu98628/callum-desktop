@@ -61,7 +61,7 @@ export function currentOperationGroup(
   )
 }
 
-/** 计数只包含当前窗口中的操作，失败、等待和取消均不计入已完成。 */
+/** 标题按完成顺序列出动作类型，其他状态单独汇总。 */
 export function operationSummary(steps: ChatStep[]): {
   label: string
   notice: string
@@ -76,12 +76,11 @@ export function operationSummary(steps: ChatStep[]): {
     run_command: '运行命令',
     request_user_input: '结束补充输入',
   }
-  const completed = new Map<string, number>()
+  const completed = new Set<string>()
   const statuses = new Map<string, number>()
   for (const step of steps) {
     if (step.status === 'completed') {
-      const action = actions[step.name] ?? '执行其他操作'
-      completed.set(action, (completed.get(action) ?? 0) + 1)
+      completed.add(actions[step.name] ?? '执行其他操作')
     } else statuses.set(step.status, (statuses.get(step.status) ?? 0) + 1)
   }
   const notices: string[] = []
@@ -98,9 +97,7 @@ export function operationSummary(steps: ChatStep[]): {
   const running = (statuses.get('running') ?? 0) + (statuses.get('pending') ?? 0)
   if (running) notices.push(`${running} 项正在执行`)
   return {
-    label: completed.size
-      ? `已${[...completed].map(([action, count]) => `${action} ${count} 次`).join('、')}`
-      : `${steps.length} 项操作`,
+    label: completed.size ? `已${[...completed].join('、')}` : '操作记录',
     notice: notices.join('、'),
     danger: statuses.has('failed') || statuses.has('interrupted'),
     waiting: statuses.has('awaiting_approval') || statuses.has('awaiting_user_input'),

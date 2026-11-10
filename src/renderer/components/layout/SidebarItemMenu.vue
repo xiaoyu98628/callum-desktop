@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { EllipsisIcon, PencilIcon, SquarePenIcon, Trash2Icon } from '@lucide/vue'
+import {
+  ArchiveIcon,
+  EllipsisIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  Trash2Icon,
+  XIcon,
+} from '@lucide/vue'
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -11,11 +19,12 @@ import {
 } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 
-defineProps<{ label: string; workspace?: boolean; disabled: boolean }>()
+defineProps<{ label: string; workspace?: boolean; pinned?: boolean; disabled: boolean }>()
 const emit = defineEmits<{
   rename: [trigger: HTMLElement | null]
   delete: [trigger: HTMLElement | null]
-  newConversation: []
+  pin: []
+  archive: []
 }>()
 const openingDialog = ref(false)
 const trigger = ref<InstanceType<typeof Button> | null>(null)
@@ -26,7 +35,7 @@ function choose(action: 'rename' | 'delete'): void {
   else emit('delete', element instanceof HTMLElement ? element : null)
 }
 const itemClass =
-  'flex cursor-default items-center gap-2 rounded-md px-2 py-2 text-xs outline-none focus:bg-accent data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
+  'flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
 </script>
 
 <template>
@@ -46,26 +55,36 @@ const itemClass =
     <DropdownMenuPortal>
       <DropdownMenuContent
         align="start"
-        side="right"
-        :side-offset="workspace ? 34 : 6"
-        class="z-40 min-w-36 rounded-xl border bg-popover p-1 text-popover-foreground shadow-md"
+        side="bottom"
+        :side-offset="4"
+        :collision-padding="8"
+        class="z-40 w-40 rounded-2xl border bg-popover p-1 text-popover-foreground shadow-lg"
         @close-auto-focus="openingDialog && $event.preventDefault()"
       >
-        <DropdownMenuItem v-if="workspace" :class="itemClass" @select="emit('newConversation')"
-          ><SquarePenIcon class="size-3.5" aria-hidden="true" />新建对话</DropdownMenuItem
-        >
+        <DropdownMenuItem :class="itemClass" @select="emit('pin')">
+          <PinOffIcon v-if="pinned" class="size-3.5" aria-hidden="true" />
+          <PinIcon v-else class="size-3.5" aria-hidden="true" />{{ pinned ? '取消置顶' : '置顶' }}
+        </DropdownMenuItem>
         <DropdownMenuItem :class="itemClass" @select="choose('rename')"
           ><PencilIcon class="size-3.5" aria-hidden="true" />{{
-            workspace ? '编辑项目' : '重命名'
+            workspace ? '编辑' : '重命名'
           }}</DropdownMenuItem
         >
+        <DropdownMenuSeparator v-if="workspace" class="my-1 border-t" />
+        <DropdownMenuItem :class="itemClass" @select="emit('archive')">
+          <ArchiveIcon class="size-3.5" aria-hidden="true" />{{
+            workspace ? '归档项目' : '归档聊天'
+          }}
+        </DropdownMenuItem>
         <DropdownMenuSeparator class="my-1 border-t" />
         <DropdownMenuItem
-          :class="[itemClass, 'text-destructive focus:text-destructive']"
+          :class="[itemClass, !workspace && 'text-destructive focus:text-destructive']"
           @select="choose('delete')"
-          ><Trash2Icon class="size-3.5" aria-hidden="true" />{{
-            workspace ? '删除项目' : '删除会话'
-          }}</DropdownMenuItem
+          ><XIcon v-if="workspace" class="size-3.5" aria-hidden="true" /><Trash2Icon
+            v-else
+            class="size-3.5"
+            aria-hidden="true"
+          />{{ workspace ? '移除项目' : '删除会话' }}</DropdownMenuItem
         >
       </DropdownMenuContent>
     </DropdownMenuPortal>

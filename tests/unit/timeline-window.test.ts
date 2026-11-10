@@ -99,8 +99,17 @@ test('游标缓存淘汰后仍可回到开头，完整记录不受窗口容量�
   assert.ok(window.steps.length <= 150)
 })
 
-test('概述不持有命令参数和输出原文，跨批模型说明能关联后续工具', async () => {
+test('概述只保留有界的操作标签，跨批模型说明能关联后续工具', async () => {
   const source = Array.from({ length: 51 }, (_, i) => step(i + 1))
+  source[1] = {
+    ...source[1]!,
+    input: JSON.stringify({ arguments: { command: ['echo', '长'.repeat(500)] } }),
+  }
+  source[2] = {
+    ...source[2]!,
+    name: 'search_text',
+    input: JSON.stringify({ arguments: { path: '/tmp/project', query: '待审批' } }),
+  }
   source[49] = {
     ...source[49]!,
     type: 'model_call',
@@ -118,11 +127,10 @@ test('概述不持有命令参数和输出原文，跨批模型说明能关联�
   assert.ok(model.text.length <= 16384)
   assert.equal(model.textTruncated, true)
   assert.ok(window.steps.every((step) => !step.input && !step.output))
-  assert.ok(
-    window.steps
-      .filter((step) => step.name === 'run_command')
-      .every((step) => step.targetLabel === ''),
-  )
+  assert.equal(window.steps[0]?.targetLabel, 'echo command-1')
+  assert.equal(window.steps[1]?.targetLabel.length, 240)
+  assert.ok(window.steps[1]?.targetLabel.endsWith('…'))
+  assert.equal(window.steps[2]?.targetLabel, '"待审批"')
   window.merge([{ ...source[49]!, text: '', updatedAt: 3 }])
   assert.ok(window.steps.find((step) => step.id === model.id)?.text)
   assert.equal(source[49]?.input, 'sensitive-command-input')

@@ -3,12 +3,15 @@ import { constants } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import {
   array,
+  comparePinnedItems,
   id,
   isActiveRun,
   isVisible,
   PAGE_SIZE,
   parseName,
   parseWorkspaceInput,
+  parseWorkspaceChange,
+  parseCompactInput,
   record,
   string,
 } from '../../shared/chat.ts'
@@ -27,14 +30,18 @@ import type {
   UserInputAnswer,
   Conversation,
   ConversationPage,
+  ConversationUpdate,
   ConversationDetail,
   Workspace,
   WorkspaceInput,
+  WorkspaceChange,
   WorkspacePage,
+  WorkspaceUpdate,
   SendMessageInput,
   SendMessageResult,
   ResendMessageInput,
   ResendMessageResult,
+  CompactConversationInput,
 } from '../../shared/chat.ts'
 import {
   appendDelta,
@@ -46,6 +53,7 @@ import {
   stepFromRpc,
   workspaceFromRpc,
   userInputFromRpc,
+  contextUsageFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcError } from './rpc-client.ts'
 import { ModelCatalog } from './model-catalog.ts'
@@ -58,6 +66,9 @@ import {
 import { StepOutput, readStepDetails } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
+import { compactionOutcome, isManualCompactionStep } from '../../shared/manual-compaction.ts'
+import { parseContextUsageInput } from '../../shared/context-usage.ts'
+import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -78,6 +89,7 @@ export class ChatService {
   private readonly dirtySteps = new Map<string, ChatStep>()
   private readonly stepOutputs = new Map<string, StepOutput>()
   private readonly stepReads = new Map<string, Promise<StepDetails>>()
+  private readonly contextReads = new Map<string, Promise<ContextUsage>>()
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly history: { event: ChatEvent; bytes: number }[] = []
   private historyBytes = 0
@@ -154,7 +166,7 @@ export class ChatService {
       }),
       conversations: conversations
         .filter((item) => item.workspaceId === null && isVisible(item))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+        .sort(comparePinnedItems),
       hasMore,
       revision: this.revision,
     }
@@ -172,7 +184,7 @@ export class ChatService {
           value: {
             approval_policy: value.approvalPolicy,
             sandbox_mode: value.sandboxMode,
-            approvals_reviewer: 'user',
+            approvals_reviewer: value.approvalsReviewer,
           },
         }),
       ),
@@ -204,7 +216,7 @@ export class ChatService {
     return {
       conversations: conversations
         .filter((item) => item.workspaceId === workspaceId && isVisible(item))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+        .sort(comparePinnedItems),
       hasMore,
       revision: this.revision,
     }
@@ -224,7 +236,11 @@ export class ChatService {
       )
         workspaces = upsert(workspaces, change.value)
     }
-    return { workspaces: workspaces.filter(isVisible), hasMore, revision: this.revision }
+    return {
+      workspaces: workspaces.filter(isVisible).sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
   }
   private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
     if (this.mutations.has(key)) throw new Error('此操作正在提交，请稍候。')
@@ -236,26 +252,80 @@ export class ChatService {
       this.mutations.delete(key)
     }
   }
-  async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+  async createWorkspace(
+    input: WorkspaceInput,
+    selected?: ReadonlyMap<string, string>,
+  ): Promise<Workspace> {
     const parsed = parseWorkspaceInput(input)
-    if (!isAbsolute(parsed.rootPath)) throw new Error('请选择项目的绝对路径。')
-    const rootPath = await realpath(parsed.rootPath)
-    if (!(await stat(rootPath)).isDirectory()) throw new Error('项目必须是文件夹。')
-    return this.mutate(`path:${rootPath}`, async () => {
+    const paths: string[] = []
+    const seen = new Set<string>()
+    for (const path of [parsed.rootPath, ...(parsed.otherPaths ?? [])]) {
+      if (!path) continue
+      if (selected && !selected.has(path)) throw new Error('请重新选择项目文件夹。')
+      const directory = await resolveWorkspaceDirectory(path)
+      if (selected && (path !== directory.path || selected.get(path) !== directory.identity))
+        throw new Error('项目文件夹已变化，请重新选择。')
+      if (seen.has(directory.identity)) throw new Error('项目文件夹不能重复。')
+      seen.add(directory.identity)
+      paths.push(directory.path)
+    }
+    const [rootPath = '', ...otherPaths] = paths
+    return this.mutate(rootPath ? `path:${rootPath}` : 'workspace:create-empty', async () => {
       const value = workspaceFromRpc(
-        await this.request('workspace.create', { name: parsed.name, root_path: rootPath }),
+        await this.request('workspace.create', {
+          name: parsed.name,
+          root_path: rootPath,
+          other_paths: parsed.otherPaths === undefined ? undefined : otherPaths,
+        }),
       )
       this.publish({ kind: 'workspace', value })
       return value
     })
   }
-  async renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
-    return this.mutate(`workspace:${workspaceId}`, async () => {
-      const value = workspaceFromRpc(
-        await this.request('workspace.update', { id: id(workspaceId), name: parseName(name) }),
+  async updateWorkspace(
+    workspaceId: string,
+    input: WorkspaceChange,
+    selected?: ReadonlyMap<string, string>,
+  ): Promise<WorkspaceUpdate> {
+    const identifier = id(workspaceId)
+    const parsed = parseWorkspaceChange(input)
+    return this.mutate(`workspace:${identifier}`, async () => {
+      if (parsed.otherPaths !== undefined) {
+        const current = workspaceFromRpc(await this.request('workspace.get', { id: identifier }))
+        const folders = [current.rootPath, ...current.otherPaths].filter(Boolean)
+        const known = new Set(folders)
+        const expected = parsed.expectedFolders ?? []
+        if (
+          expected.length !== folders.length ||
+          expected[0] !== folders[0] ||
+          expected.some((path) => !known.has(path))
+        )
+          throw new Error('项目文件夹已更新，请重新打开项目编辑。')
+        for (const path of [parsed.rootPath ?? '', ...parsed.otherPaths]) {
+          if (!path) continue
+          const directory = await resolveWorkspaceDirectory(path)
+          if (
+            directory.path !== path ||
+            (selected && !known.has(path) && selected.get(path) !== directory.identity)
+          )
+            throw new Error('新增的项目文件夹必须重新通过选择器选择。')
+        }
+      } else if (parsed.rootPath !== undefined) {
+        const directory = await resolveWorkspaceDirectory(parsed.rootPath)
+        if (directory.path !== parsed.rootPath)
+          throw new Error('项目文件夹已变化，请重新打开项目编辑。')
+      }
+      const workspace = workspaceFromRpc(
+        await this.request('workspace.update', {
+          id: identifier,
+          name: parsed.name,
+          root_path: parsed.rootPath,
+          other_paths: parsed.otherPaths,
+          expected_folders: parsed.expectedFolders,
+        }),
       )
-      this.publish({ kind: 'workspace', value })
-      return value
+      this.publish({ kind: 'workspace', value: workspace })
+      return { workspace, revision: this.revision }
     })
   }
   async deleteWorkspace(workspaceId: string): Promise<Workspace> {
@@ -266,6 +336,50 @@ export class ChatService {
       this.publish({ kind: 'workspace', value })
       return value
     })
+  }
+  async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<WorkspaceUpdate> {
+    if (typeof pinned !== 'boolean') throw new Error('项目置顶状态无效')
+    return this.updateWorkspaceFlag(workspaceId, { pinned })
+  }
+  async setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<WorkspaceUpdate> {
+    if (typeof archived !== 'boolean') throw new Error('项目归档状态无效')
+    return this.updateWorkspaceFlag(workspaceId, { archived })
+  }
+  private async updateWorkspaceFlag(
+    workspaceId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<WorkspaceUpdate> {
+    const identifier = id(workspaceId)
+    return this.mutate(`workspace:${identifier}`, async () => {
+      const workspace = workspaceFromRpc(
+        await this.request('workspace.update', { id: identifier, ...change }),
+      )
+      this.publish({ kind: 'workspace', value: workspace })
+      return { workspace, revision: this.revision }
+    })
+  }
+  async archivedWorkspaces(offset: number): Promise<WorkspacePage> {
+    const start = this.revision
+    let workspaces = array(
+      (await this.request('workspace.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
+      workspaceFromRpc,
+    )
+    const hasMore = workspaces.length === PAGE_SIZE
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (
+        change.kind === 'workspace' &&
+        (offset === 0 || workspaces.some((item) => item.id === change.value.id))
+      )
+        workspaces = upsert(workspaces, change.value)
+    }
+    return {
+      workspaces: workspaces
+        .filter((item) => item.archivedAt !== null && item.deletedAt === null)
+        .sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
   }
   async renameConversation(conversationId: string, title: string): Promise<Conversation> {
     return this.mutate(`conversation:${conversationId}`, async () => {
@@ -288,6 +402,102 @@ export class ChatService {
       return value
     })
   }
+  async setConversationPinned(
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<ConversationUpdate> {
+    if (typeof pinned !== 'boolean') throw new Error('置顶状态无效')
+    return this.updateConversationFlag(conversationId, { pinned })
+  }
+  async setConversationArchived(
+    conversationId: string,
+    archived: boolean,
+  ): Promise<ConversationUpdate> {
+    if (typeof archived !== 'boolean') throw new Error('归档状态无效')
+    return this.updateConversationFlag(conversationId, { archived })
+  }
+  private async updateConversationFlag(
+    conversationId: string,
+    change: { pinned: boolean } | { archived: boolean },
+  ): Promise<ConversationUpdate> {
+    const identifier = id(conversationId)
+    return this.mutate(`conversation:${identifier}`, async () => {
+      if ('archived' in change && !change.archived) {
+        const conversation = conversationFromRpc(
+          await this.request('conversation.get', { id: identifier }),
+        )
+        if (conversation.workspaceId) {
+          const workspace = workspaceFromRpc(
+            await this.request('workspace.get', { id: conversation.workspaceId }),
+          )
+          if (!isVisible(workspace)) throw new Error('所属项目已被删除或归档，请先恢复项目。')
+        }
+      }
+      const conversation = conversationFromRpc(
+        await this.request('conversation.update', { id: identifier, ...change }),
+      )
+      this.publish({ kind: 'conversation', value: conversation })
+      return { conversation, revision: this.revision }
+    })
+  }
+  async archivedConversations(offset: number): Promise<ConversationPage> {
+    const start = this.revision
+    let conversations = array(
+      (await this.request('conversation.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
+      conversationFromRpc,
+    )
+    const hasMore = conversations.length === PAGE_SIZE
+    const hiddenWorkspaces = new Set<string>()
+    for (const { change } of this.since(start)) {
+      if (change.kind === 'service') throw new Error(change.error)
+      if (change.kind === 'workspace' && change.value.deletedAt !== null)
+        hiddenWorkspaces.add(change.value.id)
+      if (
+        change.kind === 'conversation' &&
+        (offset === 0 || conversations.some((item) => item.id === change.value.id))
+      )
+        conversations = upsert(conversations, change.value)
+    }
+    return {
+      conversations: conversations
+        .filter(
+          (item) =>
+            item.archivedAt !== null &&
+            item.deletedAt === null &&
+            (!item.workspaceId || !hiddenWorkspaces.has(item.workspaceId)),
+        )
+        .sort(comparePinnedItems),
+      hasMore,
+      revision: this.revision,
+    }
+  }
+  async contextUsage(input: ContextUsageInput): Promise<ContextUsage> {
+    const parsed = parseContextUsageInput(input)
+    const key = JSON.stringify(parsed)
+    const pending = this.contextReads.get(key)
+    if (pending) return pending
+    if (this.contextReads.size >= 16) throw new Error('上下文统计请求较多，请稍后重试。')
+    const task = (async () => {
+      const value = contextUsageFromRpc(
+        await this.request('conversation.context_usage', {
+          conversation_id: parsed.conversationId ?? undefined,
+          workspace_id: parsed.workspaceId ?? undefined,
+          model_id: parsed.modelId,
+          draft: parsed.draft,
+        }),
+      )
+      if (value.conversationId !== parsed.conversationId || value.modelId !== parsed.modelId)
+        throw new Error('上下文统计归属不匹配')
+      return value
+    })()
+    this.contextReads.set(key, task)
+    try {
+      return await task
+    } finally {
+      this.contextReads.delete(key)
+    }
+  }
+
   async detail(conversationId: string): Promise<ConversationDetail> {
     const start = this.revision
     const [conversation, messages, runs] = await Promise.all([
@@ -295,7 +505,7 @@ export class ChatService {
       this.request('conversation.messages', { conversation_id: conversationId, limit: PAGE_SIZE }),
       this.request('run.list', { conversation_id: conversationId, limit: 200 }),
     ])
-    const parsedRuns = array(runs ?? [], runFromRpc)
+    const parsedRuns = await this.compactionRuns(conversationId, array(runs ?? [], record))
     const pending = await Promise.all(
       parsedRuns
         .filter(isActiveRun)
@@ -325,8 +535,20 @@ export class ChatService {
         ? '本次执行状态未能完整保存，请重新打开应用后核对历史。'
         : null,
     }
-    for (const event of this.since(start)) this.mergeDetail(result, event.change)
+    let workspace = result.conversation.workspaceId
+      ? workspaceFromRpc(
+          await this.request('workspace.get', { id: result.conversation.workspaceId }),
+        )
+      : null
+    // 项目读取也属于详情快照，所有异步读取结束后再合并期间发生的事件。
+    for (const { change } of this.since(start)) {
+      this.mergeDetail(result, change)
+      if (change.kind === 'workspace' && change.value.id === workspace?.id) workspace = change.value
+    }
     if (!isVisible(result.conversation)) throw new Error('会话已被删除或归档。')
+    if (result.conversation.workspaceId !== (workspace?.id ?? null))
+      throw new Error('会话所属项目已变化，请重新打开会话。')
+    if (workspace && !isVisible(workspace)) throw new Error('所属项目已被删除或归档。')
     // 活动回答可能尚未落库；完整的内存消息优先于数据库及事件中的中间快照。
     for (const message of this.messages.values())
       if (message.conversationId === conversationId)
@@ -334,6 +556,57 @@ export class ChatService {
     result.messages.sort((a, b) => a.sequence - b.sequence)
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     result.revision = this.revision
+    return result
+  }
+  private async compactionRuns(
+    conversationId: string,
+    rows: Record<string, unknown>[],
+  ): Promise<ChatRun[]> {
+    const result: ChatRun[] = []
+    // 手动压缩不创建消息且不使用流式回答。每批最多四次首步骤查询，避免历史读取无界并发。
+    for (let offset = 0; offset < rows.length; offset += 4) {
+      result.push(
+        ...(await Promise.all(
+          rows.slice(offset, offset + 4).map(async (value) => {
+            const run = runFromRpc(value)
+            if (run.conversationId !== conversationId) throw new Error('执行会话归属不匹配')
+            const cached = this.runs.get(run.id)
+            if (cached?.compaction && isActiveRun(run))
+              return { ...run, compaction: cached.compaction }
+            if (value.stream !== false) return run
+            let first = [...this.steps.values()].find(
+              (step) => step.runId === run.id && step.sequence === 1,
+            )
+            if (!first) {
+              const steps = array(
+                await this.request('step.list', { run_id: run.id, after_sequence: 0, limit: 1 }),
+                stepFromRpc,
+              )
+              first = steps[0]
+            }
+            if (first && (first.runId !== run.id || first.conversationId !== conversationId))
+              throw new Error('压缩步骤归属不匹配')
+            if (!first || !isManualCompactionStep(first)) return run
+            const compaction: NonNullable<ChatRun['compaction']> = {
+              stepId: first.id,
+              outcome: null,
+              error: null,
+            }
+            if (run.status === 'completed') {
+              try {
+                compaction.outcome = compactionOutcome(
+                  await readStepDetails((method, params) => this.request(method, params), first),
+                )
+              } catch {
+                compaction.outcome = 'unknown'
+                compaction.error = '无法读取压缩结果，请重新读取。'
+              }
+            }
+            return { ...run, compaction }
+          }),
+        )),
+      )
+    }
     return result
   }
   async listSteps(conversationId: string, runId: string, afterSequence: number): Promise<StepPage> {
@@ -437,6 +710,20 @@ export class ChatService {
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
   }
+  async compact(input: CompactConversationInput): Promise<SendMessageResult> {
+    const parsed = parseCompactInput(input)
+    return this.mutate(`compact:${parsed.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.compact', {
+          conversation_id: parsed.conversationId,
+          model_id: parsed.modelId,
+        }),
+      )
+      const conversationId = id(value.conversation_id)
+      if (conversationId !== parsed.conversationId) throw new Error('压缩结果会话归属不匹配')
+      return { conversationId, runId: id(value.run_id) }
+    })
+  }
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
     return this.mutate(`resend:${input.conversationId}`, async () => {
       const value = record(
@@ -531,7 +818,12 @@ export class ChatService {
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
-    if (method === 'conversation.created' || method === 'conversation.updated') {
+    if (method === 'conversation.context_usage.updated') {
+      const value = contextUsageFromRpc(p.context_usage)
+      if (value.conversationId !== id(p.conversation_id) || value.runId !== id(p.run_id))
+        throw new Error('上下文占用通知归属不匹配')
+      this.publish({ kind: 'context-usage', value })
+    } else if (method === 'conversation.created' || method === 'conversation.updated') {
       this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)
@@ -562,6 +854,13 @@ export class ChatService {
         }
       this.saveStep(step)
       this.dirtySteps.delete(step.id)
+      const run = this.runs.get(step.runId)
+      if (run && !run.compaction && isManualCompactionStep(step)) {
+        if (run.conversationId !== step.conversationId) throw new Error('压缩执行归属不匹配')
+        const updated = { ...run, compaction: { stepId: step.id, outcome: null, error: null } }
+        this.runs.set(run.id, updated)
+        this.publish({ kind: 'run', value: updated, persisted: true })
+      }
       this.publish({ kind: 'step', value: step })
       if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
         const parent = this.steps.get(step.parentStepId)
@@ -641,9 +940,11 @@ export class ChatService {
       }
       this.flushTimer ??= setTimeout(() => this.flush(), 16)
     } else if (method.startsWith('run.') && p.run !== undefined) {
-      const run = runFromRpc(p.run)
+      let run = runFromRpc(p.run)
       if (id(p.conversation_id) !== run.conversationId || id(p.run_id) !== run.id)
         throw new Error('执行归属不匹配')
+      const previous = this.runs.get(run.id)
+      if (previous?.compaction) run = { ...run, compaction: previous.compaction }
       this.runs.set(run.id, run)
       if (p.persisted === false) {
         this.persistenceFailures.add(run.conversationId)
@@ -771,11 +1072,35 @@ export class ChatService {
   }
 }
 
-export function resolveBackendExecutable(resourceRoot: string): string {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64')
-    throw new Error('当前仅提供 macOS Apple Silicon 服务程序。')
-  return join(resourceRoot, 'backend', `${process.platform}-${process.arch}`, 'callum')
+/** Windows x64 客户端使用随附的 x86 服务；资源路径不依赖当前工作目录。 */
+export function resolveBackendExecutable(
+  resourceRoot: string,
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+): string {
+  if (platform === 'darwin' && architecture === 'arm64')
+    return join(resourceRoot, 'backend', 'darwin-arm64', 'callum')
+  if (platform === 'win32' && architecture === 'x64')
+    return join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe')
+  throw new Error(`当前没有适用于 ${platform}-${architecture} 的服务程序。`)
 }
+/** 选择和提交均校验实际目录，身份用于拒绝重复和选择后替换的目录。 */
+export async function resolveWorkspaceDirectory(
+  path: string,
+): Promise<{ path: string; identity: string }> {
+  if (!isAbsolute(path)) throw new Error('请选择项目的绝对路径。')
+  let actual: string
+  let info
+  try {
+    actual = await realpath(path)
+    info = await stat(actual, { bigint: true })
+  } catch {
+    throw new Error('项目文件夹不可用，请重新选择。')
+  }
+  if (!info.isDirectory()) throw new Error('项目必须是文件夹。')
+  return { path: actual, identity: `${info.dev}:${info.ino}` }
+}
+
 export function publicChatError(error: unknown): string {
   if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')
   if (error instanceof Error && !/ENOENT|EACCES|JSON|格式|无效|不匹配/.test(error.message))

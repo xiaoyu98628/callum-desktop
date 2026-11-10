@@ -1,3 +1,8 @@
+import { parseContextUsage } from './context-usage.ts'
+import type { ContextUsage } from './context-usage.ts'
+import { array, id, integer, record, string } from './validation.ts'
+export { array, id, integer, record, string } from './validation.ts'
+
 /** 客户端对话契约；仅包含界面需要的业务数据，不暴露厂商配置或传输方法。 */
 export interface ChatModel {
   id: string
@@ -10,6 +15,7 @@ export interface Conversation {
   modelId: string
   modelName: string
   updatedAt: number
+  pinnedAt: number | null
   deletedAt: number | null
   archivedAt: number | null
 }
@@ -17,13 +23,23 @@ export interface Workspace {
   id: string
   name: string
   rootPath: string
+  otherPaths: string[]
   updatedAt: number
+  pinnedAt: number | null
   deletedAt: number | null
   archivedAt: number | null
 }
 export interface WorkspaceInput {
   name: string
   rootPath: string
+  otherPaths?: string[]
+}
+/** 编辑项目；完整目录更新携带原目录快照，第一项为原主要目录。 */
+export interface WorkspaceChange {
+  name: string
+  rootPath?: string
+  otherPaths?: string[]
+  expectedFolders?: string[]
 }
 export interface SelectedDirectory {
   path: string
@@ -34,9 +50,19 @@ export interface ConversationPage {
   hasMore: boolean
   revision: number
 }
+/** 管理操作返回所发布快照的版本，用于丢弃迟到通知和查询。 */
+export interface ConversationUpdate {
+  conversation: Conversation
+  revision: number
+}
 export interface WorkspacePage {
   workspaces: Workspace[]
   hasMore: boolean
+  revision: number
+}
+/** 项目管理快照与其发布版本。 */
+export interface WorkspaceUpdate {
+  workspace: Workspace
   revision: number
 }
 export interface ContentBlock {
@@ -69,6 +95,12 @@ export interface ChatRun {
   error: string | null
   createdAt: number
   finishedAt: number | null
+  /** 仅在首个持久化步骤明确标记为手动压缩时提供。 */
+  compaction?: {
+    stepId: string
+    outcome: 'compressed' | 'skipped' | 'unknown' | null
+    error: string | null
+  }
 }
 /** 步骤快照包含有界的即时文字和工具输出；持久化详情通过专用查询读取。 */
 export interface ChatStep {
@@ -129,6 +161,11 @@ export interface DirectoryGrant {
   revokedAt: number | null
 }
 export type ApprovalScope = 'once' | 'conversation_directory'
+export interface ApprovalReview {
+  stepId: string
+  decision: 'approved' | 'rejected' | 'handoff'
+  reason: string
+}
 export interface ChatApproval {
   id: string
   conversationId: string
@@ -137,6 +174,8 @@ export interface ChatApproval {
   toolName: string
   snapshot: string
   directoryScope: DirectoryScope | null
+  decidedBy?: string
+  review?: ApprovalReview
 }
 export interface UserInputAnswer {
   optionIndex: number | null
@@ -156,6 +195,7 @@ export interface ChatUserInput {
   updatedAt: number
 }
 export type ChatChange =
+  | { kind: 'context-usage'; value: ContextUsage }
   | { kind: 'conversation'; value: Conversation }
   | { kind: 'workspace'; value: Workspace }
   | { kind: 'message'; value: ChatMessage }
@@ -200,6 +240,10 @@ export interface SendMessageResult {
   conversationId: string
   runId: string
 }
+export interface CompactConversationInput {
+  conversationId: string
+  modelId: string
+}
 export interface ResendMessageInput {
   conversationId: string
   messageId: string
@@ -212,35 +256,12 @@ export interface ResendMessageResult extends SendMessageResult {
 export type ChatResult<T> = { ok: true; value: T } | { ok: false; error: string }
 export const MAX_MESSAGE_LENGTH = 100_000
 export const PAGE_SIZE = 50
+export const MAX_WORKSPACE_FOLDERS = 16
 
 export function isActiveRun(run: ChatRun): boolean {
   return ['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(run.status)
 }
 
-export function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value))
-    throw new Error('数据格式无效')
-  return value as Record<string, unknown>
-}
-export function string(value: unknown): string {
-  if (typeof value !== 'string') throw new Error('文本格式无效')
-  return value
-}
-export function integer(value: unknown, min = 0): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min)
-    throw new Error('数字格式无效')
-  return value
-}
-export function id(value: unknown): string {
-  const result = string(value)
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result))
-    throw new Error('标识无效')
-  return result
-}
-export function array<T>(value: unknown, parse: (item: unknown) => T): T[] {
-  if (!Array.isArray(value) || value.length > 500) throw new Error('列表格式无效')
-  return value.map(parse)
-}
 export function parseModel(value: unknown): ChatModel {
   const v = record(value)
   return { id: id(v.id), name: string(v.name) }
@@ -254,12 +275,30 @@ export function parseConversation(value: unknown): Conversation {
     modelId: id(v.modelId),
     modelName: string(v.modelName),
     updatedAt: integer(v.updatedAt),
+    pinnedAt: v.pinnedAt === null ? null : integer(v.pinnedAt),
     deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
     archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
   }
 }
 export function isVisible(value: { deletedAt: number | null; archivedAt: number | null }): boolean {
   return value.deletedAt === null && value.archivedAt === null
+}
+/** 与 Go 的 pinned_at、updated_at、id 倒序保持一致。 */
+export function comparePinnedItems(
+  a: { id: string; pinnedAt: number | null; updatedAt: number },
+  b: { id: string; pinnedAt: number | null; updatedAt: number },
+): number {
+  return (
+    (b.pinnedAt ?? -1) - (a.pinnedAt ?? -1) || b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)
+  )
+}
+export function parseConversationUpdate(value: unknown): ConversationUpdate {
+  const v = record(value)
+  return { conversation: parseConversation(v.conversation), revision: integer(v.revision, 1) }
+}
+export function parseWorkspaceUpdate(value: unknown): WorkspaceUpdate {
+  const v = record(value)
+  return { workspace: parseWorkspace(v.workspace), revision: integer(v.revision, 1) }
 }
 export function parseName(value: unknown): string {
   const name = string(value).trim()
@@ -273,28 +312,84 @@ export function parseName(value: unknown): string {
 }
 export function parseWorkspaceInput(value: unknown): WorkspaceInput {
   const v = record(value)
-  if (Object.keys(v).some((key) => !['name', 'rootPath'].includes(key)))
+  if (Object.keys(v).some((key) => !['name', 'rootPath', 'otherPaths'].includes(key)))
     throw new Error('项目参数无效')
-  const rootPath = string(v.rootPath)
-  if (!rootPath || rootPath.length > 8192 || rootPath.includes('\0'))
-    throw new Error('项目路径无效')
-  return { name: parseName(v.name), rootPath }
+  const rootPath = v.rootPath === '' ? '' : workspacePath(v.rootPath)
+  return {
+    name: parseName(v.name),
+    rootPath,
+    ...(v.otherPaths === undefined
+      ? {}
+      : { otherPaths: otherWorkspacePaths(rootPath, v.otherPaths) }),
+  }
+}
+export function parseWorkspaceChange(value: unknown): WorkspaceChange {
+  const v = record(value)
+  if (
+    Object.keys(v).some(
+      (key) => !['name', 'rootPath', 'otherPaths', 'expectedFolders'].includes(key),
+    )
+  )
+    throw new Error('项目更新参数无效')
+  const rootPath =
+    v.rootPath === undefined ? undefined : v.rootPath === '' ? '' : workspacePath(v.rootPath)
+  if (
+    (v.otherPaths === undefined) !== (v.expectedFolders === undefined) ||
+    (v.otherPaths !== undefined && rootPath === undefined)
+  )
+    throw new Error('项目目录更新必须包含完整列表和原目录快照')
+  if (rootPath === '' && v.otherPaths === undefined)
+    throw new Error('清空主要目录必须同时提交完整目录列表')
+  const expected =
+    v.expectedFolders === undefined ? undefined : array(v.expectedFolders, workspacePath)
+  if (
+    expected &&
+    (expected.length > MAX_WORKSPACE_FOLDERS || new Set(expected).size !== expected.length)
+  )
+    throw new Error('原项目目录快照无效')
+  return {
+    name: parseName(v.name),
+    ...(rootPath === undefined ? {} : { rootPath }),
+    ...(v.otherPaths === undefined
+      ? {}
+      : {
+          otherPaths: otherWorkspacePaths(rootPath ?? '', v.otherPaths),
+          expectedFolders: expected ?? [],
+        }),
+  }
 }
 export function parseWorkspace(value: unknown): Workspace {
   const v = record(value)
+  const rootPath = v.rootPath === '' ? '' : workspacePath(v.rootPath)
   return {
     id: id(v.id),
     name: string(v.name),
-    rootPath: string(v.rootPath),
+    rootPath,
+    otherPaths: otherWorkspacePaths(rootPath, v.otherPaths ?? []),
     updatedAt: integer(v.updatedAt),
+    pinnedAt: v.pinnedAt === null ? null : integer(v.pinnedAt),
     deletedAt: v.deletedAt === null ? null : integer(v.deletedAt),
     archivedAt: v.archivedAt === null ? null : integer(v.archivedAt),
   }
 }
-export function parseSelectedDirectory(value: unknown): SelectedDirectory | null {
-  if (value === null) return null
+function workspacePath(value: unknown): string {
+  const path = string(value)
+  if (!path || new TextEncoder().encode(path).length > 8192 || path.includes('\0'))
+    throw new Error('项目路径无效')
+  return path
+}
+function otherWorkspacePaths(rootPath: string, value: unknown): string[] {
+  const paths = array(value, workspacePath)
+  if (!rootPath && paths.length) throw new Error('没有主要目录时不能包含其他目录')
+  if (paths.length >= MAX_WORKSPACE_FOLDERS)
+    throw new Error(`项目最多可添加 ${MAX_WORKSPACE_FOLDERS} 个文件夹。`)
+  if (new Set([rootPath, ...paths]).size !== paths.length + 1)
+    throw new Error('项目文件夹不能重复。')
+  return paths
+}
+export function parseSelectedDirectory(value: unknown): SelectedDirectory {
   const v = record(value)
-  return { path: string(v.path), name: string(v.name) }
+  return { path: workspacePath(v.path), name: string(v.name) }
 }
 export function parseConversationPage(value: unknown): ConversationPage {
   const v = record(value)
@@ -332,6 +427,13 @@ export function parseMessage(value: unknown): ChatMessage {
 }
 export function parseRun(value: unknown): ChatRun {
   const v = record(value)
+  const compaction = v.compaction === undefined ? null : record(v.compaction)
+  if (
+    compaction &&
+    compaction.outcome !== null &&
+    !['compressed', 'skipped', 'unknown'].includes(string(compaction.outcome))
+  )
+    throw new Error('压缩结果状态无效')
   const status = string(v.status)
   if (
     ![
@@ -353,6 +455,15 @@ export function parseRun(value: unknown): ChatRun {
     error: v.error === null ? null : string(v.error),
     createdAt: integer(v.createdAt),
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
+    ...(compaction
+      ? {
+          compaction: {
+            stepId: id(compaction.stepId),
+            outcome: compaction.outcome as 'compressed' | 'skipped' | 'unknown' | null,
+            error: compaction.error === null ? null : string(compaction.error),
+          },
+        }
+      : {}),
   }
 }
 function reasoningProjection(v: Record<string, unknown>): {
@@ -476,6 +587,15 @@ export function parseDirectoryGrant(value: unknown): DirectoryGrant {
     revokedAt: v.revokedAt === null ? null : integer(v.revokedAt),
   }
 }
+export function parseApprovalReview(value: unknown): ApprovalReview {
+  const v = record(value)
+  if (v.decision !== 'approved' && v.decision !== 'rejected' && v.decision !== 'handoff')
+    throw new Error('审批审核结论无效')
+  const reason = string(v.reason)
+  if (!reason.trim() || new TextEncoder().encode(reason).length > 512)
+    throw new Error('审批审核理由无效')
+  return { stepId: id(v.stepId), decision: v.decision, reason }
+}
 export function parseApproval(value: unknown): ChatApproval {
   const v = record(value)
   return {
@@ -486,6 +606,8 @@ export function parseApproval(value: unknown): ChatApproval {
     toolName: string(v.toolName),
     snapshot: string(v.snapshot),
     directoryScope: v.directoryScope == null ? null : parseDirectoryScope(v.directoryScope),
+    ...(v.decidedBy == null ? {} : { decidedBy: string(v.decidedBy) }),
+    ...(v.review == null ? {} : { review: parseApprovalReview(v.review) }),
   }
 }
 export function parseUserInputAnswer(value: unknown): UserInputAnswer {
@@ -579,6 +701,12 @@ export function parseDetail(value: unknown): ConversationDetail {
     warning: v.warning === null ? null : string(v.warning),
   }
 }
+export function parseCompactInput(value: unknown): CompactConversationInput {
+  const v = record(value)
+  if (Object.keys(v).some((key) => key !== 'conversationId' && key !== 'modelId'))
+    throw new Error('压缩参数无效')
+  return { conversationId: id(v.conversationId), modelId: id(v.modelId) }
+}
 export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)
   if (
@@ -628,6 +756,8 @@ export function parseChatEvent(value: unknown): ChatEvent {
     change = record(v.change)
   const revision = integer(v.revision)
   switch (change.kind) {
+    case 'context-usage':
+      return { revision, change: { kind: 'context-usage', value: parseContextUsage(change.value) } }
     case 'workspace':
       return { revision, change: { kind: 'workspace', value: parseWorkspace(change.value) } }
     case 'conversation':

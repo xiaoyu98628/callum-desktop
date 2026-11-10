@@ -11,12 +11,22 @@ import {
 import { XIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
-import { getDesktopApi } from '@/lib/desktop'
 import type { ExecutionSettings } from '@shared/execution'
+import type { AppInfo } from '@shared/desktop-api'
 
-const props = defineProps<{ returnFocus: HTMLElement | null }>()
+const props = defineProps<{
+  returnFocus: HTMLElement | null
+  platform: AppInfo['platform'] | undefined
+}>()
 const emit = defineEmits<{ close: [] }>()
-const { state, workspace, loadDirectories, revokeDirectory } = useConversations()
+const {
+  state,
+  workspace,
+  loadDirectories,
+  revokeDirectory,
+  refreshExecutionSettings,
+  saveExecutionSettings,
+} = useConversations()
 const conversationId = state.selectedId
 const grants = computed(() => state.detail?.directoryGrants ?? [])
 const execution = ref<ExecutionSettings | null>(null)
@@ -25,7 +35,9 @@ const executionLoading = ref(false),
   executionError = ref(''),
   executionSaved = ref(false)
 let disposed = false
-const busy = computed(() => !!state.revokingDirectory || executionSaving.value)
+const busy = computed(
+  () => !!state.revokingDirectory || state.executionSettingsSaving || executionSaving.value,
+)
 const unavailable = computed(() => state.directoriesLoading || !!state.serviceError || busy.value)
 function restoreFocus(event: Event): void {
   event.preventDefault()
@@ -38,9 +50,9 @@ async function loadExecution(): Promise<void> {
   executionError.value = ''
   executionSaved.value = false
   try {
-    const result = await getDesktopApi().getExecutionSettings()
-    if (!result.ok) throw new Error(result.error)
-    if (!disposed) execution.value = result.value
+    const result = await refreshExecutionSettings()
+    if (!result) throw new Error(state.executionSettingsError || '执行权限正在读取，请重试。')
+    if (!disposed) execution.value = { ...result }
   } catch (error) {
     if (!disposed)
       executionError.value = error instanceof Error ? error.message : '无法读取执行权限，请重试。'
@@ -61,10 +73,9 @@ async function saveExecution(): Promise<void> {
   executionError.value = ''
   executionSaved.value = false
   try {
-    const result = await getDesktopApi().updateExecutionSettings({ ...execution.value })
-    if (!result.ok) throw new Error(result.error)
+    const result = await saveExecutionSettings({ ...execution.value })
     if (!disposed) {
-      execution.value = result.value
+      execution.value = { ...result }
       executionSaved.value = true
     }
   } catch (error) {
@@ -74,6 +85,19 @@ async function saveExecution(): Promise<void> {
   } finally {
     if (!disposed) executionSaving.value = false
   }
+}
+function changeSandbox(): void {
+  if (
+    execution.value?.sandboxMode !== 'danger-full-access' &&
+    state.executionSettings?.sandboxMode === 'danger-full-access' &&
+    execution.value
+  )
+    execution.value.approvalPolicy = 'on-request'
+  executionSaved.value = false
+}
+function changePolicy(): void {
+  if (execution.value?.approvalPolicy === 'never') execution.value.approvalsReviewer = 'user'
+  executionSaved.value = false
 }
 watch(
   () => state.selectedId,
@@ -102,7 +126,7 @@ onScopeDispose(() => {
       >
         <DialogTitle class="pr-8 text-base font-semibold">会话权限</DialogTitle>
         <DialogDescription class="mt-2 text-xs leading-6 text-muted-foreground">
-          沙箱与审批策略分别控制命令的访问范围和询问时机。下方默认设置影响所有会话的新任务，已受理任务保持原权限；额外目录授权仅关联当前会话。
+          命令默认使用只读沙箱。允许项目写入时，命令仍需单次审批。下方设置影响所有会话的新任务，已受理任务保持原权限。额外目录授权仅关联当前会话。
         </DialogDescription>
         <Button
           variant="ghost"
@@ -128,10 +152,25 @@ onScopeDispose(() => {
                   aria-label="沙箱访问范围"
                   class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
                   :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
-                  @change="executionSaved = false"
+                  @change="changeSandbox"
                 >
-                  <option value="workspace-write">项目自动：项目内可读写，命令网络关闭</option>
-                  <option value="read-only">只读：读取可自动执行，修改需要审批</option>
+                  <option
+                    v-if="execution.sandboxMode === 'danger-full-access'"
+                    value="danger-full-access"
+                    disabled
+                  >
+                    完全访问权限
+                  </option>
+                  <option value="workspace-write">
+                    项目写入：普通项目补丁可自动执行，命令{{
+                      platform === 'darwin' || platform === 'win32' ? '写入需审批' : '需逐次审批'
+                    }}
+                  </option>
+                  <option value="read-only">
+                    只读：文件修改需审批，命令{{
+                      platform === 'darwin' || platform === 'win32' ? '使用只读沙箱' : '需逐次审批'
+                    }}
+                  </option>
                 </select>
               </label>
               <label class="block"
@@ -140,17 +179,38 @@ onScopeDispose(() => {
                   v-model="execution.approvalPolicy"
                   aria-label="审批方式"
                   class="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-xs"
-                  :disabled="executionLoading || busy || !!state.serviceError || !!executionError"
-                  @change="executionSaved = false"
+                  :disabled="
+                    execution.sandboxMode === 'danger-full-access' ||
+                    executionLoading ||
+                    busy ||
+                    !!state.serviceError ||
+                    !!executionError
+                  "
+                  @change="changePolicy"
                 >
                   <option value="on-request">按需询问</option>
                   <option value="always">每次询问</option>
                   <option value="never">不询问：拒绝仍需审批的操作</option>
                 </select>
               </label>
-              <p class="text-muted-foreground">
-                macOS
-                命令及子进程使用系统沙箱。未关联项目时仅允许读取及私有临时目录写入；其他平台的命令仍需独立审批。模型请求不受命令网络限制影响。
+              <p v-if="execution.approvalsReviewer === 'auto_review'" class="text-muted-foreground">
+                已开启帮我审批。超出 AI 审核范围的操作仍由你决定。
+              </p>
+              <p
+                v-if="execution.sandboxMode === 'danger-full-access'"
+                class="text-muted-foreground"
+              >
+                命令以当前系统用户权限访问文件和网络，审批关闭。
+              </p>
+              <p v-else-if="platform === 'darwin'" class="text-muted-foreground">
+                命令及子进程使用系统沙箱，默认只读且网络关闭，私有临时目录可写。项目内命令写入需单独审批。模型请求不受命令网络限制影响。
+              </p>
+              <p v-else-if="platform === 'win32'" class="text-muted-foreground">
+                命令及子进程使用 Windows
+                原生沙箱，默认只读且网络关闭，本次私有临时目录和隔离配置存储可写。项目内命令写入需单独审批。读取范围为项目、工作目录、程序目录及系统已授权资源，其他位置可使用文件工具。
+              </p>
+              <p v-else class="text-muted-foreground">
+                当前平台的命令未使用系统沙箱。每条命令需独立审批，批准后使用当前系统用户的文件及网络权限；沙箱内项目写入申请暂不可用。文件工具仍按所选模式校验权限。
               </p>
             </template>
             <p v-if="executionError" role="alert" class="break-words text-destructive">
@@ -180,7 +240,11 @@ onScopeDispose(() => {
           <div v-if="state.workspaceId" class="rounded-lg bg-muted/50 p-3">
             <p class="font-medium">当前项目</p>
             <p class="break-all text-muted-foreground">
-              {{ workspace?.rootPath ?? '项目详情尚未加载' }}
+              {{
+                workspace
+                  ? workspace.rootPath || '未添加文件夹，请使用绝对路径'
+                  : '项目详情尚未加载'
+              }}
             </p>
           </div>
           <div>

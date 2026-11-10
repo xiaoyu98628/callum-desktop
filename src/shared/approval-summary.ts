@@ -64,9 +64,24 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
             '本次请求在沙箱外运行。批准后，此命令可使用当前系统用户的文件及网络权限；不会保存为后续命令授权。'
           add('执行方式', '本次沙箱外运行')
         } else if (boundary.sandboxed === true) {
-          executionNotice = '此命令仍在系统沙箱内运行，网络关闭；批准不会扩大文件或网络权限。'
-          add('执行方式', boundary.sandbox_mode === 'read-only' ? '只读沙箱' : '项目写入沙箱')
+          if (boundary.sandbox_mode === 'workspace-write') {
+            executionNotice =
+              '批准后，本次命令可修改或删除项目内的文件。命令仍在系统沙箱内运行，网络关闭。'
+            add('执行方式', '沙箱内项目写入')
+            if (Array.isArray(details.writable_roots)) add('可写项目', details.writable_roots[0])
+          } else {
+            executionNotice =
+              details.sandbox_backend === 'windows-appcontainer'
+                ? '此命令在 Windows 只读沙箱内运行，本次私有临时目录和隔离配置存储可写，网络关闭。'
+                : '此命令在只读沙箱内运行，仅本次私有临时目录可写，网络关闭。'
+            add('执行方式', '只读沙箱')
+          }
           add('网络访问', '关闭')
+          if (
+            details.sandbox_backend === 'windows-appcontainer' &&
+            Array.isArray(details.readable_roots)
+          )
+            for (const path of details.readable_roots) add('可读目录', path)
         } else {
           executionNotice =
             '此命令未使用系统沙箱。批准只针对本次命令，使用当前系统用户的文件及网络权限。'

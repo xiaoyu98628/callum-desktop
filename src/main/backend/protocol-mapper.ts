@@ -1,4 +1,6 @@
 import { truncateStepText } from '../../shared/steps.ts'
+import { parseContextUsage } from '../../shared/context-usage.ts'
+import type { ContextUsage } from '../../shared/context-usage.ts'
 import {
   array,
   id,
@@ -24,6 +26,29 @@ import type {
   Conversation,
   Workspace,
 } from '../../shared/chat.ts'
+
+export function contextUsageFromRpc(value: unknown): ContextUsage {
+  const v = record(value)
+  const conversationId = v.conversation_id === '' ? null : v.conversation_id
+  return parseContextUsage({
+    id: conversationId ?? '',
+    conversationId,
+    modelId: v.model_id,
+    runId: v.run_id == null || v.run_id === '' ? null : v.run_id,
+    snapshotRevision: v.revision,
+    updatedAt: v.updated_at,
+    state: v.state,
+    reason: v.reason ?? '',
+    estimatedTokens: v.estimated_tokens,
+    draftTokens: v.draft_tokens,
+    inputLimit: v.input_limit,
+    contextWindow: v.context_window,
+    outputReserve: v.output_reserve,
+    safetyMargin: v.safety_margin,
+    estimationMethod: v.estimation_method,
+    actualInputTokens: v.actual_input_tokens,
+  })
+}
 
 export function userInputFromRpc(value: unknown): ChatUserInput {
   const v = record(value)
@@ -54,6 +79,7 @@ export function conversationFromRpc(value: unknown): Conversation {
     modelId: model.id,
     modelName: model.display_name,
     updatedAt: v.updated_at,
+    pinnedAt: v.pinned_at ?? null,
     deletedAt: v.deleted_at ?? null,
     archivedAt: v.archived_at ?? null,
   })
@@ -64,7 +90,9 @@ export function workspaceFromRpc(value: unknown): Workspace {
     id: v.id,
     name: v.name,
     rootPath: v.root_path,
+    otherPaths: v.other_paths,
     updatedAt: v.updated_at,
+    pinnedAt: v.pinned_at ?? null,
     deletedAt: v.deleted_at ?? null,
     archivedAt: v.archived_at ?? null,
   })
@@ -103,6 +131,7 @@ export function approvalFromRpc(value: unknown, conversationId: string): ChatApp
   const v = record(value),
     request = record(v.request)
   const tool = request.tool === undefined ? null : record(request.tool)
+  const review = v.review == null ? null : record(v.review)
   return parseApproval({
     id: v.id,
     conversationId,
@@ -110,6 +139,8 @@ export function approvalFromRpc(value: unknown, conversationId: string): ChatApp
     status: v.status,
     toolName: tool ? string(tool.name) : '工具操作',
     snapshot: JSON.stringify(request, null, 2),
+    decidedBy: v.decided_by,
+    review: review && { stepId: review.step_id, decision: review.decision, reason: review.reason },
     directoryScope:
       v.directory_scope == null
         ? null

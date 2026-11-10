@@ -97,6 +97,7 @@ watch([() => props.activePage, () => state.selectedId], () => {
   <ConversationPermissionsDialog
     v-if="permissionsOpen && activePage === 'conversation' && state.selectedId"
     :return-focus="permissionsTrigger?.$el ?? null"
+    :platform="appInfo?.platform"
     @close="permissionsOpen = false"
   />
 </template>

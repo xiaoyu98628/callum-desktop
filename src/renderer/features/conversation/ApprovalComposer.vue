@@ -89,6 +89,12 @@ watch(
         </Button>
       </div>
       <p
+        v-if="approval.review?.decision === 'handoff'"
+        class="mb-3 break-words rounded-lg bg-muted/60 p-3 text-muted-foreground"
+      >
+        AI 转交人工审核。{{ approval.review.reason }}
+      </p>
+      <p
         v-if="summary.executionNotice"
         class="mb-3 rounded-lg bg-muted/60 p-3 text-muted-foreground"
       >

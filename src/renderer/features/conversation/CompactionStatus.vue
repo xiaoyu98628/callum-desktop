@@ -1,15 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { RunStatus } from '@shared/chat'
-import { compactionStatus } from '@shared/timeline-groups'
-import type { CompactionGroup } from '@shared/timeline-groups'
+import type { CompactionDisplayStatus } from '@shared/manual-compaction'
 
-const props = defineProps<{
-  group: CompactionGroup
-  connected: boolean
-  runStatus: RunStatus | null
-}>()
-const status = computed(() => compactionStatus(props.group.steps, props.connected, props.runStatus))
+defineProps<{ status: CompactionDisplayStatus }>()
 </script>
 
 <template>

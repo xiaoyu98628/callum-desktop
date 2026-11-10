@@ -14,7 +14,10 @@ const props = defineProps<{
 const emit = defineEmits<{ inspect: []; changed: []; closing: [] }>()
 const manual = ref<boolean | null>(null)
 const summary = computed(() => operationSummary(props.group.steps))
-const expanded = computed(() => manual.value ?? (props.current || summary.value.waiting))
+const grouped = computed(() => props.partial || props.group.steps.length > 1)
+const expanded = computed(
+  () => !grouped.value || (manual.value ?? (props.current || summary.value.waiting)),
+)
 // 分组跨越展示窗口时不把窗口内计数当作整组总数，也不暴露分页提示。
 const title = computed(() => (props.partial ? '操作记录' : summary.value.label))
 const notice = computed(() =>
@@ -54,11 +57,12 @@ watch(expanded, (value) => {
 
 <template>
   <ActivityDisclosure
-    class="activity-operation-group"
-    :data-operation-group="group.id"
+    :class="{ 'activity-operation-group': grouped }"
+    :data-operation-group="grouped ? group.id : undefined"
     :expanded="expanded"
+    :show-header="grouped"
     :aria-label="`操作分组：${label}`"
-    content-label="本组操作"
+    :content-label="grouped ? '本组操作' : ''"
     @toggle="toggle"
     @changed="emit('changed')"
   >
@@ -75,6 +79,6 @@ watch(expanded, (value) => {
         </span>
       </span>
     </template>
-    <div class="activity-group-operations"><slot /></div>
+    <div :class="{ 'activity-group-operations': grouped }"><slot /></div>
   </ActivityDisclosure>
 </template>

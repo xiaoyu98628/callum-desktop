@@ -16,14 +16,17 @@ import {
   parseResendResult,
   parseConversation,
   parseConversationPage,
+  parseConversationUpdate,
   parseSelectedDirectory,
   parseWorkspace,
   parseWorkspacePage,
+  parseWorkspaceUpdate,
   parseUserInput,
   parseDirectoryGrant,
 } from '../shared/chat'
 import { parseCatalog } from '../shared/models'
 import { parseExecutionSettings } from '../shared/execution'
+import { parseContextUsage } from '../shared/context-usage'
 
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('无效的操作结果')
@@ -81,16 +84,28 @@ const desktopApi: DesktopApi = {
       parseOverview,
     )
   },
+  async getContextUsage(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getContextUsage, input),
+      parseContextUsage,
+    )
+  },
   async getConversation(conversationId) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getConversation, conversationId),
       parseDetail,
     )
   },
-  async chooseWorkspaceDirectory() {
+  async chooseWorkspaceDirectories(selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.chooseWorkspaceDirectory),
-      parseSelectedDirectory,
+      await ipcRenderer.invoke(IPC_CHANNELS.chooseWorkspaceDirectories, selectionId),
+      (value) => array(value, parseSelectedDirectory),
+    )
+  },
+  async discardWorkspaceDirectories(selectionId, path) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.discardWorkspaceDirectories, selectionId, path),
+      () => null,
     )
   },
   async listWorkspaces(offset) {
@@ -105,22 +120,40 @@ const desktopApi: DesktopApi = {
       parseConversationPage,
     )
   },
-  async createWorkspace(input) {
+  async createWorkspace(input, selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.createWorkspace, input),
+      await ipcRenderer.invoke(IPC_CHANNELS.createWorkspace, input, selectionId),
       parseWorkspace,
     )
   },
-  async renameWorkspace(workspaceId, name) {
+  async updateWorkspace(workspaceId, input, selectionId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.renameWorkspace, workspaceId, name),
-      parseWorkspace,
+      await ipcRenderer.invoke(IPC_CHANNELS.updateWorkspace, workspaceId, input, selectionId),
+      parseWorkspaceUpdate,
     )
   },
   async deleteWorkspace(workspaceId) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.deleteWorkspace, workspaceId),
       parseWorkspace,
+    )
+  },
+  async setWorkspacePinned(workspaceId, pinned) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setWorkspacePinned, workspaceId, pinned),
+      parseWorkspaceUpdate,
+    )
+  },
+  async setWorkspaceArchived(workspaceId, archived) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceArchived, workspaceId, archived),
+      parseWorkspaceUpdate,
+    )
+  },
+  async listArchivedWorkspaces(offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listArchivedWorkspaces, offset),
+      parseWorkspacePage,
     )
   },
   async renameConversation(conversationId, title) {
@@ -133,6 +166,24 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.deleteConversation, conversationId),
       parseConversation,
+    )
+  },
+  async setConversationPinned(conversationId, pinned) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setConversationPinned, conversationId, pinned),
+      parseConversationUpdate,
+    )
+  },
+  async setConversationArchived(conversationId, archived) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.setConversationArchived, conversationId, archived),
+      parseConversationUpdate,
+    )
+  },
+  async listArchivedConversations(offset) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listArchivedConversations, offset),
+      parseConversationPage,
     )
   },
   async getEarlierMessages(conversationId, beforeSequence) {
@@ -155,6 +206,12 @@ const desktopApi: DesktopApi = {
   },
   async sendMessage(input) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.sendMessage, input), parseSendResult)
+  },
+  async compactConversation(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.compactConversation, input),
+      parseSendResult,
+    )
   },
   async resendMessage(input) {
     return parseResult(

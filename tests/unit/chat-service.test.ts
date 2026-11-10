@@ -4,11 +4,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
-import { ChatService } from '../../src/main/backend/chat-service.ts'
+import { ChatService, resolveBackendExecutable } from '../../src/main/backend/chat-service.ts'
 import { isActiveRun } from '../../src/shared/chat.ts'
 import type { ChatApproval, ChatEvent } from '../../src/shared/chat.ts'
 import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
 import { startModelServer } from '../helpers/model-server.ts'
+
+test('服务资源按平台选择，Windows x64 使用固定的 x86 可执行文件', () => {
+  assert.equal(
+    resolveBackendExecutable(resourceRoot, 'win32', 'x64'),
+    join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe'),
+  )
+  assert.equal(
+    resolveBackendExecutable(resourceRoot, 'darwin', 'arm64'),
+    join(resourceRoot, 'backend', 'darwin-arm64', 'callum'),
+  )
+  for (const [platform, arch] of [
+    ['win32', 'arm64'],
+    ['win32', 'ia32'],
+    ['darwin', 'x64'],
+    ['linux', 'x64'],
+  ] as const)
+    assert.throws(() => resolveBackendExecutable(resourceRoot, platform, arch), /没有适用于/)
+})
 
 async function until(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 7000

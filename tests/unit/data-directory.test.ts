@@ -51,7 +51,8 @@ test(
         baseUrl: 'http://127.0.0.1:1/v1',
         keyMode: 'keep',
       })
-      assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700)
+      if (process.platform !== 'win32')
+        assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700)
       assert.ok((await readdir(dataDirectory)).length > 0)
       assert.equal((await readdir(home)).includes('backend'), false)
       assert.deepEqual(await readdir(previous), ['preserved.txt'])

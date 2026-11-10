@@ -1,11 +1,26 @@
 <script setup lang="ts">
+import { parseApprovalReview, record } from '@shared/chat'
 import { computed, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue'
-import { FileTextIcon, LoaderCircleIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
+import {
+  ChevronDownIcon,
+  FileTextIcon,
+  FolderOpenIcon,
+  LoaderCircleIcon,
+  PencilIcon,
+  SearchIcon,
+  TerminalIcon,
+} from '@lucide/vue'
 import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
-import { STEP_PAGE_SIZE, stepLabel, stepParameters, stepResult } from '@shared/steps'
+import {
+  STEP_PAGE_SIZE,
+  commandStepInput,
+  stepLabel,
+  stepParameters,
+  stepResult,
+} from '@shared/steps'
 import { TimelineWindow } from '@shared/timeline-window'
 import type { TimelineStep } from '@shared/timeline-window'
-import { currentOperationGroup, groupTimeline } from '@shared/timeline-groups'
+import { compactionStatus, currentOperationGroup, groupTimeline } from '@shared/timeline-groups'
 import { getDesktopApi } from '@/lib/desktop'
 import MarkdownMessage from './MarkdownMessage.vue'
 import ActivityDisclosure from './ActivityDisclosure.vue'
@@ -76,7 +91,30 @@ const live = computed(() =>
       step.conversationId === props.conversationId,
   ),
 )
+const review = computed(() => {
+  const input = detail.value?.value.input
+  if (!input || detail.value?.value.inputTruncated) return null
+  try {
+    const v = record(record(JSON.parse(input)).approval_review)
+    return parseApprovalReview({ stepId: v.step_id, decision: v.decision, reason: v.reason })
+  } catch {
+    return null
+  }
+})
 const savedResult = computed(() => stepResult(detail.value?.value.output ?? ''))
+const commandInput = computed(() =>
+  commandStepInput(detail.value?.value.input ?? live.value?.input ?? ''),
+)
+const completedActionLabels = new Map([
+  ['run_command', '已运行'],
+  ['read_file', '已读取'],
+  ['search_text', '已搜索'],
+])
+function operationLabel(step: TimelineStep): string {
+  if (step.status === 'completed' && step.targetLabel)
+    return completedActionLabels.get(step.name) ?? stepLabel(step)
+  return stepLabel(step)
+}
 let records: TimelineWindow | undefined
 let generation = 0,
   disposed = false,
@@ -416,7 +454,7 @@ async function hydrateComments(): Promise<void> {
     if (!disposed && showContent.value && token !== generation) void hydrateComments()
   }
 }
-async function readOpened(): Promise<void> {
+async function readOpened(force = false): Promise<void> {
   const step = rows.value.find((row) => row.id === opened.value)
   if (
     !step ||
@@ -424,8 +462,7 @@ async function readOpened(): Promise<void> {
     !showContent.value ||
     readingDetail ||
     !props.connected ||
-    data(step) ||
-    failures.value[step.id]
+    (!force && (data(step) || failures.value[step.id]))
   )
     return
   const token = generation
@@ -442,6 +479,7 @@ async function readOpened(): Promise<void> {
     )
       throw new Error('步骤详情归属不匹配')
     detail.value = { id: step.id, version: version(step), value: result.value }
+    delete failures.value[step.id]
     emit('changed')
   } catch (value) {
     if (alive(token) && opened.value === step.id && current(step))
@@ -453,14 +491,11 @@ async function readOpened(): Promise<void> {
   }
 }
 function refresh(step: ChatStep): void {
-  delete failures.value[step.id]
   if (step.type === 'model_call') {
+    delete failures.value[step.id]
     commentVersions.delete(step.id)
     void hydrateComments()
-  } else {
-    detail.value = null
-    void readOpened()
-  }
+  } else if (opened.value === step.id) void readOpened(true)
 }
 function toggleExpanded(): void {
   inspect()
@@ -622,10 +657,8 @@ onScopeDispose(() => {
           </div>
           <CompactionStatus
             v-else-if="item.kind === 'compaction'"
-            :group="item"
+            :status="compactionStatus(item.steps, connected, run?.status ?? null)"
             :data-step-id="item.steps[0]?.id"
-            :connected="connected"
-            :run-status="run?.status ?? null"
           />
           <OperationGroup
             v-else
@@ -641,9 +674,10 @@ onScopeDispose(() => {
             <ActivityDisclosure
               v-for="step in item.steps"
               :key="step.id"
+              class="activity-tool"
               :data-step-id="step.id"
               :expanded="opened === step.id"
-              :aria-label="`工具详情：${stepLabel(step)}`"
+              :aria-label="`工具详情：${operationLabel(step)}${step.targetLabel ? ` ${step.targetLabel}` : ''}`"
               @toggle="toggle(step)"
               @changed="changed"
               @collapsed="clearToolDetail(step)"
@@ -657,11 +691,19 @@ onScopeDispose(() => {
                   />
                   <TerminalIcon v-else-if="step.name === 'run_command'" aria-hidden="true" />
                   <PencilIcon v-else-if="step.name === 'apply_patch'" aria-hidden="true" />
+                  <SearchIcon v-else-if="step.name === 'search_text'" aria-hidden="true" />
+                  <FolderOpenIcon v-else-if="step.name === 'list_directory'" aria-hidden="true" />
                   <FileTextIcon v-else aria-hidden="true" />
                   <span
                     class="shrink-0"
-                    :class="step.status === 'failed' ? 'text-destructive' : ''"
-                    >{{ stepLabel(step) }}</span
+                    :class="{
+                      'text-destructive': step.status === 'failed',
+                      'activity-tool-waiting': [
+                        'awaiting_approval',
+                        'awaiting_user_input',
+                      ].includes(step.status),
+                    }"
+                    >{{ operationLabel(step) }}</span
                   >
                   <span
                     v-if="step.targetLabel"
@@ -671,7 +713,11 @@ onScopeDispose(() => {
                   >
                 </span>
               </template>
-              <div data-tool-details class="activity-tool-details space-y-2">
+              <div
+                data-tool-details
+                class="activity-tool-details"
+                :class="step.name === 'run_command' ? 'activity-command-details' : 'space-y-2'"
+              >
                 <p
                   v-if="
                     !connected &&
@@ -684,30 +730,99 @@ onScopeDispose(() => {
                   连接已断开，步骤状态待核对。
                 </p>
                 <p v-if="step.error" class="text-destructive">{{ step.error }}</p>
-                <p v-if="data(step)" class="font-medium">目标与参数</p>
-                <pre
-                  v-if="data(step)"
-                  class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                  >{{ stepParameters(data(step)!.input) }}</pre>
-                <p v-if="data(step)?.inputTruncated" class="text-muted-foreground">
-                  参数超过展示范围，已截取；完整记录保留在服务中。
+                <p v-if="data(step) && review" class="break-words text-muted-foreground">
+                  {{
+                    review.decision === 'approved'
+                      ? 'AI 审批通过'
+                      : review.decision === 'rejected'
+                        ? 'AI 审批拒绝'
+                        : 'AI 转交人工审核'
+                  }}。{{ review.reason }}
                 </p>
-                <template v-if="live?.output">
-                  <p class="font-medium">实时输出</p>
-                  <pre
-                    class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                    >{{ live?.output }}</pre>
-                  <p v-if="live?.outputTruncated" class="text-muted-foreground">
+                <template v-if="step.name === 'run_command'">
+                  <div class="activity-terminal" role="group" tabindex="0" aria-label="命令及输出">
+                    <code>
+                      <span class="activity-terminal-command" aria-label="命令">
+                        <template v-if="commandInput?.command || step.targetLabel">
+                          <span class="activity-terminal-prompt">{{
+                            commandInput?.prompt ?? '$'
+                          }}</span
+                          >{{ ' ' + (commandInput?.command ?? step.targetLabel) }}
+                        </template>
+                        <template v-else>命令参数不可用。</template>
+                      </span>
+                      <span
+                        v-if="data(step) && savedResult.commandOutput"
+                        class="activity-terminal-output"
+                        aria-label="工具结果"
+                        >{{
+                          savedResult.commandOutput.text ||
+                          (savedResult.commandOutput.truncated
+                            ? '无可显示的输出片段。'
+                            : '无输出。')
+                        }}</span
+                      >
+                      <span
+                        v-else-if="live?.output"
+                        class="activity-terminal-output"
+                        aria-label="实时输出"
+                        >{{ live.output }}</span
+                      >
+                      <span v-else class="activity-terminal-output">{{
+                        ['pending', 'running', 'awaiting_approval'].includes(step.status)
+                          ? '等待命令输出…'
+                          : '尚无已保存的命令输出。'
+                      }}</span>
+                    </code>
+                  </div>
+                  <p
+                    v-if="data(step) && savedResult.outcome && savedResult.outcome !== '操作已执行'"
+                  >
+                    {{ savedResult.outcome }}
+                  </p>
+                  <p v-if="data(step) && savedResult.commandOutput?.truncated">输出已截取</p>
+                  <p
+                    v-if="live?.outputTruncated && !(data(step) && savedResult.commandOutput)"
+                    class="text-muted-foreground"
+                  >
                     实时输出有截取或缺失，请核对最终结果。
                   </p>
                 </template>
+                <template v-else>
+                  <p v-if="data(step)" class="font-medium">目标与参数</p>
+                  <pre
+                    v-if="data(step)"
+                    class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                    >{{ stepParameters(data(step)!.input) }}</pre>
+                  <template v-if="live?.output">
+                    <p class="font-medium">实时输出</p>
+                    <pre
+                      class="max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                      >{{ live.output }}</pre>
+                    <p v-if="live.outputTruncated" class="text-muted-foreground">
+                      实时输出有截取或缺失，请核对最终结果。
+                    </p>
+                  </template>
+                </template>
+                <p v-if="data(step)?.inputTruncated" class="text-muted-foreground">
+                  参数超过展示范围，已截取；完整记录保留在服务中。
+                </p>
                 <p v-if="detailPending === step.id" role="status" class="text-muted-foreground">
                   正在读取结果…
                 </p>
                 <p v-if="failures[step.id]" role="alert" class="text-destructive">
                   {{ failures[step.id] }}
+                  <button
+                    v-if="step.name === 'run_command'"
+                    type="button"
+                    class="ml-2 underline disabled:opacity-50"
+                    :disabled="!connected || detailPending === step.id"
+                    @click="refresh(step)"
+                  >
+                    重试
+                  </button>
                 </p>
-                <template v-if="data(step)">
+                <template v-if="data(step) && step.name !== 'run_command'">
                   <p class="font-medium">已保存的结果</p>
                   <p v-if="savedResult.outcome" class="text-muted-foreground">
                     {{ savedResult.outcome }}
@@ -724,12 +839,31 @@ onScopeDispose(() => {
                     class="max-h-80 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
                     >{{ savedResult.text }}</pre>
                   <p v-else class="text-muted-foreground">尚无已保存的结果。</p>
-                  <p v-if="data(step)?.outputTruncated" class="text-muted-foreground">
-                    结果超过展示范围，已截取；完整记录保留在服务中。
-                  </p>
                 </template>
-                <details v-if="data(step)" class="text-muted-foreground">
-                  <summary class="cursor-pointer py-1">原始记录</summary>
+                <p v-if="data(step)?.outputTruncated" class="text-muted-foreground">
+                  结果超过展示范围，已截取；完整记录保留在服务中。
+                </p>
+                <details
+                  v-if="data(step)"
+                  class="text-muted-foreground"
+                  :class="{ 'activity-command-record': step.name === 'run_command' }"
+                >
+                  <summary class="cursor-pointer" :class="{ 'py-1': step.name !== 'run_command' }">
+                    <template v-if="step.name === 'run_command' && savedResult.exitCode !== null">
+                      <span :class="{ 'text-destructive': savedResult.exitCode !== 0 }"
+                        >退出码 {{ savedResult.exitCode }}</span
+                      >
+                      <span aria-hidden="true">·</span>
+                    </template>
+                    <span>原始记录</span>
+                    <ChevronDownIcon v-if="step.name === 'run_command'" aria-hidden="true" />
+                  </summary>
+                  <p
+                    v-if="step.name === 'run_command' && commandInput?.cwd"
+                    class="mt-1 [overflow-wrap:anywhere]"
+                  >
+                    工作目录 {{ commandInput.cwd }}
+                  </p>
                   <pre
                     class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
                     >{{ data(step)?.input }}</pre>
@@ -737,8 +871,18 @@ onScopeDispose(() => {
                     v-if="data(step)?.output"
                     class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
                     >{{ data(step)?.output }}</pre>
+                  <button
+                    v-if="step.name === 'run_command'"
+                    type="button"
+                    class="mt-1 underline disabled:opacity-50"
+                    :disabled="!connected || detailPending === step.id"
+                    @click="refresh(step)"
+                  >
+                    刷新结果
+                  </button>
                 </details>
                 <button
+                  v-if="step.name !== 'run_command'"
                   class="underline disabled:opacity-50"
                   :disabled="!connected || detailPending === step.id"
                   @click="refresh(step)"

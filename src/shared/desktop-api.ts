@@ -12,17 +12,22 @@ import type {
   ConversationDetail,
   Conversation,
   ConversationPage,
+  ConversationUpdate,
   Workspace,
   WorkspaceInput,
+  WorkspaceChange,
   WorkspacePage,
+  WorkspaceUpdate,
   SelectedDirectory,
   SendMessageInput,
   SendMessageResult,
   ResendMessageInput,
   ResendMessageResult,
+  CompactConversationInput,
 } from './chat'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
+import type { ContextUsage, ContextUsageInput } from './context-usage'
 
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
@@ -46,18 +51,36 @@ export interface DesktopApi {
   setModelEnabled(modelId: string, enabled: boolean): Promise<ChatResult<string>>
   deleteModel(modelId: string): Promise<ChatResult<string>>
   getChatOverview(offset: number): Promise<ChatResult<ChatOverview>>
-  chooseWorkspaceDirectory(): Promise<ChatResult<SelectedDirectory | null>>
+  chooseWorkspaceDirectories(selectionId: string): Promise<ChatResult<SelectedDirectory[]>>
+  discardWorkspaceDirectories(selectionId: string, path?: string): Promise<ChatResult<null>>
   listWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
   getWorkspaceConversations(
     workspaceId: string,
     offset: number,
   ): Promise<ChatResult<ConversationPage>>
-  createWorkspace(input: WorkspaceInput): Promise<ChatResult<Workspace>>
-  renameWorkspace(workspaceId: string, name: string): Promise<ChatResult<Workspace>>
+  createWorkspace(input: WorkspaceInput, selectionId: string): Promise<ChatResult<Workspace>>
+  updateWorkspace(
+    workspaceId: string,
+    input: WorkspaceChange,
+    selectionId?: string,
+  ): Promise<ChatResult<WorkspaceUpdate>>
   deleteWorkspace(workspaceId: string): Promise<ChatResult<Workspace>>
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<ChatResult<WorkspaceUpdate>>
+  setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<ChatResult<WorkspaceUpdate>>
+  listArchivedWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
   renameConversation(conversationId: string, title: string): Promise<ChatResult<Conversation>>
   deleteConversation(conversationId: string): Promise<ChatResult<Conversation>>
+  setConversationPinned(
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<ChatResult<ConversationUpdate>>
+  setConversationArchived(
+    conversationId: string,
+    archived: boolean,
+  ): Promise<ChatResult<ConversationUpdate>>
+  listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
+  getContextUsage(input: ContextUsageInput): Promise<ChatResult<ContextUsage>>
   getEarlierMessages(
     conversationId: string,
     beforeSequence: number,
@@ -74,6 +97,7 @@ export interface DesktopApi {
   ): Promise<ChatResult<StepDetails>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
+  compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>
   submitUserInput(
     inputId: string,
