@@ -135,6 +135,54 @@
   color: var(--muted-foreground);
   font-size: 12px;
 }
+.activity-command-details {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  margin-inline-start: 20px;
+  padding: 4px 0 6px;
+}
+.activity-terminal {
+  max-height: 18rem;
+  overflow: auto;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: var(--muted);
+  color: var(--foreground);
+}
+.activity-terminal:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.activity-terminal-command,
+.activity-terminal-output {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.activity-terminal-prompt,
+.activity-terminal-output {
+  color: var(--muted-foreground);
+}
+.activity-terminal-output {
+  margin-top: 3px;
+}
+.activity-command-record > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+}
+.activity-command-record > summary::-webkit-details-marker {
+  display: none;
+}
+.activity-command-record > summary svg {
+  width: 12px;
+  height: 12px;
+}
+.activity-command-record[open] > summary svg {
+  transform: rotate(180deg);
+}
 .activity-group-label {
   flex-wrap: wrap;
   column-gap: 4px;

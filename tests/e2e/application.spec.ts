@@ -4475,10 +4475,24 @@ test.describe('Codex 风格过程展示', () => {
     await expect(command).toHaveAttribute('aria-expanded', 'false')
     await command.focus()
     await command.press('Enter')
-    await expect(overview.getByLabel('工具结果', { exact: true })).toContainText(
+    const terminal = overview.locator('.activity-terminal')
+    await expect(terminal.getByLabel('命令', { exact: true })).toHaveText(
+      '$ /bin/echo controlled-fold-output',
+    )
+    await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
       'controlled-fold-output',
     )
-    await overview.getByRole('button', { name: '刷新结果', exact: true }).focus()
+    const raw = overview.locator('.activity-command-record')
+    await expect(raw.getByText('退出码 0', { exact: true })).toBeVisible()
+    await expect(overview.getByText('目标与参数', { exact: true })).toHaveCount(0)
+    await expect(raw).not.toHaveAttribute('open')
+    await expect(overview.getByRole('button', { name: '刷新结果', exact: true })).toHaveCount(0)
+    await expect(timeline.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    await command.evaluate((element) => (element as HTMLElement).blur())
+    await overview
+      .locator('[data-tool-details]')
+      .screenshot({ path: '.artifacts/screenshots/activity-command-terminal.png' })
+    await terminal.focus()
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(answer).toContainText('已完成项目检查')
@@ -4550,6 +4564,15 @@ test.describe('Codex 风格过程展示', () => {
     expect(
       await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true)
+    await command.click()
+    await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
+      'controlled-fold-output',
+    )
+    await expect(terminal).toHaveCSS('border-top-width', '0px')
+    await expect(timeline.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    await overview
+      .locator('[data-tool-details]')
+      .screenshot({ path: '.artifacts/screenshots/activity-command-detail-dark.png' })
   })
 
   test('概述间合并多项操作，阶段结束自动收起，审批和失败始终可见', async ({
@@ -4586,6 +4609,15 @@ test.describe('Codex 风格过程展示', () => {
     await expect(firstGroup.getByLabel('工具结果', { exact: true })).toContainText(
       'controlled-group-output',
     )
+    await firstGroup
+      .getByRole('button', { name: '工具详情：已运行 /bin/sleep 1', exact: true })
+      .click()
+    await expect(
+      firstGroup
+        .locator('.activity-terminal')
+        .filter({ hasText: '$ /bin/sleep 1' })
+        .getByLabel('工具结果', { exact: true }),
+    ).toHaveText('无输出。')
     await firstToggle.press('Space')
     await firstToggle.press('Enter')
     await expect(command).toHaveAttribute('aria-expanded', 'false')
@@ -4635,6 +4667,97 @@ test.describe('Codex 风格过程展示', () => {
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(input).toBeEnabled()
+  })
+
+  test('终端块展示实时输出、非零退出和历史命令结果，读取失败可重试', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    const approval = page.getByRole('region', { name: '工具审批', exact: true })
+    const terminal = answer.locator('.activity-terminal')
+    const pendingCommand = answer.getByRole('button', { name: /^工具详情：运行命令 · 等待审批/ })
+    const openDetails = answer.getByRole('button', { name: '调用过程', exact: true })
+    await input.fill('命令取消步骤')
+    await input.press('Enter')
+    await expect(approval).toBeVisible()
+    await pendingCommand.click()
+    await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    await expect(terminal.getByLabel('实时输出', { exact: true })).toContainText('command-started')
+    await stop.click()
+    await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
+      '生成已停止',
+    )
+
+    await input.fill('命令非零步骤')
+    await input.press('Enter')
+    await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    await expect(openDetails).toHaveAttribute('aria-expanded', 'false')
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '命令取消步骤', exact: true })
+      .click()
+    await openDetails.click()
+    await answer.getByRole('button', { name: /^工具详情：已运行 / }).click()
+    await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
+      /command-out\s+\[stderr\]\s+command-err/,
+    )
+    const raw = answer.locator('.activity-command-record')
+    await expect(raw.getByText('退出码 3', { exact: true })).toHaveClass('text-destructive')
+    await expect(raw.getByText('工作目录', { exact: false })).not.toBeVisible()
+    await raw.getByText('原始记录', { exact: true }).click()
+    await expect(raw).toHaveAttribute('open', '')
+    await expect(raw.getByText('工作目录', { exact: false })).toBeVisible()
+    await expect(raw).toContainText('execution_boundary')
+
+    const saved = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok && overview.value.conversations[0]
+      if (!conversation) throw new Error('缺少测试对话')
+      const detail = await window.callum.getConversation(conversation.id)
+      const run = detail.ok && detail.value.runs.at(-1)
+      if (!run) throw new Error('缺少测试执行')
+      const steps = await window.callum.listRunSteps(conversation.id, run.id, 0)
+      const command = steps.ok && steps.value.steps.find((step) => step.name === 'run_command')
+      if (!command) throw new Error('缺少命令步骤')
+      return window.callum.getStepDetails(conversation.id, run.id, command.id)
+    })
+    if (!saved.ok) throw new Error(saved.error)
+    // 仅替换本次隔离进程的详情回包，验证读取失败和长输出排版。
+    await desktop.evaluate(
+      ({ ipcMain }, { channel, value }) => {
+        let attempts = 0
+        const output = JSON.parse(value.output)
+        output.result.stdout.data = Array.from(
+          { length: 150 },
+          (_, index) => `第 ${index + 1} 行输出`,
+        ).join('\n')
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, (_event, _conversation, _run, stepId) => {
+          if (stepId !== value.id || ++attempts === 1)
+            return { ok: false, error: '受控命令结果读取失败' }
+          return { ok: true, value: { ...value, output: JSON.stringify(output) } }
+        })
+      },
+      { channel: IPC_CHANNELS.getStepDetails, value: saved.value },
+    )
+    const requests = modelEndpoint?.requests.length
+    await raw.getByRole('button', { name: '刷新结果', exact: true }).click()
+    const failure = answer.getByRole('alert').filter({ hasText: '受控命令结果读取失败' })
+    await expect(failure).toBeVisible()
+    await expect(raw).toHaveAttribute('open', '')
+    await expect(terminal.getByLabel('工具结果', { exact: true })).toContainText('command-out')
+    await failure.getByRole('button', { name: '重试', exact: true }).click()
+    await expect(failure).toHaveCount(0)
+    await expect(terminal.getByLabel('工具结果', { exact: true })).toContainText('第 150 行输出')
+    expect(await terminal.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+      true,
+    )
+    expect(modelEndpoint?.requests.length).toBe(requests)
   })
 })
 

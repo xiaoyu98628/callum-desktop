@@ -76,11 +76,10 @@ export function stepTarget(step: ChatStep): string {
   return ''
 }
 
-/** 常用参数优先展示规范化请求和实际位置；审计快照由界面另行展开。 */
-export function stepParameters(input: string): string {
+function parseStepParameters(input: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(input)
-    if (typeof value !== 'object' || value === null || !('arguments' in value)) return input
+    if (typeof value !== 'object' || value === null || !('arguments' in value)) return null
     const request =
       'request' in value && typeof value.request === 'object' && value.request !== null
         ? value.request
@@ -103,10 +102,54 @@ export function stepParameters(input: string): string {
       'cwd' in request.details
     )
       result.actual_cwd = request.details.cwd
-    return JSON.stringify(result, null, 2)
+    return result
   } catch {
-    return input
+    return null
   }
+}
+
+/** 常用参数优先展示规范化请求和实际位置；审计快照由界面另行展开。 */
+export function stepParameters(input: string): string {
+  const parameters = parseStepParameters(input)
+  return parameters ? JSON.stringify(parameters, null, 2) : input
+}
+
+/** 用 Shell 引号保留命令参数的边界，显示服务端保存的实际工作目录。 */
+export function commandStepInput(input: string): { command: string; cwd: string } | null {
+  const parameters = parseStepParameters(input)
+  const args = parameters?.arguments
+  if (typeof args !== 'object' || args === null || !('command' in args)) return null
+  const command = args.command
+  if (
+    !Array.isArray(command) ||
+    !command.length ||
+    !command.every((arg) => typeof arg === 'string')
+  )
+    return null
+  return {
+    command: command
+      .map((arg: string) =>
+        /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`,
+      )
+      .join(' '),
+    cwd: typeof parameters?.actual_cwd === 'string' ? parameters.actual_cwd : '',
+  }
+}
+
+function commandStream(value: unknown): { text: string; truncated: boolean } | null {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('encoding' in value) ||
+    !('data' in value) ||
+    !('truncated' in value) ||
+    typeof value.data !== 'string' ||
+    typeof value.truncated !== 'boolean'
+  )
+    return null
+  if (value.encoding === 'utf-8') return { text: value.data, truncated: value.truncated }
+  if (value.encoding !== 'base64') return null
+  return { text: '二进制输出，Base64 数据见原始记录。', truncated: value.truncated }
 }
 
 /** 工具返回值独立于上下文副本；不能用调用终态推断实际影响。 */
@@ -114,6 +157,7 @@ export function stepResult(output: string): {
   text: string
   outcome: string
   exitCode: number | null
+  commandOutput?: { text: string; truncated: boolean }
 } {
   const fallback = { text: output, outcome: '', exitCode: null }
   try {
@@ -145,7 +189,26 @@ export function stepResult(output: string): {
       Number.isSafeInteger(result.exit_code)
         ? result.exit_code
         : null
-    return { text: JSON.stringify(result, null, 2), outcome, exitCode }
+    const view = { text: JSON.stringify(result, null, 2), outcome, exitCode }
+    if (
+      typeof result !== 'object' ||
+      result === null ||
+      !('stdout' in result) ||
+      !('stderr' in result)
+    )
+      return view
+    const stdout = commandStream(result.stdout),
+      stderr = commandStream(result.stderr)
+    if (!stdout || !stderr) return view
+    return {
+      ...view,
+      commandOutput: {
+        text: [stdout.text, stderr.text ? `[stderr]\n${stderr.text}` : '']
+          .filter(Boolean)
+          .join('\n'),
+        truncated: stdout.truncated || stderr.truncated,
+      },
+    }
   } catch {
     return fallback
   }

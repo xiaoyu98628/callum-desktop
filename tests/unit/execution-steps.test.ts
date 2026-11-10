@@ -13,6 +13,7 @@ import { StepOutput, readStepDetails } from '../../src/main/backend/step-data.ts
 import { parseChatEvent, parseStepPage, record } from '../../src/shared/chat.ts'
 import {
   boundSteps,
+  commandStepInput,
   stepLabel,
   stepTarget,
   STEP_OUTPUT_LIMIT,
@@ -475,6 +476,43 @@ test('步骤页拒绝重复顺序和错误游标，参数结果展示不混入�
   assert.ok(result.text.includes('actual'))
   assert.ok(!result.text.includes('duplicate'))
   assert.equal(stepResult('unfinished-json').text, 'unfinished-json')
+})
+
+test('命令详情保留参数边界、实际目录与独立输出流', () => {
+  const input = JSON.stringify({
+    arguments: { command: ['old-command'] },
+    request: {
+      arguments: { command: ['/bin/echo', 'a b', '', "it's ok", '$PATH'] },
+      details: { cwd: '/actual/project' },
+    },
+  })
+  assert.deepEqual(commandStepInput(input), {
+    command: "/bin/echo 'a b' '' 'it'\\''s ok' '$PATH'",
+    cwd: '/actual/project',
+  })
+  assert.equal(commandStepInput('incomplete-json'), null)
+
+  const stream = (data: string) => ({ encoding: 'utf-8', data, truncated: false })
+  const stdout = stream('first line\nsecond line')
+  const stderr = stream('warning')
+  const output = (result: unknown) => stepResult(JSON.stringify({ result }))
+  const ended = output({ stdout, stderr, exit_code: 3 })
+  assert.equal(ended.exitCode, 3)
+  assert.deepEqual(ended.commandOutput, {
+    text: 'first line\nsecond line\n[stderr]\nwarning',
+    truncated: false,
+  })
+  assert.deepEqual(output({ stdout: stream(''), stderr: stream(''), exit_code: 0 }).commandOutput, {
+    text: '',
+    truncated: false,
+  })
+  assert.deepEqual(
+    output({ stdout: { encoding: 'base64', data: 'AA==', truncated: true }, stderr: stream('') })
+      .commandOutput,
+    { text: '二进制输出，Base64 数据见原始记录。', truncated: true },
+  )
+  assert.equal(output({ stdout: stream('incomplete') }).commandOutput, undefined)
+  assert.equal(output({ error: { kind: 'permission_denied' } }).commandOutput, undefined)
 })
 
 test('较大的步骤元数据截取后仍可接收，Unicode 展示边界不拆开代理对', () => {
