@@ -1636,6 +1636,59 @@ test.describe('会话与项目管理', () => {
     await expect(independent).toBeVisible()
     await expect(independent).toHaveCSS('font-size', '13px')
     await expect(independent.locator('svg')).toHaveCount(0)
+
+    const projects = page.getByRole('button', { name: '项目', exact: true })
+    const recentToggle = recent.getByRole('button', { name: '最近', exact: true })
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const resize = await projects.evaluate(async (button: HTMLButtonElement) => {
+      const panel = document.getElementById(button.getAttribute('aria-controls') ?? '')
+      if (!panel) throw new Error('缺少项目列表')
+      const fullHeight = panel.getBoundingClientRect().height
+      button.click()
+      await Promise.resolve()
+      const transition = panel
+        .getAnimations()
+        .find(
+          (item) =>
+            item instanceof CSSTransition && item.transitionProperty === 'grid-template-rows',
+        )
+      if (!transition?.effect) throw new Error('项目列表没有高度过渡')
+      transition.currentTime = Number(transition.effect.getTiming().duration) / 2
+      const midHeight = panel.getBoundingClientRect().height
+      const inert = panel.inert
+      button.click()
+      await Promise.resolve()
+      return { fullHeight, midHeight, inert, reversedHeight: panel.getBoundingClientRect().height }
+    })
+    expect(resize.midHeight).toBeGreaterThan(0)
+    expect(resize.midHeight).toBeLessThan(resize.fullHeight)
+    expect(Math.abs(resize.reversedHeight - resize.midHeight)).toBeLessThan(2)
+    expect(resize.inert).toBe(true)
+    await expect(projects).toHaveAttribute('aria-expanded', 'true')
+    await expect(row).toHaveAttribute('aria-expanded', 'true')
+
+    await projects.press('Space')
+    await expect(projects).toHaveAttribute('aria-expanded', 'false')
+    await expect(project).toHaveCount(0)
+    await expect(independent).toBeVisible()
+    await expect(projects).toBeFocused()
+    await projects.press('Space')
+    await expect(row).toHaveAttribute('aria-expanded', 'true')
+    const projectChat = project.getByRole('button', { name: '项目聊天', exact: true })
+    await expect(projectChat).toBeVisible()
+    await row.click()
+    await expect(projectChat).toHaveCount(0)
+    await row.click()
+    await expect(projectChat).toBeVisible()
+
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await recentToggle.press('Enter')
+    await expect(recentToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('#recent-conversations')).toHaveCSS('transition-duration', '0s')
+    await expect(independent).toHaveCount(0)
+    await expect(projectChat).toBeVisible()
+    await recentToggle.press('Enter')
+    await expect(independent).toBeVisible()
   })
 
   test('无目录项目可持续添加、移除源文件夹，取消和并发冲突保留原设置及对话', async ({
@@ -2479,12 +2532,14 @@ test.describe('会话与项目管理', () => {
     await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
       '需要置顶的会话',
     )
-    await recent.getByRole('button', { name: '需要置顶的会话的操作', exact: true }).click()
+    await older.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '取消置顶', exact: true }).click()
     await expect(pin).toHaveAttribute('aria-pressed', 'false')
     await project.getByRole('button', { name: '归档项目', exact: true }).click()
     await project.getByRole('button', { name: '置顶项目归档会话', exact: true }).click()
-    await project.getByRole('button', { name: '项目归档会话的操作', exact: true }).click()
+    await project
+      .getByRole('button', { name: '项目归档会话', exact: true })
+      .click({ button: 'right' })
     await page.getByRole('menuitem', { name: '归档聊天', exact: true }).click()
     await expect(project.getByRole('button', { name: '项目归档会话', exact: true })).toHaveCount(0)
     await page.reload()
@@ -2822,22 +2877,60 @@ test.describe('会话与项目管理', () => {
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
     const recent = page.getByRole('region', { name: '最近', exact: true })
     const recentChat = recent.getByRole('button', { name: '最近的双击会话', exact: true })
-    const recentMenu = recent.getByRole('button', { name: '最近的双击会话的操作', exact: true })
-    await page.mouse.move(0, 0)
-    await input.focus()
-    await expect(recentMenu).toHaveCSS('opacity', '0')
-    await recentChat.focus()
-    await expect(recentMenu).toHaveCSS('opacity', '1')
+    const menu = page.getByRole('menu')
+    await expect(
+      recent.getByRole('button', { name: '最近的双击会话的操作', exact: true }),
+    ).toHaveCount(0)
+    await recentChat.press('Shift+F10')
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(recentChat).toBeFocused()
+    await recentChat.hover()
+    await expect(recentChat.locator('.conversation-title-text')).toHaveCSS('animation-name', 'none')
     await recentChat.dblclick()
     await chatName.fill('没有保存的会话名')
     await page.keyboard.press('Escape')
     await expect(recentChat).toBeFocused()
-    await recentChat.dblclick()
+    await recentChat.press('Shift+F10')
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).press('Enter')
     await expect(chatName).toHaveValue('最近的双击会话')
-    await chatName.fill('已改名的独立会话')
+    const longTitle = '已改名的独立会话，悬停阅读完整标题'
+    await chatName.fill(longTitle)
     await rename.getByRole('button', { name: '保存', exact: true }).click()
-    const renamedRecent = recent.getByRole('button', { name: '已改名的独立会话', exact: true })
+    const renamedRecent = recent.getByRole('button', { name: longTitle, exact: true })
     await expect(renamedRecent).toBeFocused()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await renamedRecent.hover()
+    const titleText = renamedRecent.locator('.conversation-title-text')
+    const titleOffset = () =>
+      titleText.evaluate(
+        (element) =>
+          element.getBoundingClientRect().left -
+          element.parentElement!.getBoundingClientRect().left,
+      )
+    await expect.poll(titleOffset).toBeLessThan(-2)
+    await expect
+      .poll(() =>
+        titleText.evaluate(
+          (element) =>
+            element.getBoundingClientRect().right -
+            element.parentElement!.getBoundingClientRect().right,
+        ),
+      )
+      .toBeLessThan(1)
+    await expect.poll(titleOffset).toBeCloseTo(0)
+    await page.mouse.move(0, 0)
+    await expect(titleText).toHaveCSS('animation-name', 'none')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await renamedRecent.hover()
+    await expect(titleText).toHaveCSS('animation-name', 'none')
+
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).click()
+    await renamedRecent.click({ button: 'right' })
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(renamedRecent).toBeFocused()
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
     await projectRow.dblclick()
     await projectName.fill('已改名的项目')
     await projectName.press('Enter')
@@ -2848,9 +2941,9 @@ test.describe('会话与项目管理', () => {
     ).toBeFocused()
 
     await interruptTestBackend(desktop)
-    await expect(
-      recent.getByRole('button', { name: '已改名的独立会话的操作', exact: true }),
-    ).toBeDisabled()
+    await expect(renamedRecent).not.toHaveAttribute('aria-haspopup', 'menu')
+    await renamedRecent.press('Shift+F10')
+    await expect(menu).toHaveCount(0)
     await renamedRecent.dblclick()
     await renamedProject.getByRole('button', { name: '已改名的项目', exact: true }).dblclick()
     await expect(page.getByRole('dialog')).toHaveCount(0)
@@ -2885,7 +2978,9 @@ test.describe('会话与项目管理', () => {
         .getByRole('region', { name: '最近', exact: true })
         .getByRole('button', { name: '项目提问', exact: true }),
     ).toHaveCount(0)
-    await workspace.getByRole('button', { name: '项目提问的操作', exact: true }).click()
+    await workspace
+      .getByRole('button', { name: '项目提问', exact: true })
+      .click({ button: 'right' })
     await page.getByRole('menuitem', { name: '重命名', exact: true }).click()
     const rename = page.getByRole('dialog', { name: '重命名会话', exact: true })
     await expect(rename.getByRole('textbox', { name: '会话标题', exact: true })).toBeFocused()
@@ -2996,7 +3091,7 @@ test.describe('会话与项目管理', () => {
     await deletion.getByRole('button', { name: '确认删除', exact: true }).click()
     await expect(deletion.getByRole('alert')).toContainText('未结束执行')
     await deletion.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByRole('button', { name: '等待甲的操作', exact: true }).click()
+    await page.getByRole('button', { name: '等待甲', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
     deletion = page.getByRole('dialog', { name: '删除会话', exact: true })
     await deletion.getByRole('button', { name: '确认删除', exact: true }).click()
@@ -3005,7 +3100,7 @@ test.describe('会话与项目管理', () => {
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
     await input.fill('将清除的草稿')
-    await page.getByRole('button', { name: '等待甲的操作', exact: true }).click()
+    await page.getByRole('button', { name: '等待甲', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
     await page
       .getByRole('dialog', { name: '删除会话', exact: true })
@@ -3066,7 +3161,7 @@ test.describe('会话与项目管理', () => {
       .getByRole('button', { name: '会话甲', exact: true })
       .click()
     await expect(page.getByText('正在加载消息…', { exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '会话甲的操作', exact: true }).click()
+    await page.getByRole('button', { name: '会话甲', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
     await page
       .getByRole('dialog', { name: '删除会话', exact: true })
