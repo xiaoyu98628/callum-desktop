@@ -439,13 +439,37 @@ test.describe('真实 Go 对话交互', () => {
     await expect(text).toBeFocused()
     await expect(text).toHaveValue('Markdown 安全')
     await expect(input).toBeDisabled()
+    const send = editor.getByRole('button', { name: '重新发送', exact: true })
+    await expect(send).toHaveAccessibleDescription('重发会替换旧回答，已执行的操作会保留。')
+    await text.fill('请检查上一轮命令的结果。\n把执行状态和输出一起列出来。')
+    await editor.screenshot({ path: '.artifacts/screenshots/message-editor.png' })
+    const shortHeight = await text.evaluate((element) => element.clientHeight)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await text.fill('这是一行需要保留的编辑内容。\n'.repeat(30))
+    await expect
+      .poll(() => text.evaluate((element) => element.clientHeight))
+      .toBeGreaterThan(shortHeight)
+    await expect
+      .poll(() => text.evaluate((element) => element.scrollHeight > element.clientHeight))
+      .toBe(true)
+    expect(await editor.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    )
+    await text.press('Escape')
+    await expect(editor).toHaveCount(0)
+    await expect(edit).toBeFocused()
+    await expect(users.last()).toContainText('Markdown 安全')
+    await expect(input).toHaveValue('普通输入草稿')
+    await edit.press('Enter')
     await text.fill('取消这次修改')
     await editor.getByRole('button', { name: '取消编辑', exact: true }).click()
     await expect(users.last()).toContainText('Markdown 安全')
     await expect(input).toHaveValue('普通输入草稿')
     await edit.click()
     await text.fill('修正后的最后一条提问')
-    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await send.click()
     await expect(editor).toHaveCount(0)
     await expect(users).toHaveCount(2)
     await expect(answers).toHaveCount(2)
