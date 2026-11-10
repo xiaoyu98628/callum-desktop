@@ -202,7 +202,6 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'setConversationPinned',
     'setConversationArchived',
     'listArchivedConversations',
-    'getEarlierMessages',
     'getConversationHistory',
     'listRunSteps',
     'getStepDetails',

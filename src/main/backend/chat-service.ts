@@ -632,16 +632,6 @@ export class ChatService {
     result.revision = this.revision
     return result
   }
-  async earlier(conversationId: string, beforeSequence: number): Promise<ChatMessage[]> {
-    return array(
-      (await this.request('conversation.messages', {
-        conversation_id: conversationId,
-        before_sequence: beforeSequence,
-        limit: PAGE_SIZE,
-      })) ?? [],
-      messageFromRpc,
-    )
-  }
   async send(input: SendMessageInput): Promise<SendMessageResult> {
     const value = record(
       await this.request('conversation.send', {

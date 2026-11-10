@@ -4,7 +4,6 @@ import type {
   StepDetails,
   ApprovalScope,
   DirectoryGrant,
-  ChatMessage,
   ChatUserInput,
   UserInputAnswer,
   ChatOverview,
@@ -92,10 +91,6 @@ export interface DesktopApi {
   listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
   getContextUsage(input: ContextUsageInput): Promise<ChatResult<ContextUsage>>
-  getEarlierMessages(
-    conversationId: string,
-    beforeSequence: number,
-  ): Promise<ChatResult<ChatMessage[]>>
   getConversationHistory(
     conversationId: string,
     beforeRunId: string,
