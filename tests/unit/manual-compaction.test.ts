@@ -117,6 +117,8 @@ test('独立压缩记录放在原有消息之后，后续回答不会将旧压�
     role: index % 2 ? 'assistant' : 'user',
     content: [],
     status: 'completed',
+    createdAt: null,
+    completedAt: null,
   }))
   const compact: ChatRun = {
     ...run(3),

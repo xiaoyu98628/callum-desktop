@@ -1,8 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref, watch } from 'vue'
 import { FolderIcon, PinIcon, PinOffIcon, SettingsIcon } from '@lucide/vue'
-import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot } from 'reka-ui'
+import {
+  PopoverAnchor,
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  TooltipContent,
+  TooltipPortal,
+  TooltipProvider,
+  TooltipRoot,
+  TooltipTrigger,
+} from 'reka-ui'
 import type { Conversation, Workspace } from '@shared/chat'
+import { abbreviateHomePath } from '@shared/display-path'
 import { Button } from '@/components/ui/button'
 
 const props = defineProps<{
@@ -10,6 +21,7 @@ const props = defineProps<{
   workspaceName?: string
   disabled: boolean
   suspended?: boolean
+  homeDirectory?: string
 }>()
 const emit = defineEmits<{
   pin: []
@@ -179,15 +191,35 @@ onScopeDispose(dismiss)
           <div
             class="sidebar-preview-folders max-h-[min(15rem,calc(var(--reka-popover-content-available-height)-6rem))] overflow-y-auto py-1"
           >
-            <div v-for="path in folders" :key="path" class="flex gap-2 px-2 py-1">
-              <FolderIcon
-                class="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 break-words text-muted-foreground [overflow-wrap:anywhere]">{{
-                path
-              }}</span>
-            </div>
+            <TooltipProvider :delay-duration="250" disable-hoverable-content>
+              <div
+                v-for="path in folders"
+                :key="path"
+                class="flex min-w-0 items-center gap-2 px-2 py-1"
+              >
+                <FolderIcon class="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />
+                <TooltipRoot ignore-non-keyboard-focus>
+                  <TooltipTrigger as-child>
+                    <span
+                      tabindex="0"
+                      :data-project-path="path"
+                      class="min-w-0 flex-1 truncate text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      >{{ abbreviateHomePath(path, homeDirectory ?? '') }}</span
+                    >
+                  </TooltipTrigger>
+                  <TooltipPortal>
+                    <TooltipContent
+                      side="top"
+                      align="start"
+                      :side-offset="6"
+                      :collision-padding="12"
+                      class="pointer-events-none z-50 max-w-[min(36rem,calc(100vw-1.5rem))] rounded-md bg-[#202123] px-2.5 py-1.5 text-xs leading-5 text-white shadow-sm [overflow-wrap:anywhere]"
+                      >{{ path }}</TooltipContent
+                    >
+                  </TooltipPortal>
+                </TooltipRoot>
+              </div>
+            </TooltipProvider>
             <p v-if="!folders.length" class="px-2 py-1 text-muted-foreground">未添加文件夹</p>
           </div>
           <div class="mx-1 border-t border-foreground/8" />

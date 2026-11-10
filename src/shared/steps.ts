@@ -16,7 +16,8 @@ export function boundSteps(steps: ChatStep[]): ChatStep[] {
   const result: ChatStep[] = []
   let chars = 0
   for (const step of steps.toReversed()) {
-    const size = step.input.length + step.text.length + step.output.length
+    const size =
+      step.input.length + step.text.length + step.output.length + (step.reasoning?.length ?? 0)
     if (result.length >= 200 || chars + size > 4 * 1024 * 1024) continue
     result.push(step)
     chars += size

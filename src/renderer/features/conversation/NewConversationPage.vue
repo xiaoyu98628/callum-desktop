@@ -60,7 +60,15 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
-const messageTimeline = computed(() => messageCompactions(messages.value, state.detail?.runs ?? []))
+const messageTimeline = computed(() => {
+  const runs = state.detail?.runs ?? []
+  const ids = runs.map((run) => run.id).toSorted()
+  return messageCompactions(
+    messages.value,
+    runs,
+    ids.length ? { oldestRunId: ids[0]!, newestRunId: ids.at(-1)! } : undefined,
+  )
+})
 const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
 )
@@ -118,6 +126,8 @@ const messageRuns = computed(() => {
   return result
 })
 const scroller = ref<HTMLElement | null>(null)
+const messageTimeNow = ref(Date.now())
+let messageTimeTimer: number | undefined
 const composer = ref<HTMLElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
@@ -427,6 +437,9 @@ watch(
   },
 )
 onMounted(() => {
+  messageTimeTimer = window.setInterval(() => {
+    messageTimeNow.value = Date.now()
+  }, 60_000)
   resizeMessageInput()
   let previousWidth = 0
   inputResizeObserver = new ResizeObserver((entries) => {
@@ -458,6 +471,7 @@ onMounted(() => {
   void scrollToBottom()
 })
 onScopeDispose(() => {
+  window.clearInterval(messageTimeTimer)
   window.clearTimeout(scrollbarTimer)
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   inputResizeObserver?.disconnect()
@@ -504,7 +518,7 @@ onScopeDispose(() => {
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
         <div
-          v-if="state.selectedId && !state.loading && (messages[0]?.sequence ?? 0) > 1"
+          v-if="state.selectedId && !state.loading && state.detail?.history?.hasMore"
           class="mb-4 flex justify-center"
         >
           <Button
@@ -582,6 +596,13 @@ onScopeDispose(() => {
                   (item.role === 'user' || activeRun?.id !== item.runId)
                 "
                 :message="item"
+                :now="messageTimeNow"
+                :always-show-copy="
+                  !state.historical &&
+                  messages.at(-1)?.id === item.id &&
+                  item.role === 'assistant' &&
+                  item.status === 'completed'
+                "
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&

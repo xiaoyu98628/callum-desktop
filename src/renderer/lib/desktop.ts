@@ -1,4 +1,4 @@
-import type { DesktopApi } from '@shared/desktop-api'
+import type { DesktopApi } from '../../shared/desktop-api.ts'
 
 /** 唯一的桌面桥接入口；浏览器运行时不伪造桌面能力。 */
 export function getDesktopApi(): DesktopApi {

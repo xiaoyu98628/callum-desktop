@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { parseAppInfo } from '../shared/desktop-api'
+import { parseAppInfo, parseServiceState } from '../shared/desktop-api'
 import type { DesktopApi } from '../shared/desktop-api'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import {
@@ -9,7 +9,7 @@ import {
   parseStepPage,
   parseStepDetails,
   parseDetail,
-  parseMessage,
+  parseConversationHistory,
   parseOverview,
   parseResult,
   parseSendResult,
@@ -38,6 +38,23 @@ const desktopApi: DesktopApi = {
   async getAppInfo() {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.getAppInfo)
     return parseAppInfo(result)
+  },
+  async getServiceState() {
+    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.getServiceState)
+    return parseServiceState(result)
+  },
+  async retryServiceStart() {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.retryServiceStart), parseServiceState)
+  },
+  onServiceState(listener) {
+    if (typeof listener !== 'function') throw new Error('无效的服务状态订阅')
+    const callback = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      listener(parseServiceState(value))
+    }
+    ipcRenderer.on(IPC_CHANNELS.serviceState, callback)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.serviceState, callback)
+    }
   },
   async copyCode(text) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.copyCode, text), boolean)
@@ -186,10 +203,10 @@ const desktopApi: DesktopApi = {
       parseConversationPage,
     )
   },
-  async getEarlierMessages(conversationId, beforeSequence) {
+  async getConversationHistory(conversationId, beforeRunId) {
     return parseResult(
-      await ipcRenderer.invoke(IPC_CHANNELS.getEarlierMessages, conversationId, beforeSequence),
-      (value) => array(value, parseMessage),
+      await ipcRenderer.invoke(IPC_CHANNELS.getConversationHistory, conversationId, beforeRunId),
+      parseConversationHistory,
     )
   },
   async listRunSteps(conversationId, runId, afterSequence) {

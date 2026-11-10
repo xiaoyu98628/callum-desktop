@@ -245,8 +245,8 @@ export function registerChatHandlers(
   })
   handle(IPC_CHANNELS.deleteModel, 1, (modelId) => service.catalog.deleteModel(id(modelId)))
   handle(IPC_CHANNELS.getConversation, 1, (conversationId) => service.detail(id(conversationId)))
-  handle(IPC_CHANNELS.getEarlierMessages, 2, (conversationId, beforeSequence) =>
-    service.earlier(id(conversationId), integer(beforeSequence, 1)),
+  handle(IPC_CHANNELS.getConversationHistory, 2, (conversationId, beforeRunId) =>
+    service.historyPage(id(conversationId), id(beforeRunId)),
   )
   handle(IPC_CHANNELS.listRunSteps, 3, (conversationId, runId, afterSequence) =>
     service.listSteps(id(conversationId), id(runId), integer(afterSequence)),

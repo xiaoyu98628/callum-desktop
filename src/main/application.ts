@@ -58,7 +58,7 @@ export async function startApplication(): Promise<void> {
       : fileURLToPath(new URL('../../resources/', import.meta.url)),
   )
   const disposeProtocol = registerApplicationProtocol(rendererRoot)
-  const disposeHandlers = registerAppHandlers(() => mainWindow, rendererUrl)
+  const disposeHandlers = registerAppHandlers(() => mainWindow, rendererUrl, service)
   const disposeChatHandlers = registerChatHandlers(() => mainWindow, rendererUrl, service)
   let shutdownComplete = false
   let shutdownTask: Promise<void> | null = null

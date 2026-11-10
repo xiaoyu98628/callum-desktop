@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { cleanupTestCredentials } from '../helpers/backend.ts'
 import { test } from 'node:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -181,6 +182,7 @@ test(
     await writeFile(file, 'fixture')
     const endpoint = await startModelServer(file, 'fixture-catalog-key').catch(
       async (error: unknown) => {
+        await cleanupTestCredentials(profile)
         await rm(profile, { recursive: true, force: true })
         throw error
       },
@@ -234,6 +236,7 @@ test(
         await service.close()
       } finally {
         await endpoint.close()
+        await cleanupTestCredentials(profile)
         await rm(profile, { recursive: true, force: true })
       }
     }

@@ -106,6 +106,8 @@ export function messageFromRpc(value: unknown): ChatMessage {
     sequence: v.sequence,
     role: v.role,
     status: v.status,
+    createdAt: v.created_at,
+    completedAt: v.completed_at,
     content: array(v.content ?? [], (item) => {
       const b = record(item)
       return {

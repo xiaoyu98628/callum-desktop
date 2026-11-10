@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
 import { ChatService, resolveBackendExecutable } from '../../src/main/backend/chat-service.ts'
 import { isActiveRun } from '../../src/shared/chat.ts'
 import type { ChatApproval, ChatEvent } from '../../src/shared/chat.ts'
-import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
+import type { ServiceState } from '../../src/shared/desktop-api.ts'
+import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
+import { RpcClient } from '../../src/main/backend/rpc-client.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
 test('服务资源按平台选择，Windows x64 使用固定的 x86 可执行文件', () => {
@@ -35,6 +37,192 @@ async function until(check: () => boolean): Promise<void> {
     await setTimeout(20)
   }
 }
+
+test('服务就绪、重复关闭及订阅清理保持明确的生命周期', { skip: !supportedBackend }, async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'callum-service-state-'))
+  const service = new ChatService(join(profile, 'backend'), resourceRoot)
+  const states: ServiceState[] = []
+  const unsubscribe = service.subscribeState((state) => states.push(state))
+  try {
+    assert.deepEqual(service.getState(), { status: 'starting' })
+    await service.overview(0)
+    assert.deepEqual(service.getState(), { status: 'ready' })
+    // 快照不能让调用方改写服务内部状态。
+    service.getState().status = 'starting'
+    assert.deepEqual(service.getState(), { status: 'ready' })
+    const closing = service.close()
+    assert.deepEqual(service.getState(), { status: 'closing' })
+    assert.equal(service.close(), closing)
+    await closing
+    await assert.rejects(service.overview(0), /正在关闭/)
+    assert.deepEqual(states, [{ status: 'ready' }, { status: 'closing' }])
+    unsubscribe()
+    unsubscribe()
+  } finally {
+    await service.close()
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test('初始化失败结束加载，关闭时不再退回失败状态', { skip: !supportedBackend }, async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'callum-service-failure-'))
+  const service = new ChatService(join(profile, 'backend'), profile)
+  const states: ServiceState[] = []
+  service.subscribeState((state) => states.push(state))
+  try {
+    await assert.rejects(service.overview(0), /未找到对话服务程序/)
+    const failed = service.getState()
+    assert.equal(failed.status, 'startup-failed')
+    assert.ok('error' in failed && failed.error.includes('未找到对话服务程序'))
+    await service.close()
+    assert.deepEqual(states, [failed, { status: 'closing' }])
+  } finally {
+    await service.close()
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test(
+  '失败可连续重试，修复服务资源后使用同一服务和订阅成功启动',
+  { skip: !supportedBackend },
+  async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-service-retry-'))
+    const resources = join(profile, 'resources')
+    const service = new ChatService(join(profile, 'backend'), resources)
+    const states: ServiceState[] = []
+    service.subscribeState((state) => states.push(state))
+    try {
+      await assert.rejects(service.overview(0), /未找到/)
+      const first = service.retryStart()
+      assert.equal(service.getState().status, 'starting')
+      assert.equal(service.retryStart(), first, '重复请求必须共享同一次启动')
+      assert.equal((await first).status, 'startup-failed')
+      const executable = resolveBackendExecutable(resources)
+      await mkdir(dirname(executable), { recursive: true, mode: 0o700 })
+      await copyFile(backendExecutable, executable)
+      await chmod(executable, 0o700)
+      assert.deepEqual(await service.retryStart(), { status: 'ready' })
+      assert.deepEqual(await service.catalog.list(), { providers: [], models: [] })
+      assert.deepEqual((await service.overview(0)).conversations, [])
+      assert.deepEqual(
+        states.map((state) => state.status),
+        ['startup-failed', 'starting', 'startup-failed', 'starting', 'ready'],
+      )
+      await assert.rejects(service.retryStart(), /仅支持重试启动失败/)
+    } finally {
+      await service.close()
+      await assert.rejects(service.retryStart(), /正在退出/)
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  '数据目录问题提供固定安全原因，不包含底层路径或错误原文',
+  { skip: !supportedBackend },
+  async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-service-data-error-'))
+    const data = join(profile, 'private-data')
+    await writeFile(data, 'occupied')
+    const service = new ChatService(data, resourceRoot)
+    try {
+      await assert.rejects(service.overview(0), /路径被文件占用/)
+      const state = service.getState()
+      assert.equal(state.status, 'startup-failed')
+      assert.ok('error' in state && !state.error.includes(profile))
+    } finally {
+      await service.close()
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
+
+test('重试等待旧启动清理，期间退出不会再创建进程', { skip: !supportedBackend }, async (t) => {
+  const profile = await mkdtemp(join(tmpdir(), 'callum-service-retry-close-'))
+  const owner = new ChatService(join(profile, 'backend'), resourceRoot)
+  let service: ChatService | undefined
+  let release!: () => void
+  const cleanup = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  try {
+    await owner.overview(0)
+    service = new ChatService(join(profile, 'backend'), resourceRoot)
+    const states: string[] = []
+    service.subscribeState((state) => {
+      states.push(state.status)
+      if (state.status !== 'startup-failed') return
+      const client: unknown = Reflect.get(service!, 'client')
+      assert.ok(client instanceof RpcClient)
+      const close = client.close.bind(client)
+      t.mock.method(client, 'close', async () => {
+        await cleanup
+        await close()
+      })
+    })
+    await until(() => service?.getState().status === 'startup-failed')
+    const retry = service.retryStart()
+    assert.equal(service.retryStart(), retry)
+    assert.equal(service.getState().status, 'starting')
+    const closed = service.close()
+    release()
+    await closed
+    assert.deepEqual(await retry, { status: 'closing' })
+    assert.deepEqual(states, ['startup-failed', 'starting', 'closing'])
+    assert.deepEqual((await owner.overview(0)).conversations, [])
+  } finally {
+    release()
+    await service?.close()
+    await owner.close()
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test('初始化中关闭不会发布迟到的就绪或失败状态', { skip: !supportedBackend }, async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'callum-service-start-close-'))
+  const service = new ChatService(join(profile, 'backend'), resourceRoot)
+  const states: ServiceState[] = []
+  service.subscribeState((state) => states.push(state))
+  try {
+    await service.close()
+    assert.deepEqual(service.getState(), { status: 'closing' })
+    assert.deepEqual(states, [{ status: 'closing' }])
+  } finally {
+    await service.close()
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test(
+  '旧进程清理失败时重试不创建新连接，服务恢复前继续阻止业务操作',
+  { skip: !supportedBackend },
+  async (t) => {
+    const profile = await mkdtemp(join(tmpdir(), 'callum-service-cleanup-failure-'))
+    const owner = new ChatService(join(profile, 'backend'), resourceRoot)
+    let service: ChatService | undefined
+    try {
+      await owner.overview(0)
+      service = new ChatService(join(profile, 'backend'), resourceRoot)
+      await assert.rejects(service.overview(0), /已有运行中的 Callum 服务/)
+      const client: unknown = Reflect.get(service, 'client')
+      assert.ok(client instanceof RpcClient)
+      const close = t.mock.method(client, 'close', async () => {
+        throw new Error('受控清理失败')
+      })
+      try {
+        assert.equal((await service.retryStart()).status, 'startup-failed')
+        assert.equal(Reflect.get(service, 'client'), client)
+        await assert.rejects(service.overview(0), /已有运行中的 Callum 服务/)
+      } finally {
+        close.mock.restore()
+      }
+    } finally {
+      await service?.close()
+      await owner.close()
+      await rm(profile, { recursive: true, force: true })
+    }
+  },
+)
 
 test(
   '真实 Go 服务：流式、隔离、取消、失败、always 审批与重启恢复',

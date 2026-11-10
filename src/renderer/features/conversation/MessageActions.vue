@@ -1,15 +1,30 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { CheckIcon, CopyIcon, LoaderCircleIcon, PencilIcon } from '@lucide/vue'
+import {
+  TooltipContent,
+  TooltipPortal,
+  TooltipProvider,
+  TooltipRoot,
+  TooltipTrigger,
+} from 'reka-ui'
 import type { ChatMessage } from '@shared/chat'
 import { messageText } from '@shared/message-actions'
+import { formatMessageTime, fullMessageTime, messageTime } from '@shared/message-time'
 import { Button } from '@/components/ui/button'
 import { getDesktopApi } from '@/lib/desktop'
 
-const props = defineProps<{ message: ChatMessage; editable: boolean; editDisabled: boolean }>()
+const props = defineProps<{
+  message: ChatMessage
+  editable: boolean
+  editDisabled: boolean
+  alwaysShowCopy: boolean
+  now: number
+}>()
 defineEmits<{ edit: [] }>()
 const text = computed(() => messageText(props.message.content))
 const label = computed(() => (props.message.role === 'user' ? '复制提问' : '复制回答'))
+const timestamp = computed(() => messageTime(props.message))
 const copying = ref(false),
   copied = ref(false),
   error = ref('')
@@ -63,7 +78,12 @@ onScopeDispose(() => {
     <div
       role="group"
       aria-label="消息操作"
-      class="flex items-center gap-0.5 opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+      class="flex items-center gap-0.5"
+      :class="
+        alwaysShowCopy
+          ? ''
+          : 'opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100'
+      "
     >
       <Button
         type="button"
@@ -94,6 +114,28 @@ onScopeDispose(() => {
       >
         <PencilIcon class="size-3.5" aria-hidden="true" />
       </Button>
+      <TooltipProvider v-if="timestamp" :delay-duration="250" disable-hoverable-content>
+        <TooltipRoot ignore-non-keyboard-focus>
+          <TooltipTrigger as-child>
+            <time
+              tabindex="0"
+              :datetime="new Date(timestamp.value).toISOString()"
+              :aria-label="timestamp.label"
+              class="ml-1.5 inline-flex min-h-7 cursor-default items-center rounded px-1 text-xs font-normal tabular-nums text-muted-foreground/70 opacity-0 outline-none group-hover/message:opacity-100 group-focus-within/message:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50"
+              >{{ formatMessageTime(timestamp.value, now) }}</time
+            >
+          </TooltipTrigger>
+          <TooltipPortal>
+            <TooltipContent
+              side="top"
+              :side-offset="6"
+              :collision-padding="12"
+              class="pointer-events-none z-50 max-w-[calc(100vw-1.5rem)] rounded-md bg-[#202123] px-2.5 py-1.5 text-xs leading-5 text-white shadow-sm"
+              >{{ timestamp.label }} · {{ fullMessageTime(timestamp.value) }}</TooltipContent
+            >
+          </TooltipPortal>
+        </TooltipRoot>
+      </TooltipProvider>
     </div>
     <span v-if="copied" role="status" class="sr-only">已复制</span>
     <span v-if="error" role="alert" class="max-w-full break-words px-1 text-destructive">{{

@@ -9,6 +9,9 @@ interface Pending {
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
 }
+/** 仅由传输实现构造安全提示，调用方可以展示 message，不转发原始诊断。 */
+export class RpcConnectionError extends Error {}
+
 export class RpcError extends Error {
   readonly code: number
   constructor(code: number, message: string) {
@@ -27,6 +30,7 @@ export class RpcClient {
   private length = 0
   private serial = 0
   private usable = false
+  private startupDiagnostic = Buffer.alloc(0)
   private failure: Error | null = null
   private closing = false
   private closeTask: Promise<void> | null = null
@@ -35,13 +39,13 @@ export class RpcClient {
   private readonly readyTimer: ReturnType<typeof setTimeout>
   private failureTimer: ReturnType<typeof setTimeout> | undefined
   private readonly notify: (method: string, params: unknown) => void
-  private readonly disconnected: () => void
+  private readonly disconnected: (error: RpcConnectionError) => void
 
   constructor(
     executable: string,
     args: string[],
     notify: (method: string, params: unknown) => void,
-    disconnected: () => void,
+    disconnected: (error: RpcConnectionError) => void,
   ) {
     this.notify = notify
     this.disconnected = disconnected
@@ -52,32 +56,72 @@ export class RpcClient {
     // 启动失败也可能早于调用方 await；保留原 Promise 的失败，同时避免未处理拒绝。
     void this.ready.catch(() => undefined)
     this.readyTimer = setTimeout(
-      () => this.fail(new Error('对话服务启动超时，请重新打开应用。')),
+      () => this.fail(new RpcConnectionError('对话服务启动超时，请重试启动。')),
       15_000,
     )
     this.child = spawn(executable, args, { stdio: 'pipe', windowsHide: true, shell: false })
     this.closed = new Promise((resolve) =>
       this.child.once('close', () => {
-        if (!this.closing) this.fail(new Error('对话服务已停止，请重新打开应用。'))
+        if (!this.closing)
+          this.fail(
+            new RpcConnectionError(
+              this.usable ? '对话服务已停止，请重新打开应用。' : this.startupFailure(),
+            ),
+          )
         this.rejectPending(new Error('对话服务已停止。'))
         clearTimeout(this.readyTimer)
         clearTimeout(this.failureTimer)
         resolve()
       }),
     )
-    this.child.on('error', () =>
-      this.fail(new Error('无法启动对话服务，请检查客户端安装是否完整。')),
-    )
+    this.child.on('error', (error: NodeJS.ErrnoException) => {
+      const message =
+        error.code === 'EACCES' || error.code === 'EPERM'
+          ? '没有执行对话服务程序的权限，请检查文件权限。'
+          : '无法启动对话服务，请检查客户端服务程序是否完整。'
+      this.fail(new RpcConnectionError(message, { cause: error }))
+    })
     this.child.stdin.on('error', () => this.fail(new Error('对话服务连接已中断。')))
     this.child.stdout.on('error', () => this.fail(new Error('对话服务输出已中断。')))
     this.child.stderr.on('error', () => this.fail(new Error('对话服务诊断通道已中断。')))
-    // 不转发后端诊断原文，避免凭据或完整对话进入客户端日志；必须持续消费以防管道阻塞。
-    this.child.stderr.on('data', () => undefined)
+    // 仅在握手前有界保留诊断以识别已知原因；不向界面或日志转发原文，运行后只消费。
+    this.child.stderr.on('data', (chunk: Buffer) => {
+      if (!this.usable && !this.failure && this.startupDiagnostic.length < 16 * 1024)
+        this.startupDiagnostic = Buffer.concat([
+          this.startupDiagnostic,
+          chunk.subarray(0, 16 * 1024 - this.startupDiagnostic.length),
+        ])
+    })
     this.child.stdout.on('data', (chunk: Buffer) => this.consume(chunk))
     this.child.stdout.on('end', () => {
+      // 启动退出时等 close，确保 stderr 已排空；未退出的进程仍受就绪超时约束。
+      if (!this.usable && !this.length) return
       if (!this.closing)
-        this.fail(new Error(this.length ? '对话服务输出不完整。' : '对话服务连接已中断。'))
+        this.fail(
+          new RpcConnectionError(
+            this.length
+              ? '对话服务输出不完整。'
+              : this.usable
+                ? '对话服务连接已中断。'
+                : '对话服务在就绪前退出，未完成启动握手。',
+          ),
+        )
     })
+  }
+
+  private startupFailure(): string {
+    for (const line of this.startupDiagnostic.toString('utf8').split('\n')) {
+      try {
+        const value = record(JSON.parse(line) as unknown)
+        if (value.level !== 'ERROR' || value.module !== 'main' || typeof value.error !== 'string')
+          continue
+        if (value.error.split(/\r?\n/).includes('该数据目录已有运行中的 Callum 服务'))
+          return '该数据目录已有运行中的 Callum 服务，请关闭占用该目录的服务后重试。'
+      } catch {
+        /* 非结构化或超出边界的诊断不用于生成对外原因。 */
+      }
+    }
+    return '对话服务在就绪前退出，未完成启动握手。'
   }
 
   async request(method: string, params: unknown, timeoutMs = 15_000): Promise<unknown> {
@@ -125,7 +169,13 @@ export class RpcClient {
         offset = newline + 1
       }
     } catch {
-      this.fail(new Error('对话服务协议异常，连接已关闭。'))
+      this.fail(
+        new RpcConnectionError(
+          this.usable
+            ? '对话服务协议异常，连接已关闭。'
+            : '对话服务启动握手失败，协议不兼容或响应无效。',
+        ),
+      )
     }
   }
 
@@ -157,6 +207,7 @@ export class RpcClient {
       )
         throw new Error('不兼容的服务协议')
       this.usable = true
+      this.startupDiagnostic = Buffer.alloc(0)
       clearTimeout(this.readyTimer)
       this.readyResolve()
     } else {
@@ -172,13 +223,14 @@ export class RpcClient {
     }
     this.pending.clear()
   }
-  private fail(error: Error): void {
+  private fail(error: RpcConnectionError): void {
     if (this.failure) return
     this.failure = error
+    this.startupDiagnostic = Buffer.alloc(0)
     clearTimeout(this.readyTimer)
     this.readyReject(error)
     this.rejectPending(error)
-    if (!this.closing) this.disconnected()
+    if (!this.closing) this.disconnected(error)
     this.failureTimer = setTimeout(() => this.child.kill('SIGKILL'), 2000)
     this.child.kill('SIGTERM')
   }
@@ -188,6 +240,7 @@ export class RpcClient {
   }
   private async shutdown(): Promise<void> {
     this.closing = true
+    this.startupDiagnostic = Buffer.alloc(0)
     clearTimeout(this.readyTimer)
     if (this.usable && !this.failure) {
       try {

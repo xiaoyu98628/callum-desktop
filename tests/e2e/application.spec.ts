@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { cleanupTestCredentials } from '../helpers/backend.ts'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,11 +33,14 @@ const test = base.extend<{
   profile: string
   withModel: boolean
   withEndpoint: boolean
+  blockServiceStartup: boolean
+  startupBlocker: ChatService | null
   approvalPolicy: 'on-request' | 'always'
   modelEndpoint: Awaited<ReturnType<typeof startModelServer>> | null
 }>({
   withModel: [false, { option: true }],
   withEndpoint: [false, { option: true }],
+  blockServiceStartup: [false, { option: true }],
   approvalPolicy: ['on-request', { option: true }],
   profile: async ({ playwright }, use) => {
     void playwright
@@ -44,6 +48,7 @@ const test = base.extend<{
     try {
       await use(profile)
     } finally {
+      await cleanupTestCredentials(profile)
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   },
@@ -62,8 +67,23 @@ const test = base.extend<{
       await endpoint.close()
     }
   },
-  desktop: async ({ playwright, profile, modelEndpoint }, use) => {
+  startupBlocker: async ({ blockServiceStartup, profile, modelEndpoint }, use) => {
     void modelEndpoint
+    if (!blockServiceStartup) {
+      await use(null)
+      return
+    }
+    const service = new ChatService(join(profile, 'backend'), resourceRoot)
+    try {
+      await service.overview(0)
+      await use(service)
+    } finally {
+      await service.close()
+    }
+  },
+  desktop: async ({ playwright, profile, modelEndpoint, startupBlocker }, use) => {
+    void modelEndpoint
+    void startupBlocker
     let application: ElectronApplication | undefined
     let closed = false
     try {
@@ -90,6 +110,10 @@ const test = base.extend<{
     }
   },
 })
+
+// 在声明阶段跳过非目标平台，避免为跳过的用例创建无须运行的应用资源。
+const testOnMacOS = process.platform === 'darwin' ? test : test.skip
+const testOnWindows = process.platform === 'win32' ? test : test.skip
 
 async function prepareManualCompaction(page: Page, title: string, turns = 6) {
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
@@ -146,6 +170,9 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   expect(bridge.hasNode).toBe(false)
   expect(bridge.methods).toEqual([
     'getAppInfo',
+    'getServiceState',
+    'retryServiceStart',
+    'onServiceState',
     'copyCode',
     'copyMessage',
     'openWebLink',
@@ -175,7 +202,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'setConversationPinned',
     'setConversationArchived',
     'listArchivedConversations',
-    'getEarlierMessages',
+    'getConversationHistory',
     'listRunSteps',
     'getStepDetails',
     'sendMessage',
@@ -190,6 +217,8 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   ])
   expect(bridge.info.name).toBe('Callum')
   expect(bridge.info.version).toBe('0.1.0')
+  expect(bridge.info.homeDirectory).toBe(await desktop.evaluate(({ app }) => app.getPath('home')))
+  expect(await page.evaluate(() => window.callum.getServiceState())).toEqual({ status: 'ready' })
   expect(await desktop.evaluate(({ app }) => app.getPath('userData'))).toContain(
     'callum-desktop-e2e-',
   )
@@ -205,6 +234,228 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
   await page.emulateMedia({ colorScheme: 'light' })
   await expect(page.locator('html')).not.toHaveClass(/dark/)
   await page.screenshot({ path: '.artifacts/screenshots/conversation.png' })
+})
+
+test.describe('服务生命周期页面', () => {
+  test.use({ withModel: true })
+
+  test('启动等待显示整页 loading，就绪后自动进入对话并保留状态', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+    // 替代生命周期快照，业务查询仍通过实际 IPC 和 Go 服务。
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => ({ status: 'starting' }))
+    }, IPC_CHANNELS.getServiceState)
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '正在加载 Callum…', exact: true })).toBeVisible()
+    await expect(page.getByRole('status')).toContainText('正在准备你的工作空间')
+    await expect(page.locator('#app-sidebar')).toHaveCount(0)
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await page.screenshot({ path: '.artifacts/screenshots/app-loading-light.png' })
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+    await desktop.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setSize(900, 640)
+    })
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    const spinner = page.getByRole('status').locator('svg').last()
+    expect(await spinner.evaluate((element) => getComputedStyle(element).animationName)).toBe(
+      'none',
+    )
+    await page.screenshot({ path: '.artifacts/screenshots/app-loading-dark-compact.png' })
+    await desktop.evaluate(({ BrowserWindow }, channel) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { status: 'ready' })
+    }, IPC_CHANNELS.serviceState)
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('切换页面保留的草稿')
+    await desktop.evaluate(({ BrowserWindow }, channel) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { status: 'closing' })
+    }, IPC_CHANNELS.serviceState)
+    await expect(page.getByRole('heading', { name: '正在关闭…', exact: true })).toBeVisible()
+    await expect(input).toHaveCount(0)
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button')).toHaveCount(0)
+    await desktop.evaluate(({ BrowserWindow }, channel) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { status: 'ready' })
+    }, IPC_CHANNELS.serviceState)
+    await expect(input).toHaveValue('切换页面保留的草稿')
+  })
+
+  test('迟到的启动快照不能覆盖较新的关闭通知', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(
+        channel,
+        () =>
+          new Promise((resolve) => {
+            Reflect.set(globalThis, 'releaseServiceState', () => resolve({ status: 'starting' }))
+          }),
+      )
+    }, IPC_CHANNELS.getServiceState)
+    await page.reload()
+    await expect
+      .poll(() => desktop.evaluate(() => typeof Reflect.get(globalThis, 'releaseServiceState')))
+      .toBe('function')
+    await desktop.evaluate(({ BrowserWindow }, channel) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { status: 'closing' })
+    }, IPC_CHANNELS.serviceState)
+    await expect(page.getByRole('heading', { name: '正在关闭…', exact: true })).toBeVisible()
+    await desktop.evaluate(() => Reflect.get(globalThis, 'releaseServiceState')())
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        }),
+    )
+    await expect
+      .poll(() => page.evaluate(() => document.querySelector('h1')?.textContent?.trim()))
+      .toBe('正在关闭…')
+    await expect(page.locator('#app-sidebar')).toHaveCount(0)
+  })
+
+  test('实际退出服务时以整页 loading 替换主界面', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await desktop.evaluate(({ app }) => {
+      // 保留窗口以观察实际关闭流程结束后的界面，不替代服务关闭逻辑。
+      const holdQuit = (event: { preventDefault(): void }): void => event.preventDefault()
+      app.on('before-quit', holdQuit)
+      Reflect.set(globalThis, 'releaseLoadingQuit', () =>
+        app.removeListener('before-quit', holdQuit),
+      )
+      app.quit()
+    })
+    try {
+      await expect(page.getByRole('heading', { name: '正在关闭…', exact: true })).toBeVisible()
+      await expect(page.locator('#app-sidebar')).toHaveCount(0)
+      await expect(page.getByRole('heading', { name: '设置', exact: true })).toHaveCount(0)
+      await expect(page.getByRole('alert')).toHaveCount(0)
+      expect(await page.evaluate(() => window.callum.getServiceState())).toEqual({
+        status: 'closing',
+      })
+      await page.screenshot({ path: '.artifacts/screenshots/app-closing.png' })
+    } finally {
+      await desktop.evaluate(() => Reflect.get(globalThis, 'releaseLoadingQuit')())
+    }
+  })
+})
+
+test.describe('启动失败页面与重试', () => {
+  test.use({ withModel: true, blockServiceStartup: true })
+
+  test('真实启动失败显示原因，重试再次失败后可恢复，初始数据重新加载', async ({
+    desktop,
+    startupBlocker,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    if (!startupBlocker) throw new Error('启动占用服务不存在')
+    await startupBlocker.createWorkspace({ name: '重试后读取的项目', rootPath: '' })
+    const heading = page.getByRole('heading', { name: 'Callum 启动失败', exact: true })
+    const retry = page.getByRole('button', { name: '重试启动', exact: true })
+    await expect(heading).toBeVisible()
+    await expect(page.getByRole('alert')).toContainText('该数据目录已有运行中的 Callum 服务')
+    await expect(retry).toBeFocused()
+    await expect(page.locator('#app-sidebar')).toHaveCount(0)
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '设置', exact: true })).toHaveCount(0)
+    await page.screenshot({ path: '.artifacts/screenshots/app-startup-failure-light.png' })
+    await page.evaluate(() => {
+      const states: string[] = []
+      Reflect.set(window, 'startupStates', states)
+      window.callum.onServiceState((state) => states.push(state.status))
+    })
+    await retry.press('Enter')
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, 'startupStates')))
+      .toEqual(['starting', 'startup-failed'])
+    await expect(heading).toBeVisible()
+    await expect(retry).toBeFocused()
+    await expect(page.getByRole('alert')).toContainText('该数据目录已有运行中的 Callum 服务')
+    expect(modelEndpoint?.requests).toHaveLength(0)
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(900, 640),
+    )
+    await page.screenshot({ path: '.artifacts/screenshots/app-startup-failure-dark-compact.png' })
+    await startupBlocker.close()
+    await retry.press('Enter')
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await expect(page.getByRole('button', { name: '重试后读取的项目', exact: true })).toBeVisible()
+    const settings = await page.evaluate(() => window.callum.getExecutionSettings())
+    expect(settings.ok).toBe(true)
+    await input.fill('启动重试成功')
+    await input.press('Enter')
+    await expect(page.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
+  })
+
+  test('重复点击只提交一次，重试期间显示 loading，再次失败支持长原因和键盘', async ({
+    desktop,
+  }) => {
+    const page = await desktop.firstWindow()
+    const retry = page.getByRole('button', { name: '重试启动', exact: true })
+    await expect(retry).toBeFocused()
+    await desktop.evaluate(
+      ({ ipcMain, BrowserWindow }, channels) => {
+        Reflect.set(globalThis, 'startupRetryCalls', 0)
+        ipcMain.removeHandler(channels.retryServiceStart)
+        ipcMain.handle(channels.retryServiceStart, () => {
+          Reflect.set(
+            globalThis,
+            'startupRetryCalls',
+            Number(Reflect.get(globalThis, 'startupRetryCalls')) + 1,
+          )
+          BrowserWindow.getAllWindows()[0]?.webContents.send(channels.serviceState, {
+            status: 'starting',
+          })
+          return new Promise((resolve) => {
+            Reflect.set(globalThis, 'releaseStartupRetry', () => {
+              const state = {
+                status: 'startup-failed',
+                error:
+                  '服务启动失败的详细原因。'.repeat(150) +
+                  '<script>window.unsafeStartup = true</script>',
+              }
+              BrowserWindow.getAllWindows()[0]?.webContents.send(channels.serviceState, state)
+              resolve({ ok: true, value: state })
+            })
+          })
+        })
+      },
+      {
+        retryServiceStart: IPC_CHANNELS.retryServiceStart,
+        serviceState: IPC_CHANNELS.serviceState,
+      },
+    )
+    await retry.evaluate((element) => {
+      if (element instanceof HTMLButtonElement) {
+        element.click()
+        element.click()
+      }
+    })
+    await expect(page.getByRole('heading', { name: '正在加载 Callum…', exact: true })).toBeVisible()
+    await expect(page.getByRole('button')).toHaveCount(0)
+    expect(await desktop.evaluate(() => Reflect.get(globalThis, 'startupRetryCalls'))).toBe(1)
+    await desktop.evaluate(() => Reflect.get(globalThis, 'releaseStartupRetry')())
+    await expect(retry).toBeFocused()
+    await expect(page.getByRole('alert')).toContainText(
+      '<script>window.unsafeStartup = true</script>',
+    )
+    expect(await page.evaluate(() => Reflect.get(window, 'unsafeStartup'))).toBeUndefined()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(900, 640),
+    )
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollHeight > element.clientHeight),
+    ).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
 })
 
 test('外观支持持久化及跟随系统，侧栏可收起', async ({ desktop }) => {
@@ -303,8 +554,7 @@ test('发布环境保持隔离、沙箱、CSP 和新窗口限制', async ({ desk
   )
 })
 
-test('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ desktop }) => {
-  test.skip(process.platform !== 'darwin', '仅验证 macOS 的应用激活行为')
+testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ desktop }) => {
   const page = await desktop.firstWindow()
   await expect(page.getByText('v0.1.0', { exact: true })).toBeVisible()
   await page.close()
@@ -344,19 +594,54 @@ test.describe('真实 Go 对话交互', () => {
     const copyQuestion = users.first().getByRole('button', { name: '复制提问', exact: true })
     const questionActions = users.first().getByRole('group', { name: '消息操作', exact: true })
     const answerActions = answers.first().getByRole('group', { name: '消息操作', exact: true })
+    const questionTime = questionActions.locator('time'),
+      answerTime = answerActions.locator('time')
+    await expect(questionTime).toHaveAttribute('aria-label', '发送时间')
+    await expect(answerTime).toHaveAttribute('aria-label', '完成时间')
+    await expect(questionTime).toHaveText(/^\d{2}:\d{2}$/)
+    const savedTimes = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.conversations[0]) throw new Error('会话不存在')
+      const detail = await window.callum.getConversation(overview.value.conversations[0].id)
+      if (!detail.ok) throw new Error(detail.error)
+      return detail.value.messages.map((message) => message.completedAt)
+    })
+    expect(savedTimes.every((time) => time !== null)).toBe(true)
+    await expect(questionTime).toHaveAttribute('datetime', new Date(savedTimes[0]!).toISOString())
+    await expect(answerTime).toHaveAttribute('datetime', new Date(savedTimes[1]!).toISOString())
     await input.focus()
     await input.hover()
     await expect(questionActions).toHaveCSS('opacity', '0')
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answers.first().getByRole('button', { name: '复制回答', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answerTime).toHaveCSS('opacity', '0')
+    await answerActions.screenshot({ path: '.artifacts/screenshots/latest-answer-actions.png' })
     const questionHeight = await users.first().evaluate((element) => element.clientHeight)
     await users.first().hover()
     await expect(questionActions).toHaveCSS('opacity', '1')
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '0')
+    await questionTime.hover()
+    await expect(page.getByRole('tooltip')).toContainText('发送时间')
+    await expect(page.getByRole('tooltip')).toContainText(
+      /\d{4}年\d{1,2}月\d{1,2}日.*\d{2}:\d{2}:\d{2}/,
+    )
+    await page.screenshot({ path: '.artifacts/screenshots/message-time-tooltip.png' })
     await answers.first().hover()
     await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '1')
+    await answerActions.screenshot({
+      path: '.artifacts/screenshots/latest-answer-actions-hover.png',
+    })
+    await answerTime.hover()
+    await expect(page.getByRole('tooltip')).toContainText('完成时间')
     await expect(questionActions).toHaveCSS('opacity', '0')
     await input.hover()
-    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await expect(answerTime).toHaveCSS('opacity', '0')
     expect(await users.first().evaluate((element) => element.clientHeight)).toBe(questionHeight)
     await copyQuestion.focus()
     await expect(questionActions).toHaveCSS('opacity', '1')
@@ -382,6 +667,18 @@ test.describe('真实 Go 对话交互', () => {
     await input.press('Enter')
     await expect(answers).toHaveCount(2)
     await expect(input).toBeEnabled()
+    await input.focus()
+    await input.hover()
+    await expect(answerActions).toHaveCSS('opacity', '0')
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
+    await answers.first().hover()
+    await expect(answerActions).toHaveCSS('opacity', '1')
+    await input.hover()
+    await expect(answerActions).toHaveCSS('opacity', '0')
     await answers.last().getByRole('button', { name: '复制回答', exact: true }).click()
     expect((await copies()).at(-1)).toBe(MARKDOWN_UNSAFE)
     await desktop.evaluate(() => {
@@ -393,8 +690,9 @@ test.describe('真实 Go 对话交互', () => {
     await input.hover()
     await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
       'opacity',
-      '0',
+      '1',
     )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await expect(answers.last().getByRole('alert')).toBeVisible()
     await desktop.evaluate(() => {
       Reflect.get(globalThis, 'messageActionsTest').fail = false
@@ -455,6 +753,8 @@ test.describe('真实 Go 对话交互', () => {
     await expect(users.last()).toContainText('修正后的最后一条提问')
     await expect(answers.last()).toContainText('你好，这是受控回答。')
     await expect(input).toHaveValue('普通输入草稿')
+    const resentTime = await users.last().locator('time').getAttribute('datetime')
+    const answerCompleted = await answers.last().locator('time').getAttribute('datetime')
     await page.reload()
     await page
       .getByRole('region', { name: '最近', exact: true })
@@ -463,19 +763,39 @@ test.describe('真实 Go 对话交互', () => {
     await expect(users.last()).toContainText('修正后的最后一条提问')
     await expect(answers).toHaveCount(2)
     await expect(answers.last()).toContainText('你好，这是受控回答。')
+    await expect(users.last().locator('time')).toHaveAttribute('datetime', resentTime!)
+    await expect(answers.last().locator('time')).toHaveAttribute('datetime', answerCompleted!)
+    await input.focus()
+    await input.hover()
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '1',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await input.fill('等待甲')
     await input.press('Enter')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeDisabled()
     await expect(answers.last()).toContainText('仅属于等待甲的内容')
+    await expect(answers.nth(1).getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '0',
+    )
     const copyAnswer = answers.last().getByRole('button', { name: '复制回答', exact: true })
     await expect(copyAnswer).toHaveCount(0)
+    await expect(answers.last().locator('time')).toHaveCount(0)
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(users.last().getByRole('button', { name: '编辑提问', exact: true })).toBeEnabled()
     await copyAnswer.click()
+    await expect(answers.last().locator('time')).toHaveAttribute('aria-label', '创建时间')
     expect((await copies()).at(-1)).toBe('仅属于等待甲的内容')
     await input.focus()
     await input.hover()
+    await expect(answers.last().getByRole('group', { name: '消息操作', exact: true })).toHaveCSS(
+      'opacity',
+      '0',
+    )
+    await expect(answers.last().locator('time')).toHaveCSS('opacity', '0')
     await page.screenshot({ path: '.artifacts/screenshots/message-actions-light.png' })
     await users.last().hover()
     await page.screenshot({ path: '.artifacts/screenshots/message-actions-hover.png' })
@@ -1337,57 +1657,55 @@ test.describe('真实 Go 对话交互', () => {
     await page.screenshot({ path: '.artifacts/screenshots/conversation-compact.png' })
   })
 
-  test('macOS 关闭窗口保留执行，应用退出释放服务数据锁', async ({
-    desktop,
-    profile,
-    modelEndpoint,
-  }) => {
-    test.skip(process.platform !== 'darwin')
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('等待窗口恢复')
-    await input.press('Enter')
-    await expect(page.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
-    await page.close()
-    expect(modelEndpoint?.cancelled).toBe(0)
-    const nextWindow = desktop.waitForEvent('window')
-    await desktop.evaluate(({ app }) => {
-      app.emit('activate')
-    })
-    const reopened = await nextWindow
-    await reopened
-      .getByRole('region', { name: '最近', exact: true })
-      .getByRole('button', { name: '等待窗口恢复', exact: true })
-      .click()
-    await expect(reopened.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
-    await desktop.close()
-    // 同一目录能再次启动并写入，证明旧服务已释放实例锁；端点仍限定在本机。
-    if (!modelEndpoint) throw new Error('测试模型端点不存在')
-    expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
-  })
+  testOnMacOS(
+    'macOS 关闭窗口保留执行，应用退出释放服务数据锁',
+    async ({ desktop, profile, modelEndpoint }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('等待窗口恢复')
+      await input.press('Enter')
+      await expect(page.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
+      await page.close()
+      expect(modelEndpoint?.cancelled).toBe(0)
+      const nextWindow = desktop.waitForEvent('window')
+      await desktop.evaluate(({ app }) => {
+        app.emit('activate')
+      })
+      const reopened = await nextWindow
+      await reopened
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: '等待窗口恢复', exact: true })
+        .click()
+      await expect(reopened.getByText('仅属于等待窗口恢复的内容')).toBeVisible()
+      await desktop.close()
+      // 同一目录能再次启动并写入，证明旧服务已释放实例锁；端点仍限定在本机。
+      if (!modelEndpoint) throw new Error('测试模型端点不存在')
+      expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
+    },
+  )
 
-  test('Windows 关闭最后窗口取消执行、退出应用并释放服务数据锁', async ({
-    desktop,
-    profile,
-    modelEndpoint,
-  }) => {
-    test.skip(process.platform !== 'win32', '验证 Windows 关闭最后窗口时的退出语义')
-    const page = await desktop.firstWindow()
-    const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
-    await input.fill('等待窗口退出')
-    await input.press('Enter')
-    await expect(page.getByText('仅属于等待窗口退出的内容', { exact: true })).toBeVisible()
-    const closing = desktop.waitForEvent('close')
-    await page.close()
-    await closing
-    await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
-    if (!modelEndpoint) throw new Error('测试模型端点不存在')
-    expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
-  })
+  testOnWindows(
+    'Windows 关闭最后窗口取消执行、退出应用并释放服务数据锁',
+    async ({ desktop, profile, modelEndpoint }) => {
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled()
+      await input.fill('等待窗口退出')
+      await input.press('Enter')
+      await expect(page.getByText('仅属于等待窗口退出的内容', { exact: true })).toBeVisible()
+      const closing = desktop.waitForEvent('close')
+      await page.close()
+      await closing
+      await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
+      if (!modelEndpoint) throw new Error('测试模型端点不存在')
+      expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
+    },
+  )
 
-  test('消息历史按真实序号向前翻页，并可返回最新页面', async ({ desktop }) => {
+  test('超过 200 轮的历史保留执行状态，逐页回读后可返回最新页面', async ({ desktop }) => {
+    // 实际生成并持久化 205 轮，验证旧执行而非只测试协议替身。
+    test.setTimeout(60_000)
     const page = await desktop.firstWindow()
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
     await page.evaluate(async () => {
@@ -1395,7 +1713,7 @@ test.describe('真实 Go 对话交互', () => {
       if (!overview.ok || !overview.value.models[0]) throw new Error('测试模型不存在')
       const modelId = overview.value.models[0].id
       let conversationId: string | null = null
-      for (let index = 0; index < 26; index++) {
+      for (let index = 0; index < 205; index++) {
         const accepted = await window.callum.sendMessage({
           conversationId,
           modelId,
@@ -1421,13 +1739,34 @@ test.describe('真实 Go 对话交互', () => {
       .getByRole('button', { name: '分页-0', exact: true })
       .click()
     const messages = page.getByLabel('消息记录', { exact: true })
-    await expect(messages.getByText('分页-1', { exact: true })).toBeVisible()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const lastAnswerActions = messages
+      .getByRole('article', { name: 'Callum 的回答', exact: true })
+      .last()
+      .getByRole('group', { name: '消息操作', exact: true })
+    await expect(messages.getByText('分页-180', { exact: true })).toBeVisible()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
-    await page.getByRole('button', { name: '更早的消息', exact: true }).click()
+    await input.focus()
+    await input.hover()
+    await expect(lastAnswerActions).toHaveCSS('opacity', '1')
+    await expect(lastAnswerActions.locator('time')).toHaveCSS('opacity', '0')
+    for (let oldest = 155; oldest >= 0; oldest = Math.max(0, oldest - 25)) {
+      await page.getByRole('button', { name: '更早的消息', exact: true }).click()
+      await expect(messages.getByText(`分页-${oldest}`, { exact: true })).toBeVisible()
+      await input.focus()
+      await input.hover()
+      await expect(lastAnswerActions).toHaveCSS('opacity', '0')
+      if (oldest === 0) break
+    }
+    await expect(messages.getByRole('group', { name: '执行状态', exact: true })).toHaveCount(5)
     await expect(messages.getByText('分页-0', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
-    await expect(messages.getByText('分页-25', { exact: true })).toBeInViewport()
+    await expect(messages.getByText('分页-204', { exact: true })).toBeInViewport()
     await expect(messages.getByText('分页-0', { exact: true })).not.toBeVisible()
+    await input.focus()
+    await input.hover()
+    await expect(lastAnswerActions).toHaveCSS('opacity', '1')
+    await expect(lastAnswerActions.locator('time')).toHaveCSS('opacity', '0')
   })
 
   test('自有服务异常退出后保留部分回答，不重发请求，重启可读取中断状态', async ({
@@ -1683,10 +2022,21 @@ test.describe('会话与项目管理', () => {
 
   test('项目与会话悬停卡片展示现有资料，支持操作、键盘和细滚动条', async ({ desktop, profile }) => {
     const page = await desktop.firstWindow()
+    await expect(page.getByRole('button', { name: '添加项目', exact: true })).toBeEnabled()
+    await desktop.evaluate(
+      ({ app }, homeDirectory) => {
+        const getPath = app.getPath.bind(app)
+        Reflect.set(app, 'getPath', (name: Parameters<typeof app.getPath>[0]) =>
+          name === 'home' ? homeDirectory : getPath(name),
+        )
+      },
+      await realpath(profile),
+    )
+    await page.reload()
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     const folder = join(profile, 'hover-primary'),
-      otherFolder = join(profile, 'hover-secondary')
+      otherFolder = join(profile, 'hover-secondary-' + 'long-source-folder-'.repeat(4))
     await Promise.all([mkdir(folder), mkdir(otherFolder)])
     await chooseTestDirectory(desktop, [folder, otherFolder])
     await page.getByRole('button', { name: '添加项目', exact: true }).click()
@@ -1700,8 +2050,19 @@ test.describe('会话与项目管理', () => {
     const preview = page.getByRole('dialog', { name: '项目预览', exact: true })
     await row.hover()
     await expect(preview).toBeVisible()
-    await expect(preview).toContainText(await realpath(folder))
-    await expect(preview).toContainText(await realpath(otherFolder))
+    await expect(preview).toContainText('~/hover-primary')
+    const paths = preview.locator('[data-project-path]')
+    const longPath = paths.nth(1)
+    await expect(longPath).toHaveText('~/hover-secondary-' + 'long-source-folder-'.repeat(4))
+    await expect(longPath).toHaveCSS('text-overflow', 'ellipsis')
+    expect(await longPath.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+      true,
+    )
+    expect(
+      await longPath.evaluate((element) => element.getBoundingClientRect().height),
+    ).toBeLessThanOrEqual(20)
+    await longPath.hover()
+    await expect(page.getByRole('tooltip')).toContainText(await realpath(otherFolder))
     await expect(preview).not.toContainText('次聊天')
     const rowBounds = (await row.boundingBox())!,
       previewBounds = (await preview.boundingBox())!
@@ -1722,6 +2083,11 @@ test.describe('会话与项目管理', () => {
     await expect(row).toBeFocused()
     await row.press('ArrowRight')
     await expect(preview.getByRole('button', { name: '取消项目置顶', exact: true })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(paths.first()).toBeFocused()
+    await expect(page.getByRole('tooltip')).toContainText(await realpath(folder))
+    await page.keyboard.press('Tab')
+    await expect(paths.last()).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(preview.getByRole('button', { name: '编辑项目', exact: true })).toBeFocused()
     await page.keyboard.press('Escape')
@@ -4546,9 +4912,12 @@ test.describe('Markdown 回答展示', () => {
     const actions = answer.getByRole('group', { name: '消息操作', exact: true })
     await input.focus()
     await input.hover()
-    await expect(actions).toHaveCSS('opacity', '0')
+    await expect(actions).toHaveCSS('opacity', '1')
+    await expect(copyAnswer).toHaveCSS('opacity', '1')
+    await expect(actions.locator('time')).toHaveCSS('opacity', '0')
     await heading.hover()
     await expect(actions).toHaveCSS('opacity', '1')
+    await expect(actions.locator('time')).toHaveCSS('opacity', '1')
     await copyAnswer.click()
     expect(
       await desktop.evaluate(() => Reflect.get(globalThis, 'callumMarkdownTest').copies.at(-1)),
@@ -4577,7 +4946,7 @@ test.describe('Markdown 回答展示', () => {
     })
     const sidebar = page.getByRole('region', { name: '最近', exact: true })
     const conversation = sidebar.locator('button[aria-current="page"]')
-    const title = await conversation.getAttribute('title')
+    const title = (await conversation.innerText()).trim()
     if (!title) throw new Error('会话标题不存在')
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await page.getByText('深色', { exact: true }).click()

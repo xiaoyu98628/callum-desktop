@@ -1,19 +1,17 @@
-import { computed, inject, onMounted, onScopeDispose, provide, reactive } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide } from 'vue'
+import { createConversationState } from './state'
+import { createExecutionInteractions } from './execution-interactions'
+import { unwrap, upsert, boundMessages } from './state-utils'
 import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
-import type { ExecutionSettings } from '@shared/execution'
-import type { ContextUsage } from '@shared/context-usage'
 import type {
   ChatEvent,
-  ApprovalScope,
-  ChatMessage,
-  ChatModel,
   ChatResult,
+  ChatModel,
   Conversation,
-  ConversationDetail,
   ConversationUpdate,
   ConversationPage,
   WorkspacePage,
@@ -21,101 +19,12 @@ import type {
   WorkspaceInput,
   WorkspaceChange,
   WorkspaceUpdate,
-  UserInputAnswer,
 } from '@shared/chat'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
 
-function unwrap<T>(result: ChatResult<T>): T {
-  if (!result.ok) throw new Error(result.error)
-  return result.value
-}
-function upsert<T extends { id: string }>(items: T[], item: T): T[] {
-  return [...items.filter((current) => current.id !== item.id), item]
-}
-/** 界面保留有界的消息窗口；更早内容仍通过后端分页读取。 */
-function boundMessages(messages: ChatMessage[]): ChatMessage[] {
-  const sorted = messages.toSorted((a, b) => a.sequence - b.sequence)
-  let chars = 0,
-    start = sorted.length
-  while (start > 0 && sorted.length - start < 200) {
-    const count =
-      sorted[start - 1]?.content.reduce(
-        (total, block) => total + block.text.length + block.path.length,
-        0,
-      ) ?? 0
-    if (start < sorted.length && chars + count > 4 * 1024 * 1024) break
-    chars += count
-    start--
-  }
-  return sorted.slice(start)
-}
-interface ConversationGroup {
-  items: Conversation[]
-  loading: boolean
-  error: string
-  hasMore: boolean
-  offset: number
-  revision: number
-  generation: number
-  expanded: boolean
-  events: Map<string, ChatEvent>
-}
 function createConversations() {
-  const state = reactive({
-    conversations: [] as Conversation[],
-    models: [] as ChatModel[],
-    selectedId: null as string | null,
-    workspaceId: null as string | null,
-    workspaces: [] as Workspace[],
-    workspaceGroups: {} as Record<string, ConversationGroup>,
-    workspacesLoading: false,
-    workspacesError: '',
-    workspacesHasMore: false,
-    managing: false,
-    archivesOpen: false,
-    archivedConversations: [] as Conversation[],
-    archivedWorkspaces: [] as Workspace[],
-    archiveKind: 'conversations' as 'conversations' | 'workspaces',
-    archivesLoading: false,
-    archivesError: '',
-    archivesHasMore: false,
-    modelId: '',
-    detail: null as ConversationDetail | null,
-    loading: true,
-    loadingList: true,
-    sending: false,
-    resending: false,
-    compacting: '',
-    executionSettings: null as ExecutionSettings | null,
-    executionSettingsLoading: false,
-    executionSettingsSaving: false,
-    executionSettingsError: '',
-    contextUsageEvent: null as ContextUsage | null,
-    usageActivityRevision: 0,
-    editing: null as {
-      messageId: string
-      originalText: string
-      text: string
-      error: string
-    } | null,
-    cancelling: false,
-    deciding: '',
-    revokingDirectory: '',
-    directoriesLoading: false,
-    directoriesOffset: 0,
-    directoriesError: '',
-    replying: '',
-    inputReplies: {} as Record<string, UserInputAnswer>,
-    collapsedCards: {} as Record<string, boolean>,
-    error: '',
-    serviceError: '',
-    modelsLoading: false,
-    modelError: '',
-    hasMore: false,
-    historical: false,
-    drafts: {} as Record<string, string>,
-  })
+  const state = createConversationState()
   let selection = 0,
     listOffset = 0,
     unsubscribe: (() => void) | undefined,
@@ -125,7 +34,6 @@ function createConversations() {
   let listRevision = 0,
     detailRevision = 0
   let modelGeneration = 0
-  let executionSettingsRequest: Promise<ExecutionSettings | null> | null = null
   let overviewGeneration = 0,
     workspaceGeneration = 0,
     workspaceOffset = 0,
@@ -159,7 +67,12 @@ function createConversations() {
       }
     },
   })
-  const activeRun = computed(() => state.detail?.runs.find(isActiveRun) ?? null)
+  const activeRun = computed(
+    () =>
+      (state.selectedId ? state.activeRuns[state.selectedId] : null) ??
+      state.detail?.runs.find(isActiveRun) ??
+      null,
+  )
   const lastUserMessage = computed(() =>
     state.historical
       ? null
@@ -195,21 +108,24 @@ function createConversations() {
   const pendingInputs = computed(
     () => state.detail?.userInputs.filter((item) => item.status === 'pending') ?? [],
   )
-  function setCardCollapsed(id: string, value: boolean): void {
-    if (value) state.collapsedCards[id] = true
-    else delete state.collapsedCards[id]
-    const keys = Object.keys(state.collapsedCards)
-    if (keys.length > 100 && keys[0]) delete state.collapsedCards[keys[0]]
-  }
-  function inputReply(id: string): UserInputAnswer {
-    return state.inputReplies[id] ?? { optionIndex: null, text: '', skipped: false }
-  }
-  function setInputReply(id: string, value: UserInputAnswer): void {
-    if (!pendingInputs.value.some((item) => item.id === id)) return
-    state.inputReplies[id] = value
-    const keys = Object.keys(state.inputReplies)
-    if (keys.length > 100 && keys[0]) delete state.inputReplies[keys[0]]
-  }
+  const {
+    setCardCollapsed,
+    inputReply,
+    setInputReply,
+    refreshExecutionSettings,
+    saveExecutionSettings,
+    cancel,
+    decide,
+    loadDirectories,
+    revokeDirectory,
+    submitInput,
+    rememberRun,
+  } = createExecutionInteractions(state, {
+    selection: () => selection,
+    disposed: () => disposed,
+    activeRun: () => activeRun.value,
+    pendingInputs: () => pendingInputs.value,
+  })
   const workspace = computed(
     () => state.workspaces.find((item) => item.id === state.workspaceId) ?? null,
   )
@@ -351,6 +267,7 @@ function createConversations() {
 
   function apply(event: ChatEvent): void {
     const change = event.change
+    if (change.kind === 'run') rememberRun(change.value)
     if (change.kind === 'context-usage') {
       if (change.value.conversationId === state.selectedId) state.contextUsageEvent = change.value
       return
@@ -434,14 +351,36 @@ function createConversations() {
     if (
       change.kind === 'message' &&
       (!state.historical || state.detail.messages.some((item) => item.id === change.value.id))
-    )
-      state.detail.messages = boundMessages(upsert(state.detail.messages, change.value))
+    ) {
+      const merged = upsert(state.detail.messages, change.value)
+      state.detail.messages = boundMessages(merged)
+      // 淘汰完整轮次后同步游标；更早页面必须能重新读取这些消息与独立压缩。
+      if (state.detail.history && state.detail.messages.length < merged.length) {
+        const first = state.detail.messages[0]
+        if (first) {
+          state.detail.history = { beforeRunId: first.runId, hasMore: true }
+          state.detail.runs = state.detail.runs.filter((run) => run.id >= first.runId)
+        }
+      }
+    }
     if (change.kind === 'step')
       state.detail.steps = boundSteps(upsert(state.detail.steps, change.value))
-    if (change.kind === 'run') {
-      state.detail.runs = upsert(state.detail.runs, change.value)
+    if (
+      change.kind === 'run' &&
+      (!state.historical || state.detail.runs.some((run) => run.id === change.value.id))
+    ) {
+      const merged = upsert(state.detail.runs, change.value)
+      state.detail.runs = merged
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
         .slice(-200)
+      // 密集独立压缩也会推进窗口；消息与执行必须一起淘汰，不能只丢失旧轮次的状态。
+      if (state.detail.history && state.detail.runs.length < merged.length) {
+        const first = state.detail.runs[0]
+        if (first) {
+          state.detail.messages = state.detail.messages.filter((item) => item.runId >= first.id)
+          state.detail.history = { beforeRunId: first.id, hasMore: true }
+        }
+      }
       if (!change.persisted) state.error = '本次执行状态未能完整保存，请重新打开应用后核对历史。'
     }
     if (change.kind === 'directory-grant')
@@ -898,6 +837,8 @@ function createConversations() {
         return
       }
       state.detail = result
+      delete state.activeRuns[conversationId]
+      for (const run of result.runs) rememberRun(run)
       state.workspaceId = result.conversation.workspaceId
       state.detail.messages = boundMessages(result.messages)
       state.error = result.warning ?? ''
@@ -912,53 +853,6 @@ function createConversations() {
         state.loading = false
         pendingEvents.clear()
       }
-    }
-  }
-  function refreshExecutionSettings(): Promise<ExecutionSettings | null> {
-    if (executionSettingsRequest) return executionSettingsRequest
-    if (state.executionSettingsSaving) return Promise.resolve(null)
-    state.executionSettingsLoading = true
-    executionSettingsRequest = readExecutionSettings().finally(() => {
-      executionSettingsRequest = null
-      if (!disposed) state.executionSettingsLoading = false
-    })
-    return executionSettingsRequest
-  }
-  async function readExecutionSettings(): Promise<ExecutionSettings | null> {
-    try {
-      const settings = unwrap(await getDesktopApi().getExecutionSettings())
-      if (disposed) return null
-      state.executionSettings = settings
-      state.executionSettingsError = ''
-      return settings
-    } catch (error) {
-      if (!disposed) state.executionSettingsError = message(error)
-      return null
-    }
-  }
-  async function saveExecutionSettings(next: ExecutionSettings): Promise<ExecutionSettings> {
-    if (
-      state.executionSettingsSaving ||
-      state.executionSettingsLoading ||
-      state.sending ||
-      state.resending ||
-      state.compacting ||
-      state.serviceError
-    )
-      throw new Error('任务或权限设置正在更新，请稍后重试。')
-    state.executionSettingsSaving = true
-    try {
-      const settings = unwrap(await getDesktopApi().updateExecutionSettings({ ...next }))
-      if (!disposed) {
-        state.executionSettings = settings
-        state.executionSettingsError = ''
-      }
-      return settings
-    } catch (error) {
-      if (!disposed) state.executionSettingsError = message(error)
-      throw error
-    } finally {
-      if (!disposed) state.executionSettingsSaving = false
     }
   }
   async function send(): Promise<void> {
@@ -1100,132 +994,21 @@ function createConversations() {
       state.resending = false
     }
   }
-  async function cancel(): Promise<void> {
-    const run = activeRun.value
-    if (!run || state.cancelling) return
-    state.cancelling = true
-    state.error = ''
-    try {
-      unwrap(await getDesktopApi().cancelRun(run.id))
-    } catch (error) {
-      if (run.conversationId === state.selectedId) state.error = message(error)
-    } finally {
-      if (run.conversationId === state.selectedId) state.cancelling = false
-    }
-  }
-  async function decide(
-    approvalId: string,
-    decision: 'approved' | 'rejected',
-    scope: ApprovalScope = 'once',
-  ): Promise<void> {
-    if (state.deciding) return
-    state.deciding = approvalId
-    state.error = ''
-    const conversationId = state.selectedId
-    try {
-      unwrap(await getDesktopApi().decideApproval(approvalId, decision, scope))
-    } catch (error) {
-      if (conversationId === state.selectedId) state.error = message(error)
-    } finally {
-      state.deciding = ''
-    }
-  }
-  async function loadDirectories(offset = 0): Promise<void> {
-    const conversationId = state.selectedId
-    if (!conversationId || state.directoriesLoading) return
-    const currentSelection = selection
-    const before = new Map(state.detail?.directoryGrants.map((grant) => [grant.id, grant]))
-    state.directoriesLoading = true
-    state.directoriesError = ''
-    try {
-      const values = unwrap(await getDesktopApi().listDirectoryGrants(conversationId, offset))
-      if (
-        !disposed &&
-        selection === currentSelection &&
-        state.detail?.conversation.id === conversationId
-      ) {
-        // 查询期间收到的新增或撤销通知优先于早先生成的列表快照。
-        const changed = state.detail.directoryGrants.filter(
-          (grant) => before.get(grant.id) !== grant,
-        )
-        state.detail.directoryGrants = changed.reduce(
-          (items, grant) => upsert(items, grant),
-          values,
-        )
-        state.directoriesOffset = offset
-      }
-    } catch (error) {
-      if (!disposed && selection === currentSelection && conversationId === state.selectedId)
-        state.directoriesError = message(error)
-    } finally {
-      if (!disposed && selection === currentSelection) state.directoriesLoading = false
-    }
-  }
-  async function revokeDirectory(grantId: string): Promise<void> {
-    const conversationId = state.selectedId
-    if (!conversationId || state.revokingDirectory) return
-    state.revokingDirectory = grantId
-    state.directoriesError = ''
-    try {
-      const value = unwrap(await getDesktopApi().revokeDirectoryGrant(conversationId, grantId))
-      if (state.detail?.conversation.id === conversationId)
-        state.detail.directoryGrants = upsert(state.detail.directoryGrants, value)
-    } catch (error) {
-      if (conversationId === state.selectedId) state.directoriesError = message(error)
-    } finally {
-      state.revokingDirectory = ''
-    }
-  }
-  async function submitInput(inputId: string, skipped: boolean): Promise<void> {
-    const input = pendingInputs.value.find((item) => item.id === inputId)
-    const run = activeRun.value
-    if (
-      !input ||
-      !run ||
-      run.id !== input.runId ||
-      input.conversationId !== state.selectedId ||
-      state.replying ||
-      state.loading ||
-      state.serviceError ||
-      state.cancelling
-    )
-      return
-    state.replying = inputId
-    state.error = ''
-    try {
-      const reply = inputReply(inputId)
-      // 跨进程只发送普通快照，不能把 Vue 的响应式代理交给 structured clone。
-      const answer: UserInputAnswer = skipped
-        ? { optionIndex: null, text: '', skipped: true }
-        : { optionIndex: reply.optionIndex, text: reply.text, skipped: false }
-      const result = unwrap(await getDesktopApi().submitUserInput(inputId, run.id, answer))
-      if (!disposed) {
-        delete state.inputReplies[inputId]
-        delete state.collapsedCards[inputId]
-        if (state.detail?.conversation.id === input.conversationId)
-          state.detail.userInputs = upsert(state.detail.userInputs, result).slice(-200)
-      }
-    } catch (error) {
-      if (!disposed && state.selectedId === input.conversationId) state.error = message(error)
-    } finally {
-      if (state.replying === inputId) state.replying = ''
-    }
-  }
   async function earlier(): Promise<void> {
-    const first = state.detail?.messages[0],
+    const cursor = state.detail?.history?.beforeRunId,
+      conversationId = state.selectedId,
       token = selection
-    if (!first || state.loading) return
+    if (!cursor || !conversationId || state.loading || !state.detail?.history?.hasMore) return
     state.loading = true
     state.error = ''
     try {
-      const rows = unwrap(
-        await getDesktopApi().getEarlierMessages(first.conversationId, first.sequence),
-      )
+      const page = unwrap(await getDesktopApi().getConversationHistory(conversationId, cursor))
       if (token !== selection || !state.detail) return
-      if (rows.length) {
-        state.detail.messages = boundMessages(rows)
-        state.historical = true
-      }
+      state.detail.messages = page.messages
+      state.detail.runs = page.runs
+      state.detail.history = { beforeRunId: page.beforeRunId, hasMore: page.hasMore }
+      detailRevision = page.revision
+      state.historical = true
     } catch (error) {
       if (token === selection) state.error = message(error)
     } finally {
@@ -1239,11 +1022,12 @@ function createConversations() {
   }
   onMounted(() => {
     unsubscribe = getDesktopApi().onChatEvent(receive)
-    state.loading = false
-    void refreshOverview()
-    void refreshWorkspaces()
-    void refreshExecutionSettings()
   })
+  async function initialize(): Promise<void> {
+    // 仅在服务就绪后由根组件调用；失败重试后重新读取，不保留旧启动的错误。
+    state.loading = false
+    await Promise.all([refreshOverview(), refreshWorkspaces(), refreshExecutionSettings()])
+  }
   onScopeDispose(() => {
     disposed = true
     selection++
@@ -1259,6 +1043,7 @@ function createConversations() {
     workspaceUpdates.clear()
   })
   return {
+    initialize,
     state,
     draft,
     activeRun,
