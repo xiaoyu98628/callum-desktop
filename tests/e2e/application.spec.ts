@@ -4122,6 +4122,7 @@ test.describe('Markdown 回答展示', () => {
     }) => {
       if (!modelEndpoint) throw new Error('受控端点不存在')
       const page = await desktop.firstWindow()
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
       await page.evaluate((delay) => {
         if (delay === 0) return
         // 每次解析额外等待 80ms，稳定复现分片快于排版时结果被不断作废的问题。
@@ -4188,14 +4189,12 @@ test.describe('Markdown 回答展示', () => {
         Math.max(...report.updates.map((sample: { delayMs: number }) => sample.delayMs)),
       ).toBeLessThan(500)
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
-      const scroller = page.locator('[aria-label="对话内容"] > div').first()
-      await expect
-        .poll(() =>
-          scroller.evaluate(
-            (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
-          ),
+      const scroller = page.locator('[data-conversation-scroll]')
+      const distanceFromBottom = () =>
+        scroller.evaluate((element) =>
+          Math.abs(element.scrollHeight - element.scrollTop - element.clientHeight),
         )
-        .toBeLessThan(3)
+      await expect.poll(distanceFromBottom).toBeLessThan(1)
       await scroller.evaluate((element) => {
         element.scrollTop = 120
       })
@@ -4204,17 +4203,32 @@ test.describe('Markdown 回答展示', () => {
       await expect(answer).toContainText('阅读期间的新段落。')
       await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(120)
       await page.getByRole('button', { name: '回到最新消息', exact: true }).click()
-      await expect
-        .poll(() =>
-          scroller.evaluate(
-            (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
-          ),
-        )
-        .toBeLessThan(3)
+      await expect.poll(distanceFromBottom).toBeLessThan(1)
       modelEndpoint.finishStream()
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
       await expect(answer.locator('pre')).toHaveCount(12)
       await page.evaluate(() => Reflect.get(window, 'stopStreamObservation')())
+
+      const composer = page.locator('[data-conversation-composer]')
+      const viewportBounds = (await scroller.boundingBox())!
+      const composerBounds = (await composer.boundingBox())!
+      expect(viewportBounds.y + viewportBounds.height).toBeCloseTo(
+        composerBounds.y + composerBounds.height,
+      )
+      expect(
+        viewportBounds.x + viewportBounds.width - composerBounds.x - composerBounds.width,
+      ).toBeCloseTo(6)
+
+      const composerTop = () => composer.evaluate((element) => element.getBoundingClientRect().top)
+      await input.fill('未发送的多行草稿。\n'.repeat(10))
+      await expect.poll(composerTop).toBeLessThan(composerBounds.y)
+      await expect.poll(distanceFromBottom).toBeLessThan(1)
+      await expect
+        .poll(async () => {
+          const bottom = await answer.evaluate((element) => element.getBoundingClientRect().bottom)
+          return (await composerTop()) - bottom
+        })
+        .toBeGreaterThanOrEqual(12)
     })
 
   test('流式 Markdown、高亮、复制、链接与深色小窗口布局', async ({ desktop, modelEndpoint }) => {

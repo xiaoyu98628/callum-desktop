@@ -118,6 +118,9 @@ const messageRuns = computed(() => {
   return result
 })
 const scroller = ref<HTMLElement | null>(null)
+const composer = ref<HTMLElement | null>(null)
+const scrollbarVisible = ref(false)
+let scrollbarTimer: number | undefined
 const messageInput = ref<HTMLTextAreaElement | null>(null)
 const commandInputFocused = ref(false)
 const commandsDismissed = ref(false)
@@ -164,6 +167,7 @@ const compactingRun = computed(() => !!activeRun.value?.compaction)
 const stopLabel = computed(() => (compactingRun.value ? '停止压缩' : '停止生成'))
 let inputResizeObserver: ResizeObserver | undefined
 let inputResizeFrame: number | undefined
+let conversationResizeObserver: ResizeObserver | undefined
 const follow = ref(true)
 const awayFromLatest = ref(false)
 const availableModel = computed(() => state.models.some((item) => item.id === state.modelId))
@@ -262,6 +266,11 @@ function trackScroll(): void {
   updateDistance()
   const element = scroller.value
   if (!element) return
+  scrollbarVisible.value = true
+  window.clearTimeout(scrollbarTimer)
+  scrollbarTimer = window.setTimeout(() => {
+    scrollbarVisible.value = false
+  }, 700)
   if (scrollFrame !== undefined) {
     if (
       lastScrollTop !== undefined &&
@@ -315,20 +324,19 @@ function scrollToBottom(): void {
       return
     }
     const target = element.scrollHeight - element.clientHeight
-    const distance = target - element.scrollTop
+    const position = element.scrollTop
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const elapsed = previousFrame ? Math.min(time - previousFrame, 64) : 16
     previousFrame = time
-    element.scrollTop =
-      reduced || Math.abs(distance) < 1
-        ? target
-        : element.scrollTop + distance * (1 - Math.exp(-elapsed / 65))
+    if (!reduced) element.scrollTop = position + (target - position) * (1 - Math.exp(-elapsed / 65))
+    // 浏览器可能将最后几帧的位移舍入为零，停滞时直接贴底。
+    const finished =
+      reduced || element.scrollTop === position || Math.abs(target - element.scrollTop) < 1
+    if (finished) element.scrollTop = target
     lastScrollTop = element.scrollTop
     lastScrollHeight = element.scrollHeight
     updateDistance()
-    if (!reduced && Math.abs(target - element.scrollTop) >= 1)
-      scrollFrame = requestAnimationFrame(advance)
-    else scrollFrame = undefined
+    scrollFrame = finished ? undefined : requestAnimationFrame(advance)
   }
   scrollFrame = requestAnimationFrame(advance)
 }
@@ -421,17 +429,36 @@ onMounted(() => {
     })
   })
   if (messageInput.value) inputResizeObserver.observe(messageInput.value)
+  const viewport = scroller.value
+  const footer = composer.value
+  if (viewport && footer) {
+    // 滚动轨道贯穿对话区，按固定输入区的高度给最后一条消息留出空间。
+    conversationResizeObserver = new ResizeObserver(() => {
+      viewport.style.setProperty(
+        '--conversation-composer-height',
+        `${footer.getBoundingClientRect().height}px`,
+      )
+      scrollToBottom()
+    })
+    conversationResizeObserver.observe(viewport, { box: 'border-box' })
+    conversationResizeObserver.observe(footer, { box: 'border-box' })
+  }
   void scrollToBottom()
 })
 onScopeDispose(() => {
+  window.clearTimeout(scrollbarTimer)
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   inputResizeObserver?.disconnect()
+  conversationResizeObserver?.disconnect()
   if (inputResizeFrame !== undefined) cancelAnimationFrame(inputResizeFrame)
 })
 </script>
 
 <template>
-  <section class="relative flex h-full min-h-0 flex-col" aria-label="对话内容">
+  <section
+    class="conversation-page relative flex h-full min-h-0 flex-col justify-end"
+    aria-label="对话内容"
+  >
     <Button
       v-if="state.selectedId && !follow && awayFromLatest && !state.historical"
       variant="outline"
@@ -445,14 +472,15 @@ onScopeDispose(() => {
     <div
       ref="scroller"
       data-conversation-scroll
-      class="min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-6 [overflow-anchor:none] lg:px-12"
+      :data-scrolling="scrollbarVisible ? '' : undefined"
+      class="absolute inset-0 overflow-y-auto px-6 pt-6 [overflow-anchor:none] lg:px-12"
       @scroll="trackScroll"
       @wheel.passive="stopFollowing"
       @touchstart.passive="pauseFollowing"
       @pointerdown="pauseFollowing"
       @keydown="scrollKey"
     >
-      <div class="mx-auto w-full max-w-3xl">
+      <div class="conversation-messages mx-auto w-full max-w-3xl">
         <div v-if="!state.selectedId" class="flex flex-col items-center pb-8 pt-[min(16vh,140px)]">
           <div
             class="mb-7 flex size-14 items-center justify-center rounded-2xl border border-primary/15 bg-accent text-primary"
@@ -649,7 +677,11 @@ onScopeDispose(() => {
         </div>
       </div>
     </div>
-    <div class="shrink-0 px-6 pb-3 lg:px-12">
+    <div
+      ref="composer"
+      data-conversation-composer
+      class="relative z-10 me-[var(--conversation-scrollbar-width)] shrink-0 bg-background px-6 pb-3 lg:px-12"
+    >
       <ApprovalComposer
         v-if="currentApproval"
         :key="currentApproval.id"
@@ -829,3 +861,45 @@ onScopeDispose(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+@property --conversation-scrollbar-thumb {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
+.conversation-page {
+  --conversation-scrollbar-width: 6px;
+}
+
+[data-conversation-scroll] {
+  scrollbar-gutter: stable;
+  scroll-padding-bottom: var(--conversation-composer-height, 0px);
+  transition: --conversation-scrollbar-thumb 180ms ease-out;
+}
+
+.conversation-messages {
+  padding-bottom: calc(1rem + var(--conversation-composer-height, 0px));
+}
+
+[data-conversation-scroll][data-scrolling] {
+  --conversation-scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  transition-duration: 0ms;
+}
+
+[data-conversation-scroll]::-webkit-scrollbar {
+  width: var(--conversation-scrollbar-width);
+  background: transparent;
+}
+
+[data-conversation-scroll]::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background-color: var(--conversation-scrollbar-thumb);
+}
+
+[data-conversation-scroll]::-webkit-scrollbar-thumb:hover,
+[data-conversation-scroll]::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
+}
+</style>
