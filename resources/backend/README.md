@@ -1,6 +1,10 @@
 # Callum 服务程序资源
 
-本目录保存计划随客户端分发的 Go 可执行程序，按目标平台及架构组织：
+本目录保存客户端使用的 Go 可执行程序，按目标平台及架构组织。子进程、stdio 和业务适配见 [Go 服务接入](../../docs/backend-integration.md)；后端内部机制由独立的 `callum` 仓库维护。
+
+## 程序来源与平台
+
+程序按以下路径保存：
 
 ```text
 resources/backend/
@@ -10,15 +14,24 @@ resources/backend/
     callum.exe
 ```
 
-当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `5905a1c` 及本次审批模式、审核记录和迁移改动。SHA-256 为 `9a0111149629f244d65d1951789d292cc9cbbe4ef68e226cfbf11af576c0c194`。
+当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `5905a1c` 及对应的审批模式、审核记录和迁移改动。SHA-256 为 `9a0111149629f244d65d1951789d292cc9cbbe4ef68e226cfbf11af576c0c194`。
 
-Windows 程序由 Go 1.27.3 使用 `GOOS=windows GOARCH=386 CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建，来自后端基准 `b78662c` 及本次 Windows 原生沙箱工作区改动。SHA-256 为 `abb44a31ba75b26a41f091f88b726f791d04c1ae6907f02c54b8a355688abc21`。Windows x64 Electron 客户端固定使用此 x86 服务，通过 WOW64 启动。该程序的交叉编译、文件格式和哈希已验证，Windows 原生启动及桌面联调结果仍待 Windows 环境验证。
+Windows 程序由 Go 1.27.3 使用 `GOOS=windows GOARCH=386 CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建，来自后端基准 `b78662c` 及对应的 Windows 原生沙箱工作区改动。SHA-256 为 `abb44a31ba75b26a41f091f88b726f791d04c1ae6907f02c54b8a355688abc21`。Windows x64 Electron 客户端固定使用此 x86 服务，通过 WOW64 启动。该程序的交叉编译、文件格式和哈希已验证，Windows 原生启动及桌面联调结果仍待 Windows 环境验证。
 
-当前数据库结构版本为 `3`。版本 `1` 和 `2` 会在启动实例锁保护下事务升级，保留原有项目、会话、步骤、审批、索引和触发器。升级失败时回滚，外键设置在返回前恢复。旧随附程序不支持打开已升级的数据库。
+## 随附程序兼容说明
 
-macOS 默认命令在只读 Seatbelt 沙箱执行，项目写入须逐次审批。Windows 已接入独立 AppContainer、限制令牌和 ACL 回收日志，默认只读命令自动执行，沙箱内项目写入逐次审批。选择 AI 审批后，符合范围的操作使用独立模型审核，审核决定和人工接管都保留审计；Windows 的沙箱外命令继续交给用户；Windows 原生运行、隔离强度与外部工具兼容性尚未验收。完全访问由执行设置显式启用，命令使用当前系统账户的文件和网络权限。内置文件工具和受限命令隔离应用数据目录。Windows 读取限项目、工作目录、程序目录和系统已有授权，ACL 与 Seatbelt 的动态路径保护并不完全等价，详见后端设计文档。macOS 随附程序保持原有二进制。
+当前随附程序使用数据库结构版本 `3`。版本 `1` 和 `2` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；升级失败回滚，外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
 
-`workspace.update` 支持通过完整目录列表和原目录快照原子保存名称、目录增删及主要目录切换；目录被并发修改、存在活动执行或与其他项目主目录冲突时拒绝保存。项目可不绑定目录，也可移除全部目录后保留原项目和会话；文件工具使用未绑定目录的路径规则，磁盘文件不移动或删除。
+| 接入能力     | 随附程序基线与客户端约束                                                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 项目目录     | `workspace.update` 接受完整目录列表和原目录快照，支持无目录项目、目录增删及主要目录切换；冲突、活动执行或原快照变化时拒绝保存，磁盘文件不移动或删除                    |
+| 执行权限     | 支持用户审核、AI 审核和显式完全访问；macOS 使用 Seatbelt，Windows 已接入 AppContainer，但 Windows 原生启动、隔离强度与外部工具兼容性尚未验收；macOS 程序保持原有二进制 |
+| 独立推理     | `reasoning.delta` 与统一 `output.reasoning` 和回答正文分开；旧记录缺失时保持缺失，不改写实际 usage                                                                     |
+| 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复；保留原始轨迹，恢复不重放工具操作                                                                                       |
+| 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                     |
+| 协议兼容     | 会话更新、审批策略集中与轨迹恢复的内部调整保持现有 JSON-RPC 字段以及步骤的 `context_message`、`reasoning`、`operation` 格式兼容                                        |
+
+Go 的模块拆分、GORM 查询、压缩算法、审批判定及 ACL 回收细节由后端仓库 `docs/architecture.md`、`docs/storage.md`、`docs/context-compaction.md`、`docs/tools-and-approvals.md` 和 `docs/design/conversations.md` 维护；请求及通知以其 `docs/jsonrpc.md` 为准。客户端接入与平台验收边界见 [Go 服务接入](../../docs/backend-integration.md#联调与验证边界)。
 
 ## 打包资源约定
 
@@ -37,13 +50,3 @@ macOS 默认命令在只读 Seatbelt 沙箱执行，项目写入须逐次审批�
 本目录是主进程需要的独立程序资源，不是渲染界面的 `public` 目录。当前渲染界面根目录为 `src/renderer`，其默认公共目录为 `src/renderer/public`。
 
 关于可执行程序在 ASAR 外分发的原因，参见 [electron-vite 分发说明](https://electron-vite.org/guide/distribution)。
-
-随附程序已接入独立推理：Chat Completions 的 `reasoning_content` 映射为模型步骤的 `reasoning.delta` 与统一 `output.reasoning`，支持取消和历史恢复，以及工具循环中的字段回传。推理计入内容与输入预算边界；不改写实际 usage，不增加数据库表或迁移。旧记录缺少统一字段时保持缺失。
-
-随附程序已接入长工具链自动压缩：统一预检 Token、消息数量、上下文 JSON 和实际请求字节，在模型请求前及工具结果追加后尝试压缩较早完整批次。当前问题与正在执行的批次保留原文，步骤摘要携带来源范围、批次指纹及父检查点，校验后事务生效；失败保留原记录和旧摘要。旧长轨迹及历史消息支持有界恢复和分批压缩，重启继续时不重放工具，未知操作事实仍独立保留。复用现有步骤表，不增加迁移；验证使用受控模型及独立临时数据目录。
-
-当前随附程序将会话业务更新输入与仓储快照参数分开，审批决定集中到 policy，执行轨迹及中断工具输出恢复集中到 agent/transcript；历史读取和压缩检查点共用恢复规则。JSON-RPC 方法、请求和响应字段、审批原因标识及步骤的 context_message、reasoning、operation 格式保持兼容，客户端继续通过现有通信适配读取并展示这些字段。
-
-业务仓储的操作事实、最新检查点及恢复子查询使用 GORM 组合构造，JSON 与窗口表达式继续在 SQLite 内执行。查询保持最新结果的筛选顺序、当前分支隔离、容量检查和事务清理范围；检查点继续逐行读取。
-
-随附服务支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 实时通知。草稿仅参与估算，不调用模型或持久化；统计共用有效历史、摘要、工具定义与轨迹规则，执行结束清理数字缓存。原始 usage 保留，实际输入标量独立保存到现有主模型步骤，不增加数据库表或迁移。
