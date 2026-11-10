@@ -172,11 +172,11 @@ preload 只暴露固定的 `listRunSteps(conversationId, runId, afterSequence)` 
 
 输入区默认两行文字，底部工具栏独立排布；高度测量以两行为下限，沿用最大高度、宽度监听及卸载清理。`ProjectSelector.vue` 使用已有 Reka Popover 与 Combobox 展示新对话输入框上方的项目标识、可搜索列表和项目创建入口，复用 `CreateProjectDialog.vue` 与现有 IPC。`selectDraftProject` 只接受已加载项目或独立新对话，发送受理中、加载中或已有会话时拒绝切换；各项目的草稿按原有归属隔离，首次发送才保存项目归属。项目列表沿用共享分页和有界缓存，搜索范围为已加载项目，可继续加载；创建失败在弹窗内重试，取消恢复选择入口焦点，切换页面时销毁所属弹层。首次发送或打开已有会话后，页面卸载整条项目／计算机栏及其弹层；“最近”右侧入口始终打开独立新对话并恢复项目选择栏。后端接口及数据库结构保持现有契约。
 
-当前 Go 源码联调中，on-request 允许普通本地读取和只读沙箱命令自动执行，Go 自身数据目录由后端工具及 Seatbelt 隔离。macOS 项目写入命令、已识别危险命令和明确沙箱外请求逐次审批。历史只读目录授权继续查询和撤销。
+当前 Go 源码联调中，on-request 允许普通本地读取和只读沙箱命令自动执行，Go 自身数据目录由后端工具及平台沙箱隔离。macOS/Windows 项目写入命令、已识别危险命令和明确沙箱外请求逐次审批。历史只读目录授权继续查询和撤销。
 
-Windows 当前的命令边界是未接入系统沙箱，受限模式下逐次审批，申请沙箱内项目写入返回不可用；完全访问模式使用当前系统用户权限。权限弹窗按应用平台说明该差异，审批卡继续读取服务端固定快照。命令详情按记录中的 Windows 盘符或 UNC 路径显示 PowerShell 风格参数和提示符，Unix 路径使用原有展示格式；跨平台查看历史时依据记录中的执行位置。
+Windows 已接通 AppContainer、限制令牌与 Job 的平台边界：受限模式默认只读、网络关闭，项目写入需单次审批；完全访问模式使用当前系统用户权限。每次执行独立 SID 的 ACL 与恢复日志由 Go 持有，客户端不设置或回收文件权限。Windows 原生测试尚未运行，不能声称实际行为已验收。权限弹窗按应用平台说明该差异，审批卡继续读取服务端固定快照。命令详情按记录中的 Windows 盘符或 UNC 路径显示 PowerShell 风格参数和提示符，Unix 路径使用原有展示格式；跨平台查看历史时依据记录中的执行位置。
 
-业务集成测试在 macOS arm64 和 Windows x64 上启用。受控命令使用 Node.js 执行，测试通过父进程、可执行文件及隔离数据路径定位自己的服务。Windows 使用本机 CIM 进程查询，macOS 使用 `ps`。Seatbelt 专项测试仅在 macOS 执行，Windows 专项覆盖无沙箱命令审批、执行快照、完全访问和关闭最后窗口后的取消与资源释放。Windows 实机结果与 macOS 回归结果分别记录。
+业务集成测试在 macOS arm64 和 Windows x64 上启用。受控命令使用 Node.js 执行，测试通过父进程、可执行文件及隔离数据路径定位自己的服务。Windows 使用本机 CIM 进程查询，macOS 使用 `ps`。平台沙箱业务测试在两平台启用，Windows 专项覆盖只读自动执行、项目写入审批、执行快照、完全访问和关闭最后窗口后的取消与资源释放。后端 Windows 原生测试另覆盖权限及进程隔离、ACL 回收与恢复；本机只有交叉编译结果。Windows 实机结果与 macOS 回归结果分别记录。
 
 ## 资源与状态所有权
 
@@ -227,6 +227,6 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 
 执行权限通过固定 getExecutionSettings/updateExecutionSettings IPC、preload 校验和 ChatService 转换 settings.get/update。输入框的审批菜单与权限对话框共用 sandboxMode、approvalPolicy、approvalsReviewer 和 revision。三种模式映射到用户审核、AI 审核和显式完全访问。设置 revision 冲突和断连失败可见，保存后只影响新任务。审核结果和理由来自服务端审批记录与工具步骤，转人工时沿用既有审批卡片。
 
-审批展示读取 Go 生成的 details.execution_boundary、writable_roots 和 justification。只读沙箱展示临时目录和网络限制，沙箱内项目写入展示固定项目及其可能发生的修改或删除，沙箱外请求展示当前系统用户的文件和网络权限。旧审批没有边界字段时保留原展示。Electron 窗口沙箱与 Go 命令 Seatbelt 是独立边界。
+审批展示读取 Go 生成的 details.execution_boundary、writable_roots、Windows 的 readable_roots 和 justification。只读沙箱展示临时目录和网络限制，沙箱内项目写入展示固定项目及其可能发生的修改或删除，沙箱外请求展示当前系统用户的文件和网络权限。旧审批没有边界字段时保留原展示。Windows 读取范围为固定项目/cwd/程序目录与系统已有授权；现有保护目录的 ACL 不等价于 Seatbelt 对未来同名目录的动态路径规则。Electron 窗口沙箱与 Go 命令沙箱是独立边界。
 
 主对话的操作前说明由 Go 固定系统提示引导所选模型生成，提示每轮加入且参与 Token 预算；标题、摘要及 model.invoke 不受此提示影响。客户端沿用 message.delta 与模型步骤的 context_message，工具子步骤出现后将父模型步骤标记为 commentary，RunTimeline 按步骤顺序展示说明和工具；最终正文独立。重启后从步骤结果恢复原文。未输出说明时保留原工具记录，不构造成功或进度文本，不增加补写模型请求。

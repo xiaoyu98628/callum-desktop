@@ -2,6 +2,32 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { approvalSummary } from '../../src/shared/approval-summary.ts'
 
+test('Windows 原生沙箱审批展示固定可读目录并保留只读边界', () => {
+  const details = {
+    sandbox_backend: 'windows-appcontainer',
+    execution_boundary: { sandboxed: true, sandbox_mode: 'read-only' },
+    readable_roots: ['C:\\project', 'C:\\tools', 42, null],
+  }
+  const summary = approvalSummary(JSON.stringify({ details }))
+  assert.deepEqual(
+    summary.fields.filter((field) => field.label === '可读目录'),
+    [
+      { label: '可读目录', value: 'C:\\project' },
+      { label: '可读目录', value: 'C:\\tools' },
+    ],
+  )
+  assert.match(summary.executionNotice ?? '', /Windows 只读沙箱/)
+  assert.ok(summary.fields.some((field) => field.label === '网络访问' && field.value === '关闭'))
+  const mac = approvalSummary(
+    JSON.stringify({ details: { ...details, sandbox_backend: 'macos-seatbelt' } }),
+  )
+  assert.equal(
+    mac.fields.some((field) => field.label === '可读目录'),
+    false,
+  )
+  assert.equal(mac.executionNotice, '此命令在只读沙箱内运行，仅本次私有临时目录可写，网络关闭。')
+})
+
 test('审批摘要只读取固定的实际目标，保留符号链接解析前后的路径区别', () => {
   const snapshot = JSON.stringify({
     summary: '读取文件',

@@ -12,11 +12,11 @@ resources/backend/
 
 当前随附 macOS Apple Silicon 的 Go 程序，由 Go 1.27.3 使用 `CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建。该程序来自后端工作区基准提交 `5905a1c` 及本次审批模式、审核记录和迁移改动。SHA-256 为 `9a0111149629f244d65d1951789d292cc9cbbe4ef68e226cfbf11af576c0c194`。
 
-Windows 程序由 Go 1.27.3 使用 `GOOS=windows GOARCH=386 CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建，来自后端 `2620467` 及 SQLite Windows 盘符 URI 修复。SHA-256 为 `e730a4bc033b0158cfdd38a53426784fb444668ad415d552a4b94d58ac2e2ade`。Windows x64 Electron 客户端固定使用此 x86 服务，通过 WOW64 启动。该程序的交叉编译、文件格式和哈希已验证，Windows 原生启动及桌面联调结果仍待 Windows 环境验证。
+Windows 程序由 Go 1.27.3 使用 `GOOS=windows GOARCH=386 CGO_ENABLED=0`、`-tags release` 和 `-trimpath` 构建，来自后端基准 `b78662c` 及本次 Windows 原生沙箱工作区改动。SHA-256 为 `abb44a31ba75b26a41f091f88b726f791d04c1ae6907f02c54b8a355688abc21`。Windows x64 Electron 客户端固定使用此 x86 服务，通过 WOW64 启动。该程序的交叉编译、文件格式和哈希已验证，Windows 原生启动及桌面联调结果仍待 Windows 环境验证。
 
 当前数据库结构版本为 `3`。版本 `1` 和 `2` 会在启动实例锁保护下事务升级，保留原有项目、会话、步骤、审批、索引和触发器。升级失败时回滚，外键设置在返回前恢复。旧随附程序不支持打开已升级的数据库。
 
-macOS 默认命令在只读 Seatbelt 沙箱执行，项目写入须逐次审批。Windows 命令当前逐次审批，批准后使用当前系统用户权限；Windows 沙箱内项目写入申请暂不可用。选择 AI 审批后，符合范围的操作使用独立模型审核，审核决定和人工接管都保留审计；Windows 的无沙箱命令继续交给用户。完全访问由执行设置显式启用，命令使用当前系统账户的文件和网络权限。内置文件工具和 Seatbelt 命令隔离应用数据目录。
+macOS 默认命令在只读 Seatbelt 沙箱执行，项目写入须逐次审批。Windows 已接入独立 AppContainer、限制令牌和 ACL 回收日志，默认只读命令自动执行，沙箱内项目写入逐次审批。选择 AI 审批后，符合范围的操作使用独立模型审核，审核决定和人工接管都保留审计；Windows 的沙箱外命令继续交给用户；Windows 原生运行、隔离强度与外部工具兼容性尚未验收。完全访问由执行设置显式启用，命令使用当前系统账户的文件和网络权限。内置文件工具和受限命令隔离应用数据目录。Windows 读取限项目、工作目录、程序目录和系统已有授权，ACL 与 Seatbelt 的动态路径保护并不完全等价，详见后端设计文档。macOS 随附程序保持原有二进制。
 
 `workspace.update` 支持通过完整目录列表和原目录快照原子保存名称、目录增删及主要目录切换；目录被并发修改、存在活动执行或与其他项目主目录冲突时拒绝保存。项目可不绑定目录，也可移除全部目录后保留原项目和会话；文件工具使用未绑定目录的路径规则，磁盘文件不移动或删除。
 

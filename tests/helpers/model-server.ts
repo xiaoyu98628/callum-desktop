@@ -158,15 +158,11 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
               id: 'call-review-command',
               type: 'function',
               function: {
-                name: process.platform === 'win32' ? 'list_directory' : 'run_command',
-                arguments: JSON.stringify(
-                  process.platform === 'win32'
-                    ? { path: dirname(fixturePath) }
-                    : {
-                        command: [process.execPath, '-e', 'process.stdout.write(process.cwd())'],
-                        cwd: dirname(fixturePath),
-                      },
-                ),
+                name: 'run_command',
+                arguments: JSON.stringify({
+                  command: [process.execPath, '-e', 'process.stdout.write(process.cwd())'],
+                  cwd: dirname(fixturePath),
+                }),
               },
             },
           ],

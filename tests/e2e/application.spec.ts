@@ -910,10 +910,7 @@ test.describe('真实 Go 对话交互', () => {
       await disclosure.click()
       await timeline
         .getByRole('button', {
-          name:
-            process.platform === 'win32'
-              ? /^工具详情：已查看目录/
-              : /^工具详情：已运行 .*process\.cwd/,
+          name: /^工具详情：已运行 .*process\.cwd/,
         })
         .click()
       await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -1189,7 +1186,6 @@ test.describe('真实 Go 对话交互', () => {
   })
 
   test('沙箱内项目写入审批展示范围并只执行本次命令', async ({ desktop, profile }) => {
-    test.skip(process.platform !== 'darwin', '仅验证已接入的 Seatbelt 项目写入沙箱')
     const page = await desktop.firstWindow()
     await addTestWorkspace(desktop, page, profile, '受控命令项目')
     const project = page.getByRole('region', { name: '受控命令项目', exact: true })
@@ -4745,8 +4741,6 @@ test.describe('Codex 风格过程展示', () => {
     })
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
-    if (process.platform === 'win32')
-      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(answer).toContainText('命令检查已完成')
     const thinking = overview.getByRole('button', { name: '思考过程', exact: true }).first()
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
@@ -4884,10 +4878,6 @@ test.describe('Codex 风格过程展示', () => {
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
-    if (process.platform === 'win32') {
-      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
-      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
-    }
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')

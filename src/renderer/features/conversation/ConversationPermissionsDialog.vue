@@ -163,12 +163,12 @@ onScopeDispose(() => {
                   </option>
                   <option value="workspace-write">
                     项目写入：普通项目补丁可自动执行，命令{{
-                      platform === 'darwin' ? '写入需审批' : '需逐次审批'
+                      platform === 'darwin' || platform === 'win32' ? '写入需审批' : '需逐次审批'
                     }}
                   </option>
                   <option value="read-only">
                     只读：文件修改需审批，命令{{
-                      platform === 'darwin' ? '使用只读沙箱' : '需逐次审批'
+                      platform === 'darwin' || platform === 'win32' ? '使用只读沙箱' : '需逐次审批'
                     }}
                   </option>
                 </select>
@@ -204,6 +204,10 @@ onScopeDispose(() => {
               </p>
               <p v-else-if="platform === 'darwin'" class="text-muted-foreground">
                 命令及子进程使用系统沙箱，默认只读且网络关闭，私有临时目录可写。项目内命令写入需单独审批。模型请求不受命令网络限制影响。
+              </p>
+              <p v-else-if="platform === 'win32'" class="text-muted-foreground">
+                命令及子进程使用 Windows
+                原生沙箱，默认只读且网络关闭，本次私有临时目录和隔离配置存储可写。项目内命令写入需单独审批。读取范围为项目、工作目录、程序目录及系统已授权资源，其他位置可使用文件工具。
               </p>
               <p v-else class="text-muted-foreground">
                 当前平台的命令未使用系统沙箱。每条命令需独立审批，批准后使用当前系统用户的文件及网络权限；沙箱内项目写入申请暂不可用。文件工具仍按所选模式校验权限。

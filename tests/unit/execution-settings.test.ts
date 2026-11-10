@@ -79,7 +79,7 @@ test('审批展示区分只读、项目写入和沙箱外执行', () => {
 })
 
 test(
-  '真实 Windows Go：命令逐次审批、拒绝策略和完全访问按执行快照生效',
+  '真实 Windows Go：只读自动执行、项目写入审批和完全访问按执行快照生效',
   { skip: !supportedBackend || process.platform !== 'win32' },
   async () => {
     const profile = await mkdtemp(join(tmpdir(), 'callum-windows-command-'))
@@ -88,6 +88,10 @@ test(
     try {
       const modelId = await seedModel(profile, upstream.baseUrl)
       service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const workspace = await service.createWorkspace({
+        name: 'Windows 沙箱项目',
+        rootPath: profile,
+      })
       async function wait(
         conversationId: string,
         check: (detail: Awaited<ReturnType<ChatService['detail']>>) => boolean,
@@ -99,15 +103,23 @@ test(
           await setTimeout(20)
         }
       }
-      const pending = await service.send({ conversationId: null, modelId, text: '沙箱 pwd' })
+      const reading = await service.send({ conversationId: null, modelId, text: '沙箱 pwd' })
+      const readingDetail = await wait(reading.conversationId, (value) =>
+        value.runs.some((run) => run.id === reading.runId && run.status === 'completed'),
+      )
+      assert.equal(readingDetail.approvals.length, 0)
+      const pending = await service.send({
+        conversationId: null,
+        workspaceId: workspace.id,
+        modelId,
+        text: '沙箱申请项目写入',
+      })
       const detail = await wait(pending.conversationId, (value) => value.approvals.length > 0)
       const approval = detail.approvals[0]!
       assert.equal(approval.status, 'pending')
-      assert.match(approvalSummary(approval.snapshot).executionNotice ?? '', /未使用系统沙箱/)
+      assert.match(approvalSummary(approval.snapshot).executionNotice ?? '', /系统沙箱内运行/)
       assert.ok(
-        approvalSummary(approval.snapshot).fields.some(
-          (field) => field.value === '此平台尚未接入系统沙箱',
-        ),
+        approvalSummary(approval.snapshot).fields.some((field) => field.label === '可读目录'),
       )
       const initial = await service.executionSettings()
       const blocked = await service.updateExecutionSettings({
@@ -124,7 +136,12 @@ test(
       const command = steps.steps.find((step) => step.name === 'run_command')!
       const raw = await service.stepDetails(pending.conversationId, pending.runId, command.id)
       assert.equal(JSON.parse(raw.output).result.exit_code, 0)
-      const denied = await service.send({ conversationId: null, modelId, text: '沙箱 pwd' })
+      const denied = await service.send({
+        conversationId: null,
+        workspaceId: workspace.id,
+        modelId,
+        text: '沙箱申请项目写入',
+      })
       const deniedDetail = await wait(denied.conversationId, (value) =>
         value.runs.some((run) => run.id === denied.runId && run.status === 'completed'),
       )
@@ -154,7 +171,7 @@ test(
 
 test(
   '真实 Go：沙箱自动执行、越界拒绝、提权审批、权限版本和任务快照',
-  { skip: !supportedBackend || process.platform !== 'darwin' },
+  { skip: !supportedBackend },
   async () => {
     const profile = await mkdtemp(join(tmpdir(), 'callum-sandbox-integration-'))
     await mkdir(join(profile, 'project'))
