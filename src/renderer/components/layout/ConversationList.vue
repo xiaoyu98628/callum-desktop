@@ -101,7 +101,7 @@ onScopeDispose(() => titleObserver?.disconnect())
 </script>
 
 <template>
-  <div ref="list" class="space-y-0.5">
+  <div ref="list">
     <ContextMenuRoot
       v-for="item in items"
       :key="item.id"
@@ -117,7 +117,7 @@ onScopeDispose(() => titleObserver?.disconnect())
         <ContextMenuTrigger as-child :disabled="disabled">
           <Button
             variant="ghost"
-            class="h-8 min-w-0 flex-1 justify-start gap-2 text-[13px] font-normal hover:bg-transparent"
+            class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
             :class="
               collapsed ? 'justify-center px-0' : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
             "

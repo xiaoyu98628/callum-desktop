@@ -316,7 +316,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="h-7 w-full gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                class="h-7 w-full gap-1 rounded-md px-1 text-xs text-muted-foreground hover:text-foreground"
                 :class="collapsed ? 'justify-center' : 'justify-start'"
                 :aria-expanded="projectsOpen"
                 aria-controls="workspace-list"
@@ -324,13 +324,13 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 @click="projectsOpen = !projectsOpen"
               >
                 <FolderIcon v-if="collapsed" class="size-3.5" aria-hidden="true" />
+                <span :class="collapsed ? 'sr-only' : ''">项目</span>
                 <ChevronRightIcon
-                  v-else
-                  class="sidebar-chevron size-3.5"
+                  v-if="!collapsed"
+                  class="sidebar-chevron ml-auto size-3.5"
                   :class="{ 'rotate-90': projectsOpen }"
                   aria-hidden="true"
                 />
-                <span :class="collapsed ? 'sr-only' : ''">项目</span>
               </Button>
             </h2>
             <span v-if="!collapsed" class="ml-auto">
@@ -390,7 +390,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 v-for="workspace in state.workspaces"
                 :key="workspace.id"
                 :aria-label="workspace.name"
-                class="mb-1"
+                class="mb-0.5"
               >
                 <div
                   class="group relative flex min-w-0 items-center rounded-lg has-[[data-state=open]]:bg-secondary"
@@ -404,7 +404,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 >
                   <Button
                     variant="ghost"
-                    class="h-8 min-w-0 flex-1 justify-start gap-2 text-[13px] font-normal hover:bg-transparent"
+                    class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
                     :class="collapsed ? 'justify-center px-0' : 'pl-3 pr-16 has-[>svg]:pr-16'"
                     :title="workspace.name"
                     :aria-expanded="
@@ -538,7 +538,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="h-7 w-full gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                class="h-7 w-full gap-1 rounded-md px-1 text-xs text-muted-foreground hover:text-foreground"
                 :class="collapsed ? 'justify-center' : 'justify-start'"
                 :aria-expanded="recentOpen"
                 aria-controls="recent-conversations"
@@ -546,13 +546,13 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 @click="recentOpen = !recentOpen"
               >
                 <MessageSquareIcon v-if="collapsed" class="size-3.5" aria-hidden="true" />
+                <span :class="collapsed ? 'sr-only' : ''">最近</span>
                 <ChevronRightIcon
-                  v-else
-                  class="sidebar-chevron size-3.5"
+                  v-if="!collapsed"
+                  class="sidebar-chevron ml-auto size-3.5"
                   :class="{ 'rotate-90': recentOpen }"
                   aria-hidden="true"
                 />
-                <span :class="collapsed ? 'sr-only' : ''">最近</span>
               </Button>
             </h2>
             <Button
