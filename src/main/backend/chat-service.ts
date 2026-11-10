@@ -1072,10 +1072,17 @@ export class ChatService {
   }
 }
 
-export function resolveBackendExecutable(resourceRoot: string): string {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64')
-    throw new Error('当前仅提供 macOS Apple Silicon 服务程序。')
-  return join(resourceRoot, 'backend', `${process.platform}-${process.arch}`, 'callum')
+/** Windows x64 客户端使用随附的 x86 服务；资源路径不依赖当前工作目录。 */
+export function resolveBackendExecutable(
+  resourceRoot: string,
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+): string {
+  if (platform === 'darwin' && architecture === 'arm64')
+    return join(resourceRoot, 'backend', 'darwin-arm64', 'callum')
+  if (platform === 'win32' && architecture === 'x64')
+    return join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe')
+  throw new Error(`当前没有适用于 ${platform}-${architecture} 的服务程序。`)
 }
 /** 选择和提交均校验实际目录，身份用于拒绝重复和选择后替换的目录。 */
 export async function resolveWorkspaceDirectory(

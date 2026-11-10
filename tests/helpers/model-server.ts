@@ -158,8 +158,15 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
               id: 'call-review-command',
               type: 'function',
               function: {
-                name: 'run_command',
-                arguments: JSON.stringify({ command: ['/bin/pwd'], cwd: dirname(fixturePath) }),
+                name: process.platform === 'win32' ? 'list_directory' : 'run_command',
+                arguments: JSON.stringify(
+                  process.platform === 'win32'
+                    ? { path: dirname(fixturePath) }
+                    : {
+                        command: [process.execPath, '-e', 'process.stdout.write(process.cwd())'],
+                        cwd: dirname(fixturePath),
+                      },
+                ),
               },
             },
           ],
@@ -290,13 +297,20 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   {
                     name: 'run_command',
                     arguments: {
-                      command: ['/bin/echo', 'controlled-group-output'],
+                      command: [
+                        process.execPath,
+                        '-e',
+                        "process.stdout.write('controlled-group-output')",
+                      ],
                       cwd: dirname(fixturePath),
                     },
                   },
                   {
                     name: 'run_command',
-                    arguments: { command: ['/bin/sleep', '1'], cwd: dirname(fixturePath) },
+                    arguments: {
+                      command: [process.execPath, '-e', 'setTimeout(() => {}, 1000)'],
+                      cwd: dirname(fixturePath),
+                    },
                   },
                 ]
               : [
@@ -307,7 +321,11 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   {
                     name: 'run_command',
                     arguments: {
-                      command: ['/bin/echo', 'controlled-group-approval'],
+                      command: [
+                        process.execPath,
+                        '-e',
+                        "process.stdout.write('controlled-group-approval')",
+                      ],
                       cwd: dirname(fixturePath),
                       sandbox_permissions: 'require_escalated',
                       justification: '验证操作分组的审批状态',
@@ -367,7 +385,11 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   arguments: JSON.stringify(
                     completed === 0 && prompt.includes('命令')
                       ? {
-                          command: ['/bin/echo', 'controlled-fold-output'],
+                          command: [
+                            process.execPath,
+                            '-e',
+                            "process.stdout.write('controlled-fold-output')",
+                          ],
                           cwd: dirname(fixturePath),
                         }
                       : { path: completed === 0 ? dirname(fixturePath) : fixturePath },
@@ -488,7 +510,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                 '-e',
                 `require('node:fs').writeFileSync(${JSON.stringify(path)},'controlled')`,
               ]
-            : ['/bin/pwd']
+            : [process.execPath, '-e', 'process.stdout.write(process.cwd())']
         emit(response, {
           tool_calls: [
             {

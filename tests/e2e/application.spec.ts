@@ -2,11 +2,9 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
+import { findTestBackend, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
 import {
@@ -26,18 +24,7 @@ async function interruptTestBackend(desktop: ElectronApplication): Promise<void>
     pid: process.pid,
     profile: app.getPath('userData'),
   }))
-  if (!main.profile.includes('callum-desktop-e2e-')) throw new Error('只能终止隔离测试的服务进程')
-  const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pid=,ppid=,command='])
-  const child = stdout
-    .split('\n')
-    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/))
-    .find(
-      (match) =>
-        match?.[2] === String(main.pid) &&
-        match[3] === `${backendExecutable} --data-dir ${join(main.profile, 'backend')}`,
-    )
-  if (!child?.[1]) throw new Error('未定位到本次测试独占的服务子进程')
-  process.kill(Number(child[1]), 'SIGKILL')
+  process.kill(await findTestBackend(main.pid, main.profile), 'SIGKILL')
 }
 
 const test = base.extend<{
@@ -213,15 +200,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     pid: process.pid,
     profile: app.getPath('userData'),
   }))
-  const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pid=,ppid=,command='])
-  const backend = stdout
-    .split('\n')
-    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/))
-    .find(
-      (match) =>
-        match?.[2] === String(main.pid) && match[3]?.startsWith(`${backendExecutable} --data-dir `),
-    )
-  expect(backend?.[3]).toBe(`${backendExecutable} --data-dir ${join(main.profile, 'backend')}`)
+  expect(await findTestBackend(main.pid, main.profile)).toBeGreaterThan(0)
   expect(errors).toEqual([])
   await page.emulateMedia({ colorScheme: 'light' })
   await expect(page.locator('html')).not.toHaveClass(/dark/)
@@ -339,7 +318,7 @@ test('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', async ({ d
 
 test.describe('真实 Go 对话交互', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('双方消息可复制正文，最后一条提问支持取消编辑和重发并在历史中替换回答', async ({
     desktop,
@@ -901,8 +880,9 @@ test.describe('真实 Go 对话交互', () => {
   test.describe('逐次读取审批交互', () => {
     test.use({ approvalPolicy: 'always' })
 
-    test('输入框切换三种审批模式，AI 审批和转人工由 Go 服务执行', async ({ desktop }) => {
+    test('输入框切换三种审批模式，AI 审批和转人工由 Go 服务执行', async ({ desktop, profile }) => {
       const page = await desktop.firstWindow()
+      await addTestWorkspace(desktop, page, profile, 'AI 审批项目')
       const trigger = page.getByRole('button', { name: '审批模式', exact: true })
       const menu = page.getByRole('menu')
       const request = menu.getByRole('menuitemradio', { name: /^请求批准/ })
@@ -928,7 +908,14 @@ test.describe('真实 Go 对话交互', () => {
       const disclosure = timeline.getByRole('button', { name: '调用过程', exact: true })
       await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
       await disclosure.click()
-      await timeline.getByRole('button', { name: '工具详情：已运行 /bin/pwd', exact: true }).click()
+      await timeline
+        .getByRole('button', {
+          name:
+            process.platform === 'win32'
+              ? /^工具详情：已查看目录/
+              : /^工具详情：已运行 .*process\.cwd/,
+        })
+        .click()
       await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
       await expect(
         page.getByText('AI 审批通过。用户明确要求查看当前目录。', { exact: true }),
@@ -1202,6 +1189,7 @@ test.describe('真实 Go 对话交互', () => {
   })
 
   test('沙箱内项目写入审批展示范围并只执行本次命令', async ({ desktop, profile }) => {
+    test.skip(process.platform !== 'darwin', '仅验证已接入的 Seatbelt 项目写入沙箱')
     const page = await desktop.firstWindow()
     await addTestWorkspace(desktop, page, profile, '受控命令项目')
     const project = page.getByRole('region', { name: '受控命令项目', exact: true })
@@ -1383,6 +1371,26 @@ test.describe('真实 Go 对话交互', () => {
     expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
   })
 
+  test('Windows 关闭最后窗口取消执行、退出应用并释放服务数据锁', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    test.skip(process.platform !== 'win32', '验证 Windows 关闭最后窗口时的退出语义')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('等待窗口退出')
+    await input.press('Enter')
+    await expect(page.getByText('仅属于等待窗口退出的内容', { exact: true })).toBeVisible()
+    const closing = desktop.waitForEvent('close')
+    await page.close()
+    await closing
+    await expect.poll(() => modelEndpoint?.cancelled).toBeGreaterThan(0)
+    if (!modelEndpoint) throw new Error('测试模型端点不存在')
+    expect(await seedModel(profile, modelEndpoint.baseUrl)).toMatch(/^[0-9a-f-]+$/)
+  })
+
   test('消息历史按真实序号向前翻页，并可返回最新页面', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
@@ -1442,21 +1450,7 @@ test.describe('真实 Go 对话交互', () => {
       if (!overview.ok || !overview.value.conversations[0]) throw new Error('会话不存在')
       return overview.value.conversations[0].id
     })
-    const main = await desktop.evaluate(({ app }) => ({
-      pid: process.pid,
-      profile: app.getPath('userData'),
-    }))
-    const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pid=,ppid=,command='])
-    const child = stdout
-      .split('\n')
-      .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/))
-      .find(
-        (match) =>
-          match?.[2] === String(main.pid) &&
-          match[3] === `${backendExecutable} --data-dir ${join(main.profile, 'backend')}`,
-      )
-    if (!child?.[1]) throw new Error('未定位到本次测试独占的服务子进程')
-    process.kill(Number(child[1]), 'SIGKILL')
+    await interruptTestBackend(desktop)
     await expect(page.getByRole('alert')).toContainText('连接已中断')
     await expect(page.getByRole('group', { name: '执行状态', exact: true })).toHaveText(
       '连接已断开',
@@ -1518,7 +1512,7 @@ async function addTestWorkspace(
 
 test.describe('会话与项目管理', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('输入区可搜索和新建项目，最近入口与项目选择保留隔离草稿并在发送时绑定', async ({
     desktop,
@@ -3439,7 +3433,7 @@ test.describe('手动压缩上下文', () => {
   }
 
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('圆环悬停提示精简、点击不打开窗口，命令候选支持鼠标及键盘压缩', async ({ desktop }) => {
     const page = await desktop.firstWindow()
@@ -3958,7 +3952,7 @@ test.describe('手动压缩上下文', () => {
 
 test.describe('输入区交互卡片', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('提问卡片保留输入框，收起不会提交，支持选项、文字和跳过', async ({
     desktop,
@@ -4138,7 +4132,7 @@ test.describe('输入区交互卡片', () => {
 
 test.describe('模型配置与对话联动', () => {
   test.use({ withEndpoint: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('从空状态配置供应商和模型，编辑后直接对话，支持启停和删除', async ({
     desktop,
@@ -4337,7 +4331,7 @@ test.describe('模型配置与对话联动', () => {
 
 test.describe('Markdown 回答展示', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   for (const renderDelay of [0, 80])
     test(`持续分片和慢排版仍持续更新，复用稳定节点且不抢回阅读位置（${renderDelay}ms）`, async ({
@@ -4724,7 +4718,7 @@ test.describe('Markdown 回答展示', () => {
 
 test.describe('Codex 风格过程展示', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('运行中直接显示单条操作，结束收起，标题支持键盘展开', async ({ desktop, modelEndpoint }) => {
     const page = await desktop.firstWindow()
@@ -4751,6 +4745,8 @@ test.describe('Codex 风格过程展示', () => {
     })
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
+    if (process.platform === 'win32')
+      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(answer).toContainText('命令检查已完成')
     const thinking = overview.getByRole('button', { name: '思考过程', exact: true }).first()
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
@@ -4761,8 +4757,7 @@ test.describe('Codex 风格过程展示', () => {
     await thinking.press('Space')
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
     const command = overview.getByRole('button', {
-      name: '工具详情：已运行 /bin/echo controlled-fold-output',
-      exact: true,
+      name: /^工具详情：已运行 .*controlled-fold-output/,
     })
     await expect(command).toBeVisible()
     await expect(overview.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -4770,8 +4765,11 @@ test.describe('Codex 风格过程展示', () => {
     await command.focus()
     await command.press('Enter')
     const terminal = overview.locator('.activity-terminal')
-    await expect(terminal.getByLabel('命令', { exact: true })).toHaveText(
-      '$ /bin/echo controlled-fold-output',
+    await expect(terminal.getByLabel('命令', { exact: true })).toContainText(
+      'controlled-fold-output',
+    )
+    await expect(terminal.locator('.activity-terminal-prompt')).toHaveText(
+      process.platform === 'win32' ? 'PS>' : '$',
     )
     await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
       'controlled-fold-output',
@@ -4886,6 +4884,10 @@ test.describe('Codex 风格过程展示', () => {
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    if (process.platform === 'win32') {
+      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
+      await page.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    }
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')
@@ -4894,8 +4896,7 @@ test.describe('Codex 风格过程展示', () => {
     await firstToggle.press('Enter')
     await expect(firstGroup.getByRole('button', { name: /^工具详情：/ })).toHaveCount(4)
     const command = firstGroup.getByRole('button', {
-      name: '工具详情：已运行 /bin/echo controlled-group-output',
-      exact: true,
+      name: /^工具详情：已运行 .*controlled-group-output/,
     })
     await expect(command).toHaveAttribute('aria-expanded', 'false')
     await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
@@ -4903,13 +4904,11 @@ test.describe('Codex 风格过程展示', () => {
     await expect(firstGroup.getByLabel('工具结果', { exact: true })).toContainText(
       'controlled-group-output',
     )
-    await firstGroup
-      .getByRole('button', { name: '工具详情：已运行 /bin/sleep 1', exact: true })
-      .click()
+    await firstGroup.getByRole('button', { name: /^工具详情：已运行 .*setTimeout/ }).click()
     await expect(
       firstGroup
         .locator('.activity-terminal')
-        .filter({ hasText: '$ /bin/sleep 1' })
+        .filter({ hasText: 'setTimeout' })
         .getByLabel('工具结果', { exact: true }),
     ).toHaveText('无输出。')
     await firstToggle.press('Space')
@@ -5057,7 +5056,7 @@ test.describe('Codex 风格过程展示', () => {
 
 test.describe('独立推理取消与恢复', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
   test('只有推理时实时展示，停止后保留部分内容，重载后可展开', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
@@ -5092,7 +5091,7 @@ test.describe('独立推理取消与恢复', () => {
 
 test.describe('思考滚动与减少动态效果', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
   test('长思考限制高度并渐隐，结束默认收起，减少动态效果时无动画', async ({
     desktop,
     modelEndpoint,
@@ -5142,7 +5141,7 @@ test.describe('思考滚动与减少动态效果', () => {
 
 test.describe('过程自动读取与固定分隔线', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('长过程自动双向读取，无分页提示，展开和收起都保留标题下的分隔线', async ({ desktop }) => {
     const page = await desktop.firstWindow()
@@ -5285,7 +5284,7 @@ test.describe('过程自动读取与固定分隔线', () => {
 
 test.describe('运行中状态分隔线', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('已停止的上一轮和正在处理的下一轮都显示横线，完成后不重复', async ({
     desktop,
@@ -5388,7 +5387,7 @@ test.describe('运行中状态分隔线', () => {
 
 test.describe('长任务自动压缩', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('跨过请求消息边界后自动压缩并继续，原始工具结果与分隔线保留', async ({
     desktop,
@@ -5526,7 +5525,7 @@ test.describe('长任务自动压缩', () => {
 
 test.describe('上下文压缩异常状态', () => {
   test.use({ withModel: true })
-  test.skip(!supportedBackend, '仅提供 macOS arm64 Go 程序')
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
   for (const outcome of ['failure', 'cancel', 'disconnect'] as const) {
     test(`压缩${outcome}保留实际状态，不显示成功或普通操作分组`, async ({
       desktop,

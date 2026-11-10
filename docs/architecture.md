@@ -89,9 +89,9 @@ TypeScript 环境分别管理，ESLint 检查进程导入边界。`@/` 指向界
 
 ### 程序与数据路径
 
-- 开发与本地构建预览从应用构建位置解析仓库 `resources/backend/darwin-arm64/callum`，不依赖当前工作目录。
-- 发布程序从 `process.resourcesPath/backend/darwin-arm64/callum` 解析，程序须位于 ASAR 外并保留执行权限。
-- 当前只有 macOS Apple Silicon 程序。安装包打包工具、资源复制、签名和其他平台产物尚未配置或验证，放入仓库不代表已经进入安装包。详见[资源约定](../resources/backend/README.md)。
+- 开发与本地构建预览从应用构建位置解析仓库 `resources/`，发布程序以 `process.resourcesPath` 为资源根目录。
+- macOS arm64 选择 `backend/darwin-arm64/callum`；Windows x64 选择 `backend/win32-ia32/callum.exe`，通过 WOW64 使用随附的 x86 服务。程序位于 ASAR 外，macOS 保留执行权限。其他平台与架构明确返回缺少适用程序。
+- 安装包按上述目录复制目标资源，具体映射见[资源约定](../resources/backend/README.md)。Windows 原生联调仍待 Windows 环境验证。
 - `backend/data-directory.ts` 统一计算 Go 数据目录：默认由系统家目录得到 `~/.callum` 的绝对路径，开发、预览和发布一致。显式设置 `CALLUM_USER_DATA_DIR` 时优先使用 `<隔离用户数据目录>/backend`，测试不会访问真实家目录。`ChatService` 接收已确定的绝对数据路径，不再自行附加 `backend`，通过 `--data-dir` 传给服务。
 - 新服务数据目录权限为 `0700`，不擅自改变已有权限。数据库、配置、模型凭据及实例锁均由 Go 管理，Electron 不直接读取或修改 SQLite。Electron 缓存和外观偏好仍使用原系统应用数据目录。
 - 原 `userData/backend` 保留，不自动迁移、合并或删除；目标 `~/.callum` 存在时读取其中的数据，不覆盖为旧目录内容。已有数据格式的校验和升级由 Go 处理，不能让两个服务同时占用同一目录。
@@ -173,6 +173,10 @@ preload 只暴露固定的 `listRunSteps(conversationId, runId, afterSequence)` 
 输入区默认两行文字，底部工具栏独立排布；高度测量以两行为下限，沿用最大高度、宽度监听及卸载清理。`ProjectSelector.vue` 使用已有 Reka Popover 与 Combobox 展示新对话输入框上方的项目标识、可搜索列表和项目创建入口，复用 `CreateProjectDialog.vue` 与现有 IPC。`selectDraftProject` 只接受已加载项目或独立新对话，发送受理中、加载中或已有会话时拒绝切换；各项目的草稿按原有归属隔离，首次发送才保存项目归属。项目列表沿用共享分页和有界缓存，搜索范围为已加载项目，可继续加载；创建失败在弹窗内重试，取消恢复选择入口焦点，切换页面时销毁所属弹层。首次发送或打开已有会话后，页面卸载整条项目／计算机栏及其弹层；“最近”右侧入口始终打开独立新对话并恢复项目选择栏。后端接口及数据库结构保持现有契约。
 
 当前 Go 源码联调中，on-request 允许普通本地读取和只读沙箱命令自动执行，Go 自身数据目录由后端工具及 Seatbelt 隔离。macOS 项目写入命令、已识别危险命令和明确沙箱外请求逐次审批。历史只读目录授权继续查询和撤销。
+
+Windows 当前的命令边界是未接入系统沙箱，受限模式下逐次审批，申请沙箱内项目写入返回不可用；完全访问模式使用当前系统用户权限。权限弹窗按应用平台说明该差异，审批卡继续读取服务端固定快照。命令详情按记录中的 Windows 盘符或 UNC 路径显示 PowerShell 风格参数和提示符，Unix 路径使用原有展示格式；跨平台查看历史时依据记录中的执行位置。
+
+业务集成测试在 macOS arm64 和 Windows x64 上启用。受控命令使用 Node.js 执行，测试通过父进程、可执行文件及隔离数据路径定位自己的服务。Windows 使用本机 CIM 进程查询，macOS 使用 `ps`。Seatbelt 专项测试仅在 macOS 执行，Windows 专项覆盖无沙箱命令审批、执行快照、完全访问和关闭最后窗口后的取消与资源释放。Windows 实机结果与 macOS 回归结果分别记录。
 
 ## 资源与状态所有权
 

@@ -12,8 +12,12 @@ import { XIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useConversations } from './useConversations'
 import type { ExecutionSettings } from '@shared/execution'
+import type { AppInfo } from '@shared/desktop-api'
 
-const props = defineProps<{ returnFocus: HTMLElement | null }>()
+const props = defineProps<{
+  returnFocus: HTMLElement | null
+  platform: AppInfo['platform'] | undefined
+}>()
 const emit = defineEmits<{ close: [] }>()
 const {
   state,
@@ -158,9 +162,15 @@ onScopeDispose(() => {
                     完全访问权限
                   </option>
                   <option value="workspace-write">
-                    项目写入：普通项目补丁可自动执行，命令写入需审批
+                    项目写入：普通项目补丁可自动执行，命令{{
+                      platform === 'darwin' ? '写入需审批' : '需逐次审批'
+                    }}
                   </option>
-                  <option value="read-only">只读：文件修改需审批，命令使用只读沙箱</option>
+                  <option value="read-only">
+                    只读：文件修改需审批，命令{{
+                      platform === 'darwin' ? '使用只读沙箱' : '需逐次审批'
+                    }}
+                  </option>
                 </select>
               </label>
               <label class="block"
@@ -192,9 +202,11 @@ onScopeDispose(() => {
               >
                 命令以当前系统用户权限访问文件和网络，审批关闭。
               </p>
+              <p v-else-if="platform === 'darwin'" class="text-muted-foreground">
+                命令及子进程使用系统沙箱，默认只读且网络关闭，私有临时目录可写。项目内命令写入需单独审批。模型请求不受命令网络限制影响。
+              </p>
               <p v-else class="text-muted-foreground">
-                macOS
-                命令及子进程使用系统沙箱。未关联项目时仅允许读取及私有临时目录写入；其他平台的命令仍需独立审批。模型请求不受命令网络限制影响。
+                当前平台的命令未使用系统沙箱。每条命令需独立审批，批准后使用当前系统用户的文件及网络权限；沙箱内项目写入申请暂不可用。文件工具仍按所选模式校验权限。
               </p>
             </template>
             <p v-if="executionError" role="alert" class="break-words text-destructive">

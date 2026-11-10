@@ -744,7 +744,9 @@ onScopeDispose(() => {
                     <code>
                       <span class="activity-terminal-command" aria-label="命令">
                         <template v-if="commandInput?.command || step.targetLabel">
-                          <span class="activity-terminal-prompt">$</span
+                          <span class="activity-terminal-prompt">{{
+                            commandInput?.prompt ?? '$'
+                          }}</span
                           >{{ ' ' + (commandInput?.command ?? step.targetLabel) }}
                         </template>
                         <template v-else>命令参数不可用。</template>

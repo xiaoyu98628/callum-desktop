@@ -56,8 +56,12 @@ export function stepTarget(step: ChatStep): string {
     if (typeof args !== 'object' || args === null) return ''
     if (step.name === 'search_text' && 'query' in args && typeof args.query === 'string')
       return JSON.stringify(args.query)
-    if ('path' in args && typeof args.path === 'string')
-      return args.path.replace(/\/+$/, '').split('/').at(-1) || args.path
+    if ('path' in args && typeof args.path === 'string') {
+      const actual = parseStepParameters(step.input)?.actual_path
+      const windows = /^[a-z]:[\\/]|^\\\\/i.test(typeof actual === 'string' ? actual : args.path)
+      const path = windows ? args.path.replaceAll('\\', '/') : args.path
+      return path.replace(/\/+$/, '').split('/').at(-1) || args.path
+    }
     if (
       'command' in args &&
       Array.isArray(args.command) &&
@@ -114,8 +118,10 @@ export function stepParameters(input: string): string {
   return parameters ? JSON.stringify(parameters, null, 2) : input
 }
 
-/** 用 Shell 引号保留命令参数的边界，显示服务端保存的实际工作目录。 */
-export function commandStepInput(input: string): { command: string; cwd: string } | null {
+/** 按记录的实际路径选择命令展示语法，跨平台查看历史时仍使用原执行平台的格式。 */
+export function commandStepInput(
+  input: string,
+): { command: string; cwd: string; prompt?: string } | null {
   const parameters = parseStepParameters(input)
   const args = parameters?.arguments
   if (typeof args !== 'object' || args === null || !('command' in args)) return null
@@ -126,13 +132,21 @@ export function commandStepInput(input: string): { command: string; cwd: string 
     !command.every((arg) => typeof arg === 'string')
   )
     return null
+  const cwd = typeof parameters?.actual_cwd === 'string' ? parameters.actual_cwd : ''
+  const windows = /^[a-z]:[\\/]|^\\\\/i.test(cwd || command[0] || '')
+  if (windows)
+    return {
+      command: `& ${command.map((arg: string) => `'${arg.replaceAll("'", "''")}'`).join(' ')}`,
+      cwd,
+      prompt: 'PS>',
+    }
   return {
     command: command
       .map((arg: string) =>
         /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`,
       )
       .join(' '),
-    cwd: typeof parameters?.actual_cwd === 'string' ? parameters.actual_cwd : '',
+    cwd,
   }
 }
 
