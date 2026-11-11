@@ -5,7 +5,6 @@ import {
   ChevronDownIcon,
   FileTextIcon,
   FolderOpenIcon,
-  LoaderCircleIcon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
@@ -684,12 +683,7 @@ onScopeDispose(() => {
             >
               <template #label>
                 <span class="activity-tool-label">
-                  <LoaderCircleIcon
-                    v-if="['running', 'pending'].includes(step.status) && connected"
-                    class="animate-spin"
-                    aria-hidden="true"
-                  />
-                  <TerminalIcon v-else-if="step.name === 'run_command'" aria-hidden="true" />
+                  <TerminalIcon v-if="step.name === 'run_command'" aria-hidden="true" />
                   <PencilIcon v-else-if="step.name === 'apply_patch'" aria-hidden="true" />
                   <SearchIcon v-else-if="step.name === 'search_text'" aria-hidden="true" />
                   <FolderOpenIcon v-else-if="step.name === 'list_directory'" aria-hidden="true" />
@@ -697,6 +691,8 @@ onScopeDispose(() => {
                   <span
                     class="shrink-0"
                     :class="{
+                      'activity-shimmer':
+                        active && connected && ['running', 'pending'].includes(step.status),
                       'text-destructive': step.status === 'failed',
                       'activity-tool-waiting': [
                         'awaiting_approval',

@@ -180,6 +180,7 @@ let inputResizeFrame: number | undefined
 let conversationResizeObserver: ResizeObserver | undefined
 const follow = ref(true)
 const awayFromLatest = ref(false)
+const showLoadingMessages = computed(() => state.loading && (!state.detail || !state.sending))
 const canReturnToLatest = computed(
   () =>
     !!state.selectedId &&
@@ -273,7 +274,10 @@ function keydown(event: KeyboardEvent): void {
 function submitMessage(): void {
   if (!canSend.value) return
   if (requestingCompact.value) void compact(true)
-  else void send()
+  else {
+    if (!awayFromLatest.value) follow.value = true
+    void send()
+  }
 }
 function focusCommands(): void {
   commandInputFocused.value = true
@@ -293,22 +297,20 @@ function trackScroll(): void {
   scrollbarTimer = window.setTimeout(() => {
     scrollbarVisible.value = false
   }, 700)
-  if (scrollFrame !== undefined) {
-    if (
-      lastScrollTop !== undefined &&
-      element.scrollHeight === lastScrollHeight &&
-      Math.abs(element.scrollTop - lastScrollTop) > 2
-    )
-      pauseFollowing()
-    return
+  if (scrollPositionChanged(element)) {
+    if (scrollFrame !== undefined) pauseFollowing()
+    else follow.value = !awayFromLatest.value
   }
-  follow.value = element.scrollHeight - element.scrollTop - element.clientHeight < 24
+  rememberScrollPosition(element)
 }
 function stopFollowing(event: WheelEvent): void {
   if (event.deltaY < 0) pauseFollowing()
 }
 function pauseFollowing(): void {
   follow.value = false
+  cancelScrollAnimation()
+}
+function cancelScrollAnimation(): void {
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   scrollFrame = undefined
 }
@@ -323,25 +325,60 @@ function showLatest(): void {
 let scrollFrame: number | undefined
 let previousFrame = 0
 let lastScrollTop: number | undefined
-// 排版改变高度或浏览器夹紧滚动位置时不视为用户操作；输入事件可立即停止跟随。
 let lastScrollHeight = 0
+let lastViewportHeight = 0
+function rememberScrollPosition(element: HTMLElement): void {
+  lastScrollTop = element.scrollTop
+  lastScrollHeight = element.scrollHeight
+  lastViewportHeight = element.clientHeight
+}
+function scrollPositionChanged(element: HTMLElement): boolean {
+  // 高度变化可能夹紧滚动位置；只有尺寸相同时才用位移识别滚动条拖动等操作。
+  return (
+    lastScrollTop !== undefined &&
+    element.scrollHeight === lastScrollHeight &&
+    element.clientHeight === lastViewportHeight &&
+    Math.abs(element.scrollTop - lastScrollTop) > 1
+  )
+}
+function pinToBottom(): void {
+  const element = scroller.value
+  if (element && follow.value && !state.historical) {
+    if (scrollPositionChanged(element)) pauseFollowing()
+    else {
+      cancelScrollAnimation()
+      element.scrollTop = element.scrollHeight
+      rememberScrollPosition(element)
+    }
+  }
+  updateDistance()
+}
+function syncComposerLayout(): void {
+  const viewport = scroller.value
+  const footer = composer.value
+  if (!viewport || !footer) return
+  // 轨道贯穿对话区，先同步固定输入区的占位，再定位最后一条消息。
+  viewport.style.setProperty(
+    '--conversation-composer-height',
+    `${footer.getBoundingClientRect().height}px`,
+  )
+  pinToBottom()
+}
+function followRunLayout(runId: string): void {
+  if (activeRun.value?.id === runId) scrollToBottom()
+  else pinToBottom()
+}
 function scrollToBottom(): void {
   updateDistance()
   if (scrollFrame !== undefined || !follow.value || state.historical) return
   previousFrame = 0
-  lastScrollTop = scroller.value?.scrollTop
-  lastScrollHeight = scroller.value?.scrollHeight ?? 0
   const advance = (time: number): void => {
     const element = scroller.value
     if (!element || !follow.value || state.historical) {
       scrollFrame = undefined
       return
     }
-    if (
-      lastScrollTop !== undefined &&
-      element.scrollHeight === lastScrollHeight &&
-      Math.abs(element.scrollTop - lastScrollTop) > 2
-    ) {
+    if (scrollPositionChanged(element)) {
       pauseFollowing()
       return
     }
@@ -355,8 +392,7 @@ function scrollToBottom(): void {
     const finished =
       reduced || element.scrollTop === position || Math.abs(target - element.scrollTop) < 1
     if (finished) element.scrollTop = target
-    lastScrollTop = element.scrollTop
-    lastScrollHeight = element.scrollHeight
+    rememberScrollPosition(element)
     updateDistance()
     scrollFrame = finished ? undefined : requestAnimationFrame(advance)
   }
@@ -370,7 +406,7 @@ function resizeMessageInput(): void {
   input.style.height = 'auto'
   input.style.height = `${input.scrollHeight}px`
   input.style.overflowY = ''
-  void scrollToBottom()
+  syncComposerLayout()
 }
 watch(draft, resizeMessageInput, { flush: 'post' })
 watch(draft, () => {
@@ -424,12 +460,25 @@ async function cancelMessageEdit(): Promise<void> {
 watch(
   () => messageTimeline.value,
   () => {
-    void scrollToBottom()
+    if (activeRun.value) scrollToBottom()
+    else pinToBottom()
   },
+  { flush: 'post' },
+)
+watch(
+  [() => state.detail, () => state.historical, showRunningIndicator],
+  ([, historical], [, wasHistorical]) => {
+    if (wasHistorical && !historical) follow.value = true
+    // 新消息页和执行指示器的占位在绘制前定位，只有流式增长需要追赶动画。
+    syncComposerLayout()
+  },
+  { flush: 'post' },
 )
 watch(
   () => state.selectedId,
   () => {
+    cancelScrollAnimation()
+    lastScrollTop = undefined
     follow.value = true
     awayFromLatest.value = false
     state.directoriesOffset = 0
@@ -457,23 +506,15 @@ onMounted(() => {
   const viewport = scroller.value
   const footer = composer.value
   if (viewport && footer) {
-    // 滚动轨道贯穿对话区，按固定输入区的高度给最后一条消息留出空间。
-    conversationResizeObserver = new ResizeObserver(() => {
-      viewport.style.setProperty(
-        '--conversation-composer-height',
-        `${footer.getBoundingClientRect().height}px`,
-      )
-      scrollToBottom()
-    })
+    conversationResizeObserver = new ResizeObserver(syncComposerLayout)
     conversationResizeObserver.observe(viewport, { box: 'border-box' })
     conversationResizeObserver.observe(footer, { box: 'border-box' })
   }
-  void scrollToBottom()
 })
 onScopeDispose(() => {
   window.clearInterval(messageTimeTimer)
   window.clearTimeout(scrollbarTimer)
-  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
+  cancelScrollAnimation()
   inputResizeObserver?.disconnect()
   conversationResizeObserver?.disconnect()
   if (inputResizeFrame !== undefined) cancelAnimationFrame(inputResizeFrame)
@@ -511,20 +552,20 @@ onScopeDispose(() => {
         </div>
         <h1 v-else class="sr-only">{{ state.detail?.conversation.title || '对话' }}</h1>
         <div
-          v-if="state.loading"
+          v-if="showLoadingMessages"
           role="status"
           class="flex justify-center gap-2 py-6 text-sm text-muted-foreground"
         >
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
         <div
-          v-if="state.selectedId && !state.loading && state.detail?.history?.hasMore"
+          v-if="state.selectedId && !showLoadingMessages && state.detail?.history?.hasMore"
           class="mb-4 flex justify-center"
         >
           <Button
             variant="ghost"
             size="sm"
-            :disabled="!!state.editing || state.resending"
+            :disabled="state.loading || !!state.editing || state.resending"
             @click="earlier"
             >更早的消息</Button
           >
@@ -535,7 +576,7 @@ onScopeDispose(() => {
             :key="run.id"
             :run="run"
             :connected="!state.serviceError"
-            @changed="scrollToBottom"
+            @changed="followRunLayout(run.id)"
           />
           <template v-for="{ message: item, compactions } in messageTimeline.rows" :key="item.id">
             <article
@@ -561,13 +602,13 @@ onScopeDispose(() => {
                 :active="activeRun?.id === item.runId"
                 @expand="expandedRunId = $event ? item.runId : null"
                 @inspect="pauseFollowing"
-                @changed="scrollToBottom"
+                @changed="followRunLayout(item.runId)"
               />
               <MarkdownMessage
                 v-if="item.role === 'assistant'"
                 :content="item.content"
                 :streaming="activeRun?.id === item.runId"
-                @rendered="scrollToBottom"
+                @rendered="followRunLayout(item.runId)"
               />
               <MessageEditor
                 v-else-if="state.editing?.messageId === item.id"
@@ -643,7 +684,7 @@ onScopeDispose(() => {
               :key="run.id"
               :run="run"
               :connected="!state.serviceError"
-              @changed="scrollToBottom"
+              @changed="followRunLayout(run.id)"
             />
           </template>
         </div>

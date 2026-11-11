@@ -4695,6 +4695,88 @@ test.describe('Markdown 回答展示', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
+  test('发送保留已排版消息，切回长会话首帧即显示最新消息', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const scroller = page.locator('[data-conversation-scroll]')
+    const send = page.getByRole('button', { name: '发送消息', exact: true })
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    const code = scroller.locator('pre').first()
+    await expect(input).toBeEnabled()
+    await input.fill('连续流渲染')
+    await input.press('Enter')
+    await expect(code).toBeVisible()
+    modelEndpoint.finishStream()
+    await expect(send).toBeVisible()
+    await code.evaluate((element) => element.setAttribute('data-test-retained', ''))
+
+    const distanceFromBottom = () =>
+      scroller.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      )
+    await input.fill('分页-继续发送\n' + '多行草稿。\n'.repeat(10))
+    await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1)
+    await input.press('Enter')
+    await expect(scroller.getByText('分页回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+    await expect(code).toHaveAttribute('data-test-retained', '')
+    await expect(input).toHaveValue('')
+    await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1)
+
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('短会话')
+    await input.press('Enter')
+    await expect(scroller.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+
+    await scroller.evaluate((element) => {
+      const distances: number[] = []
+      function sample(): void {
+        if (element.textContent?.includes('分页-继续发送')) {
+          distances.push(element.scrollHeight - element.clientHeight - element.scrollTop)
+        }
+        if (distances.length < 12 && element.isConnected) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+      Reflect.set(window, 'conversationScrollDistances', distances)
+    })
+    await recent.getByRole('button', { name: '连续流渲染', exact: true }).click()
+    await expect(scroller.getByText('分页回答。', { exact: true })).toBeInViewport()
+    await expect(code).toBeVisible()
+    const readDistances = () =>
+      page.evaluate((): number[] => Reflect.get(window, 'conversationScrollDistances'))
+    await expect.poll(async () => (await readDistances()).length).toBe(12)
+    expect(Math.max(...(await readDistances()))).toBeLessThanOrEqual(1)
+  })
+
+  test('发送后的详情同步失败仍保留消息并接收已受理的回答', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const send = page.getByRole('button', { name: '发送消息', exact: true })
+    const messages = page.getByLabel('消息记录')
+    await expect(input).toBeEnabled()
+    await input.fill('分页-已经显示的提问')
+    await input.press('Enter')
+    await expect(messages.getByText('分页回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => ({ ok: false, error: '受控详情同步失败' }))
+    }, IPC_CHANNELS.getConversation)
+    await input.fill('连续流渲染')
+    await input.press('Enter')
+    await expect(page.getByRole('alert')).toContainText('受控详情同步失败')
+    await expect(messages.getByText('分页-已经显示的提问', { exact: true })).toBeVisible()
+    await expect(messages.getByRole('heading', { name: '连续流渲染', exact: true })).toBeVisible()
+    modelEndpoint.finishStream()
+    await expect(send).toBeVisible()
+    await expect(messages.getByRole('article')).toHaveCount(4)
+  })
+
   for (const renderDelay of [0, 80])
     test(`持续分片和慢排版仍持续更新，复用稳定节点且不抢回阅读位置（${renderDelay}ms）`, async ({
       desktop,
@@ -5235,6 +5317,7 @@ test.describe('Codex 风格过程展示', () => {
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
     const groups = answer.locator('[data-operation-group]')
@@ -5247,9 +5330,18 @@ test.describe('Codex 风格过程展示', () => {
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(firstToggle.locator('.activity-shimmer')).toHaveCSS(
+      'animation-name',
+      'activity-shimmer',
+    )
+    await expect(firstToggle.locator('.activity-group-label > svg')).toHaveCSS(
+      'animation-name',
+      'none',
+    )
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')
+    await expect(firstToggle.locator('.activity-shimmer')).toHaveCount(0)
     await expect(firstGroup.getByRole('region', { name: '本组操作', exact: true })).toHaveCount(0)
     await firstToggle.focus()
     await firstToggle.press('Enter')
@@ -5282,6 +5374,7 @@ test.describe('Codex 风格过程展示', () => {
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(lastToggle).toContainText('1 项等待审批')
     await expect(lastToggle).toContainText('1 项失败')
+    await expect(lastToggle.locator('.activity-shimmer')).toHaveCount(0)
     await lastToggle.click()
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(lastToggle).toContainText('1 项等待审批')
@@ -5326,6 +5419,7 @@ test.describe('Codex 风格过程展示', () => {
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
     const stop = page.getByRole('button', { name: '停止生成', exact: true })
@@ -5336,13 +5430,26 @@ test.describe('Codex 风格过程展示', () => {
     await input.fill('命令取消步骤')
     await input.press('Enter')
     await expect(approval).toBeVisible()
+    await expect(pendingCommand.locator('.activity-shimmer')).toHaveCount(0)
     await pendingCommand.click()
     await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(terminal.getByLabel('实时输出', { exact: true })).toContainText('command-started')
+    const runningCommand = answer.getByRole('button', { name: /^工具详情：正在运行命令/ })
+    const status = runningCommand.getByText('正在运行命令', { exact: true })
+    await expect(status).toHaveCSS('animation-name', 'activity-shimmer')
+    await expect(runningCommand.locator('.activity-tool-label > svg')).toHaveCSS(
+      'animation-name',
+      'none',
+    )
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await expect(status).toHaveCSS('animation-name', 'none')
+    await expect(status).toBeVisible()
     await stop.click()
     await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
       '生成已停止',
     )
+    await expect(answer.locator('.activity-shimmer')).toHaveCount(0)
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
 
     await input.fill('命令非零步骤')
     await input.press('Enter')

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { FileTextIcon, LoaderCircleIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
+import { FileTextIcon, PencilIcon, TerminalIcon } from '@lucide/vue'
 import { operationSummary } from '@shared/timeline-groups'
 import type { OperationGroup } from '@shared/timeline-groups'
 import ActivityDisclosure from './ActivityDisclosure.vue'
@@ -24,11 +24,13 @@ const notice = computed(() =>
   props.partial ? summary.value.notice.replace(/\d+ 项/g, '') : summary.value.notice,
 )
 const label = computed(() => [title.value, notice.value].filter(Boolean).join(' · '))
-const running = computed(() =>
-  props.group.steps.some((step) => ['pending', 'running'].includes(step.status)),
+const running = computed(
+  () =>
+    props.current &&
+    props.connected &&
+    props.group.steps.some((step) => ['pending', 'running'].includes(step.status)),
 )
 const icon = computed(() => {
-  if (props.connected && running.value) return LoaderCircleIcon
   if (props.group.steps.some((step) => step.name === 'apply_patch')) return PencilIcon
   if (props.group.steps.some((step) => step.name !== 'run_command')) return FileTextIcon
   return TerminalIcon
@@ -68,12 +70,8 @@ watch(expanded, (value) => {
   >
     <template #label>
       <span class="activity-tool-label activity-group-label">
-        <component
-          :is="icon"
-          :class="connected && running ? 'animate-spin' : ''"
-          aria-hidden="true"
-        />
-        <span>{{ title }}</span>
+        <component :is="icon" aria-hidden="true" />
+        <span :class="{ 'activity-shimmer': running }">{{ title }}</span>
         <span v-if="notice" :class="summary.danger ? 'text-destructive' : ''">
           · {{ notice }}
         </span>

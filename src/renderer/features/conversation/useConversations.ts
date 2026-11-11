@@ -807,13 +807,13 @@ function createConversations() {
     if (workspaceId) expandWorkspace(workspaceId)
     return true
   }
-  async function openConversation(conversationId: string): Promise<void> {
+  async function openConversation(conversationId: string, keepMessages = false): Promise<void> {
     if (state.selectedId !== conversationId) state.editing = null
+    const retainDetail = keepMessages && state.detail?.conversation.id === conversationId
     const token = ++selection
     state.directoriesLoading = false
     state.directoriesOffset = 0
     state.directoriesError = ''
-    detailRevision = 0
     state.selectedId = conversationId
     const known =
       state.conversations.find((item) => item.id === conversationId) ??
@@ -821,10 +821,13 @@ function createConversations() {
         .flatMap((group) => group.items)
         .find((item) => item.id === conversationId)
     if (known) state.workspaceId = known.workspaceId
-    state.detail = null
+    if (!retainDetail) {
+      detailRevision = 0
+      state.detail = null
+      state.historical = false
+    }
     state.loading = true
     state.error = ''
-    state.historical = false
     state.cancelling = false
     pendingEvents.clear()
     try {
@@ -837,6 +840,7 @@ function createConversations() {
         return
       }
       state.detail = result
+      state.historical = false
       delete state.activeRuns[conversationId]
       for (const run of result.runs) rememberRun(run)
       state.workspaceId = result.conversation.workspaceId
@@ -844,12 +848,14 @@ function createConversations() {
       state.error = result.warning ?? ''
       detailRevision = result.revision
       state.modelId = result.conversation.modelId
-      for (const event of [...pendingEvents.values()].sort((a, b) => a.revision - b.revision))
-        if (event.revision > result.revision) apply(event)
     } catch (error) {
       if (token === selection) state.error = message(error)
     } finally {
       if (token === selection) {
+        // 同步失败时仍可把缓冲通知应用到保留的消息，避免丢失已受理执行的状态。
+        if (state.detail)
+          for (const event of [...pendingEvents.values()].sort((a, b) => a.revision - b.revision))
+            if (event.revision > detailRevision) apply(event)
         state.loading = false
         pendingEvents.clear()
       }
@@ -895,7 +901,7 @@ function createConversations() {
         delete state.drafts[key]
         draftWorkspaces.delete(key)
       }
-      if (token === selection && !disposed) await openConversation(result.conversationId)
+      if (token === selection && !disposed) await openConversation(result.conversationId, true)
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
       if (token === selection) state.error = message(error)
