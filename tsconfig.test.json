@@ -18,6 +18,8 @@
     "src/renderer/features/conversation/state.ts",
     "src/renderer/features/conversation/state-utils.ts",
     "src/renderer/features/conversation/execution-interactions.ts",
+    "src/renderer/features/conversation/attachment-previews.ts",
+    "src/renderer/features/conversation/attachment-files.ts",
     "src/renderer/lib/desktop.ts",
     "src/renderer/env.d.ts"
   ]

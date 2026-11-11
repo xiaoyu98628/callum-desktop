@@ -17,6 +17,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     summaryRequest: boolean
     contextSummary: boolean
     messageCount: number
+    images?: string[]
   }[] = []
   let compactionRound = 0
   let pauseCompaction = false
@@ -47,7 +48,17 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         last = messages.at(-1)
       if (!last) throw new Error('消息为空')
       const role = string(last.role),
-        text = typeof last.content === 'string' ? last.content : ''
+        parts = Array.isArray(last.content) ? array(last.content, record) : [],
+        text =
+          typeof last.content === 'string'
+            ? last.content
+            : parts
+                .filter((part) => part.type === 'text')
+                .map((part) => string(part.text))
+                .join('')
+      const images = parts
+        .filter((part) => part.type === 'image_url')
+        .map((part) => string(record(part.image_url).url))
       const summaryRequest =
         typeof messages[0]?.content === 'string' &&
         messages[0].content.startsWith('你负责压缩对话历史')
@@ -60,6 +71,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
               message.content.includes('conversation_context_summary')),
         ),
         messageCount: messages.length,
+        ...(images.length ? { images } : {}),
         reasoningReturned: messages.some(
           (message) =>
             message.role === 'assistant' &&

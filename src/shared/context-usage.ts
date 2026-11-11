@@ -5,6 +5,7 @@ export interface ContextUsageInput {
   workspaceId: string | null
   modelId: string
   draft: string
+  draftImages?: number
 }
 export interface ContextUsage {
   id: string
@@ -29,16 +30,28 @@ export function parseContextUsageInput(value: unknown): ContextUsageInput {
   const v = record(value)
   if (
     Object.keys(v).some(
-      (key) => !['conversationId', 'workspaceId', 'modelId', 'draft'].includes(key),
+      (key) => !['conversationId', 'workspaceId', 'modelId', 'draft', 'draftImages'].includes(key),
     )
   )
     throw new Error('上下文统计参数无效')
   const conversationId = v.conversationId == null ? null : id(v.conversationId)
   const workspaceId = v.workspaceId == null ? null : id(v.workspaceId)
   const draft = string(v.draft)
-  if ((conversationId && workspaceId) || draft.length > 100_000 || draft.includes('\0'))
+  const draftImages = v.draftImages === undefined ? undefined : integer(v.draftImages)
+  if (
+    (conversationId && workspaceId) ||
+    draft.length > 100_000 ||
+    draft.includes('\0') ||
+    (draftImages ?? 0) > 8
+  )
     throw new Error('上下文统计参数无效')
-  return { conversationId, workspaceId, modelId: id(v.modelId), draft }
+  return {
+    conversationId,
+    workspaceId,
+    modelId: id(v.modelId),
+    draft,
+    ...(draftImages === undefined ? {} : { draftImages }),
+  }
 }
 
 export function parseContextUsage(value: unknown): ContextUsage {

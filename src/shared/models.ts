@@ -5,6 +5,13 @@ import type { ChatModel } from './chat.ts'
 export const PROVIDER_SERVICES = [{ value: 'chatcompletions', label: 'Chat Completions' }] as const
 export type ProviderProtocol = (typeof PROVIDER_SERVICES)[number]['value']
 
+/** 当前界面支持选择的输入类型，未展示的后端类型由主进程保留。 */
+export const MODEL_INPUT_TYPES = [
+  { value: 'text', label: '文本' },
+  { value: 'image', label: '图片' },
+] as const
+export type ModelInputType = (typeof MODEL_INPUT_TYPES)[number]['value']
+
 export interface ModelProvider {
   id: string
   name: string
@@ -18,6 +25,8 @@ export interface ConfiguredModel {
   name: string
   remoteModelId: string
   enabled: boolean
+  /** 从后端 model_type 回填当前界面可编辑的输入类型。 */
+  inputTypes: ModelInputType[]
   contextWindow: number | null
 }
 export interface ModelCatalog {
@@ -38,6 +47,8 @@ export interface ModelInput {
   name: string
   remoteModelId: string
   enabled: boolean
+  /** 提交时必须包含文本；省略时保留原有 model_type。 */
+  inputTypes?: ModelInputType[]
   contextWindow?: number | null
 }
 
@@ -95,16 +106,30 @@ export function parseProviderInput(value: unknown): ProviderInput {
 }
 export function parseModelInput(value: unknown): ModelInput {
   const v = record(value)
-  keys(v, ['id', 'providerId', 'name', 'remoteModelId', 'enabled', 'contextWindow'])
-  if (typeof v.enabled !== 'boolean') throw new Error('模型启用状态无效')
+  keys(v, ['id', 'providerId', 'name', 'remoteModelId', 'enabled', 'contextWindow', 'inputTypes'])
+  if (typeof v.enabled !== 'boolean') throw new Error('模型启用参数无效')
+  const inputTypes = v.inputTypes === undefined ? undefined : parseInputTypes(v.inputTypes)
+  if (inputTypes && !inputTypes.includes('text')) throw new Error('输入类型必须包含文本')
   return {
     id: v.id === null ? null : id(v.id),
     providerId: id(v.providerId),
     name: text(v.name, '模型名称', 120),
     remoteModelId: text(v.remoteModelId, '模型 ID', 256),
     enabled: v.enabled,
+    ...(inputTypes === undefined ? {} : { inputTypes }),
     ...('contextWindow' in v ? { contextWindow: parseContextWindow(v.contextWindow) } : {}),
   }
+}
+export function parseInputTypes(value: unknown): ModelInputType[] {
+  if (!Array.isArray(value) || value.length > MODEL_INPUT_TYPES.length)
+    throw new Error('输入类型无效')
+  const types = array(value, (item) => {
+    const option = MODEL_INPUT_TYPES.find((option) => option.value === item)
+    if (!option) throw new Error('输入类型无效')
+    return option.value
+  })
+  if (new Set(types).size !== types.length) throw new Error('输入类型不能重复')
+  return types
 }
 export function parseProvider(value: unknown): ModelProvider {
   const v = record(value)
@@ -132,6 +157,7 @@ export function parseConfiguredModel(value: unknown): ConfiguredModel {
     name: string(v.name),
     remoteModelId: string(v.remoteModelId),
     enabled: v.enabled,
+    inputTypes: parseInputTypes(v.inputTypes ?? []),
     contextWindow: v.contextWindow == null ? null : parseContextWindow(v.contextWindow),
   }
 }
@@ -145,5 +171,9 @@ export function parseCatalog(value: unknown): ModelCatalog {
 export function availableModels(catalog: ModelCatalog): ChatModel[] {
   return catalog.models
     .filter((model) => model.enabled)
-    .map((model) => ({ id: model.id, name: model.name }))
+    .map((model) => ({
+      id: model.id,
+      name: model.name,
+      ...(model.inputTypes.includes('image') ? { imageInput: true } : {}),
+    }))
 }

@@ -1,6 +1,12 @@
-import { access, mkdir } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
+import { parseAttachmentPreview, parseAttachments } from '../../shared/attachments.ts'
+import type {
+  AttachmentInput,
+  AttachmentPreview,
+  AttachmentPreviewInput,
+} from '../../shared/attachments.ts'
 import {
   array,
   comparePinnedItems,
@@ -140,6 +146,8 @@ export class ChatService {
       publish: (change) => this.publish(change),
     },
   )
+  private stagingDirectory = ''
+  private readonly transfers = new Set<Promise<unknown>>()
   private closing = false
   private closeTask: Promise<void> | null = null
 
@@ -181,7 +189,12 @@ export class ChatService {
       this.client = client
       await client.ready
       if (this.error) throw new RpcConnectionError(this.error)
-      if (!this.closing) this.setState({ status: 'ready' })
+      if (!this.closing) {
+        this.stagingDirectory = join(await realpath(dataDirectory), '.attachment-staging')
+        // 后端已取得数据目录实例锁，此时才回收上一次异常退出留下的草稿。
+        await this.resetAttachmentStaging()
+        if (!this.closing) this.setState({ status: 'ready' })
+      }
     } catch (error) {
       this.error ??= startupError(error, phase)
       if (!this.closing) this.setState({ status: 'startup-failed', error: this.error })
@@ -289,7 +302,11 @@ export class ChatService {
     return {
       models: array(models ?? [], (item) => {
         const v = record(item)
-        return { id: id(v.id), name: string(v.display_name) }
+        return {
+          id: id(v.id),
+          name: string(v.display_name),
+          ...(array(v.model_type ?? [], string).includes('image') ? { imageInput: true } : {}),
+        }
       }),
       conversations: conversations
         .filter((item) => item.workspaceId === null && isVisible(item))
@@ -451,6 +468,7 @@ export class ChatService {
           workspace_id: parsed.workspaceId ?? undefined,
           model_id: parsed.modelId,
           draft: parsed.draft,
+          ...(parsed.draftImages ? { draft_images: parsed.draftImages } : {}),
         }),
       )
       if (value.conversationId !== parsed.conversationId || value.modelId !== parsed.modelId)
@@ -632,15 +650,89 @@ export class ChatService {
     result.revision = this.revision
     return result
   }
+  private async resetAttachmentStaging(): Promise<void> {
+    try {
+      const info = await lstat(this.stagingDirectory)
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('附件暂存目录无效')
+      await rm(this.stagingDirectory, { recursive: true })
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    }
+    await mkdir(this.stagingDirectory, { mode: 0o700 })
+  }
+  private async withStagedAttachments<T>(
+    input: AttachmentInput[] | undefined,
+    action: (paths: string[]) => Promise<T>,
+  ): Promise<T> {
+    if (!input?.length) return action([])
+    const attachments = parseAttachments(input)
+    await this.ready
+    if (this.closing || this.state.status !== 'ready') throw new Error('对话服务尚未就绪。')
+    if (this.transfers.size >= 2) throw new Error('正在处理其他附件，请稍后重试。')
+    const task = (async () => {
+      const dir = await mkdtemp(join(this.stagingDirectory, 'upload-'))
+      try {
+        const paths: string[] = []
+        for (const { bytes } of attachments) {
+          const path = join(dir, String(paths.length))
+          await writeFile(path, bytes, { flag: 'wx', mode: 0o600 })
+          paths.push(path)
+        }
+        return await action(paths)
+      } finally {
+        // 受理后的临时文件清理失败不能让客户端重发。下次启动在实例锁内回收。
+        await rm(dir, { recursive: true, force: true }).catch(() => {
+          console.error(
+            JSON.stringify({ level: 'warn', module: 'attachments', message: '附件暂存文件待清理' }),
+          )
+        })
+      }
+    })()
+    this.transfers.add(task)
+    try {
+      return await task
+    } finally {
+      this.transfers.delete(task)
+    }
+  }
+  async previewAttachment(input: AttachmentPreviewInput): Promise<AttachmentPreview> {
+    return parseAttachmentPreview(
+      await this.request('conversation.attachment_preview', {
+        conversation_id: input.conversationId,
+        message_id: input.messageId,
+        index: input.index,
+      }),
+    )
+  }
+  async previewDraftAttachment(input: AttachmentInput): Promise<AttachmentPreview> {
+    return this.withStagedAttachments([input], async ([path]) =>
+      parseAttachmentPreview(await this.request('conversation.attachment_preview', { path })),
+    )
+  }
+  private withMessageContent<T>(
+    input: SendMessageInput | ResendMessageInput,
+    action: (content: { type: string; text?: string; path?: string }[]) => Promise<T>,
+  ): Promise<T> {
+    return this.withStagedAttachments(input.attachments, (paths) =>
+      action([
+        ...(input.text.trim() ? [{ type: 'text', text: input.text }] : []),
+        ...paths.map((path) => ({ type: 'image', path })),
+      ]),
+    )
+  }
   async send(input: SendMessageInput): Promise<SendMessageResult> {
     const value = record(
-      await this.request('conversation.send', {
-        ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
-        ...(!input.conversationId && input.workspaceId ? { workspace_id: input.workspaceId } : {}),
-        model_id: input.modelId,
-        stream: true,
-        content: [{ type: 'text', text: input.text }],
-      }),
+      await this.withMessageContent(input, (content) =>
+        this.request('conversation.send', {
+          ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+          ...(!input.conversationId && input.workspaceId
+            ? { workspace_id: input.workspaceId }
+            : {}),
+          model_id: input.modelId,
+          stream: true,
+          content,
+        }),
+      ),
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
   }
@@ -661,13 +753,19 @@ export class ChatService {
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
     return this.gate.run(`resend:${input.conversationId}`, async () => {
       const value = record(
-        await this.request('conversation.resend', {
-          conversation_id: input.conversationId,
-          message_id: input.messageId,
-          model_id: input.modelId,
-          stream: true,
-          content: [{ type: 'text', text: input.text }],
-        }),
+        await this.withMessageContent(input, (content) =>
+          this.request('conversation.resend', {
+            conversation_id: input.conversationId,
+            message_id: input.messageId,
+            model_id: input.modelId,
+            stream: true,
+            content,
+            ...(input.expectedRunId ? { expected_run_id: input.expectedRunId } : {}),
+            ...(input.retainedAttachments?.length
+              ? { retained_attachments: input.retainedAttachments }
+              : {}),
+          }),
+        ),
       )
       const conversationId = id(value.conversation_id),
         runId = id(value.run_id)
@@ -992,6 +1090,7 @@ export class ChatService {
     }
     try {
       const results = await Promise.allSettled([closeClient, this.retryTask])
+      await Promise.allSettled(this.transfers)
       const errors = results.flatMap((result) =>
         result.status === 'rejected' ? [result.reason] : [],
       )

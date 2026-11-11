@@ -58,6 +58,9 @@ export function createConversationState() {
     editing: null as {
       messageId: string
       originalText: string
+      runId: string
+      retainedAttachments: number[]
+      files: File[]
       text: string
       error: string
     } | null,
@@ -77,6 +80,7 @@ export function createConversationState() {
     hasMore: false,
     historical: false,
     drafts: {} as Record<string, string>,
+    draftAttachments: {} as Record<string, File[]>,
   })
   return state
 }

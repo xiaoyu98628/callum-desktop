@@ -14,12 +14,12 @@ resources/backend/
     callum.exe
 ```
 
-两平台程序均由后端提交 `68151f4d805fdd5ad6910f4f410036d1caabf511` 的干净工作区构建，包含执行游标历史分页、凭据加密及旧消息分页 RPC 的移除，保留已有 Windows 原生沙箱实现。源码指纹 SHA-256 为 `7bfb3a84056e4ca5ea359c14d967ebff6366583301c3caccc1dbf488d05cdb2f`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+两平台程序均由包含会话图片附件及用户类型选择修正的同一后端工作区构建。源码指纹 SHA-256 为 `3d01f446d99b8064374982433248df61f0c5bc7b53f86ccd59b1738664cd4b56`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                            | SHA-256                                                            |
 | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `f4f3d6163278ea7fc12a685d5f4dcc292161046c96a896775b00e502cae24bfd` |
-| Windows x86         | `GOOS=windows GOARCH=386 CGO_ENABLED=0 -tags release -trimpath`  | `bb50d48979fefc9cfc596fe7318396ee10642ac4cf55fe810724cd1dc471eea1` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `8d7a9172d37d370eb2bd34e26266b679d600707cc1905c54466281666583f9ac` |
+| Windows x86         | `GOOS=windows GOARCH=386 CGO_ENABLED=0 -tags release -trimpath`  | `e23ee70ea72a241cc7553379669a563fe8ac1f1f734190a7caa7ab516c9401ec` |
 
 Windows x64 Electron 客户端固定使用 x86 服务，通过 WOW64 启动。两份程序均已验证交叉编译、文件格式和哈希；macOS 程序用于隔离桌面回归，Windows 原生启动及桌面联调仍待 Windows 环境验证。
 
@@ -36,6 +36,10 @@ Windows x64 Electron 客户端固定使用 x86 服务，通过 WOW64 启动。�
 | 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复；保留原始轨迹，恢复不重放工具操作                                                                                         |
 | 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                       |
 | 协议接口     | 消息历史统一使用 `conversation.history`；`conversation.messages` 已移除并返回 `-32601`，现有事件字段及步骤的 `context_message`、`reasoning`、`operation` 保持原有格式    |
+
+两平台程序支持托管图片、保留原图重发、按消息索引预览和草稿图片用量估算。会话图片保存在数据目录的 `attachments/` 下。
+
+图片输入由用户选择的 `models.model_type` 包含 `image` 启用，`models.capabilities.image_input` 只记录模型拥有的能力；未选中图片类型时不启用上传与发送。客户端“输入类型”多选组固定保留文本，图片可选，保存时保留能力对象和未展示的其他类型。表结构版本保持 `4`，启动时不自动改写既有模型选择。
 
 Go 的模块拆分、GORM 查询、压缩算法、审批判定及 ACL 回收细节由后端仓库 `docs/architecture.md`、`docs/storage.md`、`docs/context-compaction.md`、`docs/tools-and-approvals.md` 和 `docs/design/conversations.md` 维护；请求及通知以其 `docs/jsonrpc.md` 为准。客户端接入与平台验收边界见 [Go 服务接入](../../docs/backend-integration.md#联调与验证边界)。
 

@@ -13,6 +13,7 @@ import {
   parseWorkspaceChange,
   parseUserInputAnswer,
 } from '../../shared/chat'
+import { parseAttachmentPreviewInput, parseAttachments } from '../../shared/attachments'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
@@ -253,6 +254,12 @@ export function registerChatHandlers(
   )
   handle(IPC_CHANNELS.getStepDetails, 3, (conversationId, runId, stepId) =>
     service.stepDetails(id(conversationId), id(runId), id(stepId)),
+  )
+  handle(IPC_CHANNELS.previewAttachment, 1, (input) =>
+    service.previewAttachment(parseAttachmentPreviewInput(input)),
+  )
+  handle(IPC_CHANNELS.previewDraftAttachment, 1, (input) =>
+    service.previewDraftAttachment(parseAttachments([input])[0]!),
   )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
   handle(IPC_CHANNELS.getContextUsage, 1, (input) =>

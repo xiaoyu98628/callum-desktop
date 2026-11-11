@@ -25,6 +25,7 @@ import type {
   ResendMessageResult,
   CompactConversationInput,
 } from './chat'
+import type { AttachmentInput, AttachmentPreview, AttachmentPreviewInput } from './attachments'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
 import type { ContextUsage, ContextUsageInput } from './context-usage'
@@ -107,6 +108,8 @@ export interface DesktopApi {
     runId: string,
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
+  previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
+  previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
   compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>

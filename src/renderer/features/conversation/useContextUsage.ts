@@ -97,13 +97,13 @@ export function useContextUsage(
       next.modelId !== request.modelId
     )
       return
-    if (next.state !== 'refresh_required' && !request.draft.trim()) {
+    if (next.state !== 'refresh_required' && !request.draft.trim() && !request.draftImages) {
       if (!value.value || next.snapshotRevision >= value.value.snapshotRevision) {
         value.value = next
         error.value = ''
       }
     }
-    if (next.state === 'refresh_required' || request.draft.trim()) refresh()
+    if (next.state === 'refresh_required' || request.draft.trim() || request.draftImages) refresh()
   })
   // 悬停提示与命令候选共用一个可见期计时器，不为两个入口重复查询。
   let polling: ReturnType<typeof setInterval> | undefined

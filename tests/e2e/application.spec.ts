@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test as base, expect } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
+import type { ElectronApplication, Locator, Page } from '@playwright/test'
 import { findTestBackend, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
 import { ChatService } from '../../src/main/backend/chat-service'
@@ -33,6 +33,7 @@ const test = base.extend<{
   profile: string
   withModel: boolean
   withEndpoint: boolean
+  imageInput: boolean
   blockServiceStartup: boolean
   startupBlocker: ChatService | null
   approvalPolicy: 'on-request' | 'always'
@@ -40,6 +41,7 @@ const test = base.extend<{
 }>({
   withModel: [false, { option: true }],
   withEndpoint: [false, { option: true }],
+  imageInput: [false, { option: true }],
   blockServiceStartup: [false, { option: true }],
   approvalPolicy: ['on-request', { option: true }],
   profile: async ({ playwright }, use) => {
@@ -52,7 +54,7 @@ const test = base.extend<{
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   },
-  modelEndpoint: async ({ withModel, withEndpoint, profile, approvalPolicy }, use) => {
+  modelEndpoint: async ({ withModel, withEndpoint, profile, approvalPolicy, imageInput }, use) => {
     if (!withModel && !withEndpoint) {
       await use(null)
       return
@@ -61,7 +63,7 @@ const test = base.extend<{
     await writeFile(file, 'controlled-file', { mode: 0o600 })
     const endpoint = await startModelServer(file, 'fixture-ui-key')
     try {
-      if (withModel) await seedModel(profile, endpoint.baseUrl, approvalPolicy)
+      if (withModel) await seedModel(profile, endpoint.baseUrl, approvalPolicy, imageInput)
       await use(endpoint)
     } finally {
       await endpoint.close()
@@ -564,6 +566,393 @@ testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', asy
   })
   const reopened = await nextWindow
   await expect(reopened.getByText('v0.1.0', { exact: true })).toBeVisible()
+})
+
+test.describe('图片附件', () => {
+  test.use({ withModel: true, imageInput: true })
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+
+  test('多图缩略图在气泡上方和草稿中展示，编辑替换后不复用旧图', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    const emptyInputHeight = await input.evaluate(
+      (element) => element.getBoundingClientRect().height,
+    )
+    const composer = page.locator('form').last()
+    const emptyComposerHeight = await composer.evaluate(
+      (element) => element.getBoundingClientRect().height,
+    )
+    const images = await page.evaluate(() =>
+      ['设计说明', '项目进度', '验收清单'].map((title, index) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = index === 1 ? 1200 : 900
+        canvas.height = index === 1 ? 720 : 1200
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('测试画布不可用')
+        context.fillStyle = ['#eaf1ff', '#dff4ee', '#fff2d9'][index]!
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.fillStyle = ['#5069b8', '#287f70', '#ab7530'][index]!
+        context.fillRect(56, 56, canvas.width - 112, 220)
+        context.fillStyle = '#ffffff'
+        context.font = 'bold 72px sans-serif'
+        context.fillText(title, 100, 195)
+        for (let row = 0; row < (index === 1 ? 3 : 6); row++) {
+          context.fillStyle = '#ffffff'
+          context.fillRect(56, 320 + row * 130, canvas.width - 112, 96)
+          context.fillStyle = '#728097'
+          context.fillRect(90, 348 + row * 130, 550 - row * 48, 16)
+          context.fillStyle = '#cbd2dc'
+          context.fillRect(90, 379 + row * 130, 680, 10)
+        }
+        return canvas.toDataURL('image/png')
+      }),
+    )
+    const paths = ['设计.png', '进度.png', '清单.png'].map((name) => join(profile, name))
+    await Promise.all(
+      paths.map((path, index) =>
+        writeFile(path, Buffer.from(images[index]!.split(',')[1]!, 'base64')),
+      ),
+    )
+    await page.locator('input[type=file]').setInputFiles(paths.slice(0, 2))
+    const ready = async (region: Locator, count: number): Promise<void> => {
+      await expect(region.getByRole('img')).toHaveCount(count)
+      await expect
+        .poll(() =>
+          region
+            .getByRole('img')
+            .evaluateAll((elements) =>
+              elements.every(
+                (element) =>
+                  element instanceof HTMLImageElement &&
+                  element.complete &&
+                  element.naturalWidth > 0 &&
+                  element.naturalWidth <= 256 &&
+                  element.naturalHeight <= 256,
+              ),
+            ),
+        )
+        .toBe(true)
+    }
+    const fittedFrames = async (
+      region: Locator,
+      maxWidth: number,
+      maxHeight: number,
+    ): Promise<void> => {
+      const frames = await region.getByRole('img').evaluateAll((elements) =>
+        elements.map((image) => {
+          if (!(image instanceof HTMLImageElement)) throw new Error('图片元素无效')
+          const box = image.getBoundingClientRect()
+          const frame = image.closest('button')?.getBoundingClientRect()
+          if (!frame) throw new Error('图片外框缺失')
+          return {
+            width: box.width,
+            height: box.height,
+            frameWidth: frame.width,
+            frameHeight: frame.height,
+            ratio: image.naturalWidth / image.naturalHeight,
+          }
+        }),
+      )
+      for (const frame of frames) {
+        expect(frame.width).toBeLessThanOrEqual(maxWidth)
+        expect(frame.height).toBeLessThanOrEqual(maxHeight)
+        expect(Math.abs(frame.width / frame.height - frame.ratio)).toBeLessThan(0.035)
+        expect(Math.abs(frame.frameWidth - frame.width)).toBeLessThan(1)
+        expect(Math.abs(frame.frameHeight - frame.height)).toBeLessThan(1)
+      }
+    }
+    await ready(composer, 2)
+    await fittedFrames(composer, 128, 96)
+    await expect
+      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+      .toBeLessThan(emptyInputHeight)
+    expect(
+      (await composer.evaluate((element) => element.getBoundingClientRect().height)) -
+        emptyComposerHeight,
+    ).toBeLessThanOrEqual(104)
+    await input.fill('帮我比较这两张图')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    await ready(user, 2)
+    await fittedFrames(user, 80, 80)
+    const firstBefore = await user.getByRole('img').first().getAttribute('src')
+    const boxes = await user.getByRole('img').evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { top: box.top, bottom: box.bottom }
+      }),
+    )
+    const textBox = await user.locator('[data-user-message-text]').boundingBox()
+    if (!textBox || !boxes[0] || !boxes[1]) throw new Error('图片和文字布局缺失')
+    expect(boxes[0].top).toBe(boxes[1].top)
+    expect(boxes[0].bottom).toBeLessThanOrEqual(textBox.y)
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('img')).toHaveAttribute('src', images[0]!)
+    await page.keyboard.press('Escape')
+    await expect(preview).not.toBeVisible()
+    await composer.locator('input[type=file]').setInputFiles(paths[2]!)
+    await ready(composer, 1)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect
+      .poll(() => composer.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      .toBe(true)
+    await input.click()
+    await page.screenshot({ path: '.artifacts/screenshots/attachment-thumbnails.png' })
+    await composer.getByRole('button', { name: '移除清单.png', exact: true }).click()
+    await expect
+      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+      .toBe(emptyInputHeight)
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await ready(editor, 2)
+    await fittedFrames(editor, 128, 96)
+    await editor.getByRole('button', { name: '移除图片 1', exact: true }).click()
+    await editor.locator('input[type=file]').setInputFiles(paths[2]!)
+    await ready(editor, 2)
+    await editor.getByRole('textbox', { name: '编辑提问', exact: true }).fill('调整后的图片')
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    await ready(user, 2)
+    expect(await user.getByRole('img').first().getAttribute('src')).not.toBe(firstBefore)
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    await expect(preview.getByRole('img')).toHaveAttribute('src', images[1]!)
+    await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await composer
+      .locator('input[type=file]')
+      .setInputFiles(Array.from({ length: 8 }, (_, index) => paths[index % paths.length]!))
+    await ready(composer, 8)
+    expect(
+      await composer
+        .getByRole('img')
+        .evaluateAll(
+          (elements) =>
+            new Set(elements.map((element) => element.getBoundingClientRect().top)).size,
+        ),
+    ).toBeGreaterThan(1)
+    expect(await composer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    )
+  })
+
+  test('缩略图读取失败保留移除和重试入口，后续有效图片可继续显示', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+    const path = join(profile, '损坏.png')
+    await writeFile(path, 'invalid image')
+    await page.locator('input[type=file]').setInputFiles(path)
+    await expect(page.getByText('无法加载', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '损坏.png', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('alert')).toBeVisible()
+    await preview.getByRole('button', { name: '重试加载', exact: true }).click()
+    await expect(preview.getByRole('alert')).toBeVisible()
+    await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await page.getByRole('button', { name: '移除损坏.png', exact: true }).click()
+    const valid =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    await writeFile(path, Buffer.from(valid, 'base64'))
+    await page.locator('input[type=file]').setInputFiles(path)
+    await expect(page.getByRole('img', { name: '损坏.png', exact: true })).toBeVisible()
+    await expect(page.getByText('无法加载', { exact: true })).toHaveCount(0)
+  })
+
+  test('用户选中的图片类型控制上传、粘贴和重发，切换模型清除过期提示', async ({
+    desktop,
+    profile,
+  }) => {
+    const page = await desktop.firstWindow()
+    const created = await page.evaluate(async () => {
+      const catalog = await window.callum.getModelCatalog()
+      if (!catalog.ok || !catalog.value.providers[0]) throw new Error('测试供应商不存在')
+      return window.callum.saveModel({
+        id: null,
+        providerId: catalog.value.providers[0].id,
+        name: '仅文字模型',
+        remoteModelId: 'text-only',
+        enabled: true,
+        contextWindow: 1000000,
+        inputTypes: ['text'],
+      })
+    })
+    expect(created.ok).toBe(true)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    await expect(
+      page.getByRole('button', { name: '编辑模型 仅文字模型', exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    const picker = page.getByRole('button', { name: '添加图片', exact: true })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const selectModel = async (name: string): Promise<void> => {
+      await page.getByRole('combobox', { name: '模型', exact: true }).click()
+      await page.getByRole('option', { name, exact: true }).click()
+    }
+    await expect(input).toBeEnabled()
+    await selectModel('仅文字模型')
+    await expect(picker).toBeDisabled()
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    await input.evaluate((element, data) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(
+        new File([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], 'paste.png', {
+          type: 'image/png',
+        }),
+      )
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+      )
+    }, base64)
+    await expect(page.getByRole('alert')).toContainText('当前模型未启用图片输入')
+    await selectModel('受控文本模型')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(picker).toBeEnabled()
+    const path = join(profile, 'selected.png')
+    await writeFile(path, Buffer.from(base64, 'base64'))
+    const chooser = page.waitForEvent('filechooser')
+    await picker.click()
+    await (await chooser).setFiles(path)
+    await expect(page.getByRole('button', { name: 'selected.png', exact: true })).toBeVisible()
+    await selectModel('仅文字模型')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    await expect(
+      page.getByText('当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。', {
+        exact: true,
+      }),
+    ).toBeVisible()
+    await selectModel('受控文本模型')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    await page
+      .getByRole('article', { name: '你的消息', exact: true })
+      .last()
+      .getByRole('button', { name: '编辑提问', exact: true })
+      .press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await selectModel('仅文字模型')
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeDisabled()
+    await selectModel('受控文本模型')
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeEnabled()
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+  })
+
+  test('输入类型多选固定文本，图片可取消编辑、回填并联动对话', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    for (const enabled of [false, true]) {
+      await page.getByRole('button', { name: '设置', exact: true }).click()
+      await page.getByRole('button', { name: '模型', exact: true }).click()
+      await page.getByRole('button', { name: '编辑模型 受控文本模型', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '编辑模型', exact: true })
+      const group = dialog.getByRole('group', { name: '输入类型', exact: true })
+      const text = group.getByRole('checkbox', { name: '文本', exact: true })
+      const checkbox = group.getByRole('checkbox', { name: '图片', exact: true })
+      await expect(group.getByRole('checkbox')).toHaveCount(2)
+      await expect(text).toBeChecked()
+      await expect(text).toBeDisabled()
+      await expect(checkbox).toBeChecked({ checked: !enabled })
+      if (!enabled) {
+        await checkbox.uncheck()
+        await dialog.getByRole('button', { name: '取消', exact: true }).click()
+        await page.getByRole('button', { name: '编辑模型 受控文本模型', exact: true }).click()
+        await expect(checkbox).toBeChecked()
+      }
+      await checkbox.focus()
+      await page.keyboard.press('Space')
+      await expect(checkbox).toBeChecked({ checked: enabled })
+      if (!enabled) await group.screenshot({ path: '.artifacts/screenshots/model-input-types.png' })
+      await dialog.getByRole('button', { name: '保存模型', exact: true }).click()
+      await expect(dialog).not.toBeVisible()
+      const catalog = await page.evaluate(() => window.callum.getModelCatalog())
+      expect(catalog.ok && catalog.value.models[0]?.inputTypes).toEqual(
+        enabled ? ['text', 'image'] : ['text'],
+      )
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      await expect(page.getByRole('button', { name: '添加图片', exact: true })).toBeEnabled({
+        enabled,
+      })
+      const overview = await page.evaluate(() => window.callum.getChatOverview(0))
+      expect(overview.ok && overview.value.models[0]?.imageInput === true).toBe(enabled)
+    }
+  })
+
+  test('选图后预览并发送，原图移除后仍可查看和编辑重发', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    const path = join(profile, 'screen.png')
+    await writeFile(path, Buffer.from(base64, 'base64'))
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await page.locator('input[type=file]').setInputFiles(path)
+    await page.getByRole('button', { name: 'screen.png', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('img')).toHaveAttribute('src', 'data:image/png;base64,' + base64)
+    await preview.getByRole('button', { name: '关闭预览' }).click()
+    const remove = page.getByRole('button', { name: '移除screen.png', exact: true })
+    await remove.click()
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    for (const action of ['paste', 'drop'] as const) {
+      await input.evaluate(
+        (element, { action, base64 }) => {
+          const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+          const transfer = new DataTransfer()
+          transfer.items.add(new File([bytes], 'screen.png', { type: 'image/png' }))
+          const event =
+            action === 'paste'
+              ? new ClipboardEvent('paste', {
+                  clipboardData: transfer,
+                  bubbles: true,
+                  cancelable: true,
+                })
+              : new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true })
+          element.dispatchEvent(event)
+        },
+        { action, base64 },
+      )
+      await expect(remove).toBeVisible()
+      if (action === 'paste') await remove.click()
+    }
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answers.last()).toContainText('这是受控回答。')
+    await rm(path)
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    await expect(preview.getByRole('img')).toHaveAttribute('src', 'data:image/png;base64,' + base64)
+    await preview.getByRole('button', { name: '关闭预览' }).click()
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await editor.getByRole('textbox', { name: '编辑提问' }).fill('再看这张图')
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(user).toContainText('再看这张图')
+    await expect(answers.last()).toContainText('这是受控回答。')
+    expect(
+      modelEndpoint?.requests.filter(
+        (request) => request.images?.[0] === 'data:image/png;base64,' + base64,
+      ),
+    ).toHaveLength(2)
+  })
 })
 
 test.describe('真实 Go 对话交互', () => {
@@ -4546,6 +4935,10 @@ test.describe('模型配置与对话联动', () => {
     await expect(page.getByText('已设置 API Key', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '为 本机模型服务 添加模型', exact: true }).click()
     dialog = page.getByRole('dialog', { name: '添加模型', exact: true })
+    const types = dialog.getByRole('group', { name: '输入类型', exact: true })
+    await expect(types.getByRole('checkbox', { name: '文本', exact: true })).toBeChecked()
+    await expect(types.getByRole('checkbox', { name: '文本', exact: true })).toBeDisabled()
+    await expect(types.getByRole('checkbox', { name: '图片', exact: true })).not.toBeChecked()
     await dialog.getByLabel('模型名称', { exact: true }).fill('文本助手')
     await dialog.getByLabel('模型 ID', { exact: true }).fill('local-fixture')
     await dialog.getByLabel('上下文容量（Token）', { exact: true }).fill('1000000')

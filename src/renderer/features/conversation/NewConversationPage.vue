@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onScopeDispose, provide, ref, watch } from 'vue'
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -14,8 +14,9 @@ import {
   matchesCompactCommand,
   messageCompactions,
 } from '@shared/manual-compaction'
-import type { ApprovalScope, ChatRun } from '@shared/chat'
+import type { ApprovalScope, ChatMessage, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
+import { getDesktopApi } from '@/lib/desktop'
 import { useConversations } from './useConversations'
 import { useContextUsage } from './useContextUsage'
 import ModelSelector from './ModelSelector.vue'
@@ -26,6 +27,11 @@ import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
 import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
+import AttachmentPicker from './AttachmentPicker.vue'
+import AttachmentList from './AttachmentList.vue'
+import { dragFiles, dropFiles, pasteFiles } from './attachment-files'
+import type { AttachmentItem } from './attachment-files'
+import { AttachmentPreviews, attachmentPreviewsKey } from './attachment-previews'
 import ContextUsageControl from './ContextUsageControl.vue'
 import ApprovalModeSelector from './ApprovalModeSelector.vue'
 import ComposerCommands from './ComposerCommands.vue'
@@ -36,6 +42,10 @@ defineEmits<{ configureModels: [] }>()
 const {
   state,
   draft,
+  draftAttachments,
+  imageInput,
+  addAttachments,
+  removeAttachment,
   workspace,
   activeRun,
   compactUnavailable,
@@ -60,6 +70,54 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
+const previews = new AttachmentPreviews(async (item) => {
+  const api = getDesktopApi()
+  const result =
+    item.source instanceof File
+      ? await api.previewDraftAttachment({ bytes: new Uint8Array(await item.source.arrayBuffer()) })
+      : await api.previewAttachment(item.source)
+  if (!result.ok) throw new Error(result.error)
+  return result.value
+})
+provide(attachmentPreviewsKey, previews)
+watch(
+  () => state.selectedId,
+  () => previews.clear(),
+  { flush: 'sync' },
+)
+onScopeDispose(() => previews.close())
+const draftItems = computed<AttachmentItem[]>(() =>
+  draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
+)
+function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
+  return {
+    key: `history:${item.conversationId}/${item.id}/${item.runId}/${index}`,
+    label: `图片 ${item.content.slice(0, index + 1).filter((block) => block.type === 'image').length}`,
+    source: { conversationId: item.conversationId, messageId: item.id, index },
+  }
+}
+const historyImages = computed(
+  () =>
+    new Map(
+      messages.value
+        .filter((item) => item.role === 'user')
+        .map((item) => [
+          item.id,
+          item.content.flatMap((block, index) =>
+            block.type === 'image' ? [historyAttachment(item, index)] : [],
+          ),
+        ]),
+    ),
+)
+const editItems = computed<AttachmentItem[]>(() => {
+  const edit = state.editing
+  const message = lastUserMessage.value
+  if (!edit || !message || message.id !== edit.messageId) return []
+  return [
+    ...edit.retainedAttachments.map((index) => historyAttachment(message, index)),
+    ...edit.files.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
+  ]
+})
 const messageTimeline = computed(() => {
   const runs = state.detail?.runs ?? []
   const ids = runs.map((run) => run.id).toSorted()
@@ -135,9 +193,15 @@ const messageInput = ref<HTMLTextAreaElement | null>(null)
 const commandInputFocused = ref(false)
 const commandsDismissed = ref(false)
 const commandsOpen = computed(
-  () => commandInputFocused.value && !commandsDismissed.value && matchesCompactCommand(draft.value),
+  () =>
+    commandInputFocused.value &&
+    !commandsDismissed.value &&
+    !draftItems.value.length &&
+    matchesCompactCommand(draft.value),
 )
-const requestingCompact = computed(() => isCompactCommand(draft.value) || commandsOpen.value)
+const requestingCompact = computed(
+  () => !draftItems.value.length && (isCompactCommand(draft.value) || commandsOpen.value),
+)
 const usageInput = computed<ContextUsageInput | null>(() =>
   state.loading || state.modelsLoading || !state.modelId
     ? null
@@ -146,6 +210,7 @@ const usageInput = computed<ContextUsageInput | null>(() =>
         workspaceId: state.selectedId ? null : state.workspaceId,
         modelId: state.modelId,
         draft: requestingCompact.value ? '' : draft.value,
+        ...(draftItems.value.length ? { draftImages: draftItems.value.length } : {}),
       },
 )
 const usageHintOpen = ref(false)
@@ -201,6 +266,21 @@ const composerNotice = computed(() =>
       ? '尚未配置可用模型，配置完成后即可开始对话。'
       : '',
 )
+const attachmentBusy = computed(
+  () =>
+    state.loading ||
+    state.sending ||
+    state.resending ||
+    !!state.editing ||
+    !!state.compacting ||
+    !!currentInteraction.value ||
+    !!state.serviceError ||
+    state.modelsLoading ||
+    !!state.modelError,
+)
+function receiveFiles(files: File[]): void {
+  if (!attachmentBusy.value) addAttachments(files)
+}
 const canSend = computed(
   () =>
     !state.loading &&
@@ -217,7 +297,7 @@ const canSend = computed(
     !state.modelError &&
     availableModel.value &&
     (!requestingCompact.value || !compactUnavailable.value) &&
-    !!draft.value.trim(),
+    (draftItems.value.length ? imageInput.value : !!draft.value.trim()),
 )
 const runLabels = {
   pending: '正在准备回答…',
@@ -401,14 +481,14 @@ function scrollToBottom(): void {
 function resizeMessageInput(): void {
   const input = messageInput.value
   if (!input) return
-  // 恢复 rows 对应的两行高度后测量，删除内容、发送或切换草稿时也能收缩。
+  // 根据附件状态恢复 rows 的一行或两行高度，删除内容或移除附件后重新测量。
   input.style.overflowY = 'hidden'
   input.style.height = 'auto'
   input.style.height = `${input.scrollHeight}px`
   input.style.overflowY = ''
   syncComposerLayout()
 }
-watch(draft, resizeMessageInput, { flush: 'post' })
+watch([draft, () => draftItems.value.length > 0], resizeMessageInput, { flush: 'post' })
 watch(draft, () => {
   commandsDismissed.value = false
 })
@@ -616,19 +696,32 @@ onScopeDispose(() => {
                 :busy="state.resending"
                 :disabled="editUnavailable || !!state.modelError || state.modelsLoading"
                 :error="state.editing.error"
+                :attachments="editItems"
+                :image-input="imageInput"
+                @files="addAttachments($event, true)"
+                @remove="removeAttachment($event, true)"
                 @cancel="cancelMessageEdit"
                 @submit="resend"
               />
-              <div v-else class="ml-auto w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2">
+              <div v-else class="flex max-w-full flex-col items-end gap-1">
+                <AttachmentList
+                  :items="historyImages.get(item.id) ?? []"
+                  class="justify-end"
+                  @changed="nextTick(() => followRunLayout(item.runId))"
+                />
                 <div
-                  v-for="(block, index) in item.content"
-                  :key="index"
-                  class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                  v-if="item.content.some((block) => block.type !== 'image')"
+                  data-user-message-text
+                  class="w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2"
                 >
-                  <template v-if="block.type === 'text'">{{ block.text }}</template>
-                  <p v-else class="text-muted-foreground">
-                    [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
-                  </p>
+                  <div
+                    v-for="(block, index) in item.content.filter((block) => block.type !== 'image')"
+                    :key="index"
+                    class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                  >
+                    <template v-if="block.type === 'text'">{{ block.text }}</template>
+                    <p v-else class="text-muted-foreground">暂不支持展示的内容</p>
+                  </div>
                 </div>
               </div>
               <MessageActions
@@ -647,7 +740,7 @@ onScopeDispose(() => {
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&
-                  item.content.every((block) => block.type === 'text')
+                  item.content.every((block) => block.type === 'text' || block.type === 'image')
                 "
                 :edit-disabled="editUnavailable"
                 :class="item.role === 'user' ? 'justify-end' : ''"
@@ -801,6 +894,9 @@ onScopeDispose(() => {
       <form
         class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="submitMessage"
+        @dragover="dragFiles"
+        @drop="dropFiles($event, receiveFiles)"
+        @paste="pasteFiles($event, receiveFiles)"
       >
         <ComposerCommands
           v-if="commandsOpen"
@@ -809,12 +905,21 @@ onScopeDispose(() => {
           :usage="displayedUsage"
           @select="compact(true)"
         />
+        <AttachmentList
+          :items="draftItems"
+          removable
+          :disabled="state.sending"
+          @remove="removeAttachment"
+        />
+        <p v-if="draftItems.length && !imageInput" class="mb-1 text-xs text-muted-foreground">
+          当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
+        </p>
         <label for="new-message" class="sr-only">消息</label>
         <textarea
           id="new-message"
           ref="messageInput"
           v-model="draft"
-          rows="2"
+          :rows="draftItems.length ? 1 : 2"
           :maxlength="MAX_MESSAGE_LENGTH"
           :disabled="
             !!currentInteraction ||
@@ -833,13 +938,15 @@ onScopeDispose(() => {
           aria-autocomplete="list"
           :aria-controls="commandsOpen ? 'composer-commands' : undefined"
           :aria-activedescendant="commandsOpen ? 'composer-compact-command' : undefined"
-          class="block max-h-48 min-h-12 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+          class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+          :class="draftItems.length ? 'min-h-6' : 'min-h-12'"
           @input="resizeMessageInput"
           @focus="focusCommands"
           @blur="commandInputFocused = false"
           @keydown="keydown"
         ></textarea>
         <div class="mt-2 flex items-center gap-2">
+          <AttachmentPicker :disabled="attachmentBusy || !imageInput" @files="receiveFiles" />
           <ApprovalModeSelector class="mr-auto" />
           <div class="flex min-w-0 items-center gap-2">
             <ContextUsageControl

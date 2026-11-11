@@ -1,5 +1,11 @@
-import { array, id, record } from '../../shared/chat.ts'
-import { parseConfiguredModel, parseProvider, parseProviderProtocol } from '../../shared/models.ts'
+import { array, id, record, string } from '../../shared/chat.ts'
+import {
+  MODEL_INPUT_TYPES,
+  parseConfiguredModel,
+  parseInputTypes,
+  parseProvider,
+  parseProviderProtocol,
+} from '../../shared/models.ts'
 import type {
   ConfiguredModel,
   ModelCatalog as Catalog,
@@ -41,6 +47,9 @@ function modelFromRpc(value: unknown): ConfiguredModel {
     remoteModelId: v.remote_model_id,
     enabled: v.enabled,
     contextWindow: v.context_window ?? null,
+    inputTypes: array(v.model_type ?? [], string).filter((type) =>
+      MODEL_INPUT_TYPES.some((option) => option.value === type),
+    ),
   })
 }
 
@@ -86,6 +95,16 @@ export class ModelCatalog {
   saveModel(input: ModelInput): Promise<string> {
     return this.mutate(async () => {
       const current = input.id ? record(await this.request('model.get', { id: input.id })) : null
+      const currentTypes = array(current?.model_type ?? [], string)
+      const modelTypes =
+        input.inputTypes === undefined
+          ? currentTypes
+          : [
+              ...parseInputTypes(input.inputTypes),
+              ...currentTypes.filter(
+                (type) => !MODEL_INPUT_TYPES.some((option) => option.value === type),
+              ),
+            ]
       // model.update 是完整替换；基础编辑不能清空 UI 尚未提供编辑入口的后端元数据。
       const result = await this.request(input.id ? 'model.update' : 'model.create', {
         ...(input.id ? { id: input.id } : {}),
@@ -99,7 +118,7 @@ export class ModelCatalog {
             : input.contextWindow,
         max_output_tokens: current?.max_output_tokens ?? null,
         capabilities: current?.capabilities ?? null,
-        model_type: current?.model_type ?? [],
+        model_type: modelTypes,
         reasoning_levels: current?.reasoning_levels ?? null,
       })
       return this.resultId(result, input.id)

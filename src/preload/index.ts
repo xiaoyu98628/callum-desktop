@@ -24,6 +24,7 @@ import {
   parseUserInput,
   parseDirectoryGrant,
 } from '../shared/chat'
+import { parseAttachmentPreview } from '../shared/attachments'
 import { parseCatalog } from '../shared/models'
 import { parseExecutionSettings } from '../shared/execution'
 import { parseContextUsage } from '../shared/context-usage'
@@ -219,6 +220,18 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getStepDetails, conversationId, runId, stepId),
       parseStepDetails,
+    )
+  },
+  async previewAttachment(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.previewAttachment, input),
+      parseAttachmentPreview,
+    )
+  },
+  async previewDraftAttachment(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.previewDraftAttachment, input),
+      parseAttachmentPreview,
     )
   },
   async sendMessage(input) {

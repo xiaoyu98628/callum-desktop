@@ -1,3 +1,5 @@
+import { parseAttachments, MAX_ATTACHMENTS } from './attachments.ts'
+import type { AttachmentInput } from './attachments.ts'
 import { parseContextUsage } from './context-usage.ts'
 import type { ContextUsage } from './context-usage.ts'
 import { array, id, integer, record, string } from './validation.ts'
@@ -7,6 +9,7 @@ export { array, id, integer, record, string } from './validation.ts'
 export interface ChatModel {
   id: string
   name: string
+  imageInput?: boolean
 }
 export interface Conversation {
   id: string
@@ -69,6 +72,7 @@ export interface ContentBlock {
   type: string
   text: string
   path: string
+  attachmentRef?: string
 }
 export interface ChatMessage {
   id: string
@@ -246,6 +250,7 @@ export interface SendMessageInput {
   workspaceId?: string | null
   modelId: string
   text: string
+  attachments?: AttachmentInput[]
 }
 export interface SendMessageResult {
   conversationId: string
@@ -260,6 +265,9 @@ export interface ResendMessageInput {
   messageId: string
   modelId: string
   text: string
+  attachments?: AttachmentInput[]
+  retainedAttachments?: number[]
+  expectedRunId?: string
 }
 export interface ResendMessageResult extends SendMessageResult {
   removedMessageIds: string[]
@@ -275,7 +283,11 @@ export function isActiveRun(run: ChatRun): boolean {
 
 export function parseModel(value: unknown): ChatModel {
   const v = record(value)
-  return { id: id(v.id), name: string(v.name) }
+  return {
+    id: id(v.id),
+    name: string(v.name),
+    ...(v.imageInput === undefined ? {} : { imageInput: v.imageInput === true }),
+  }
 }
 export function parseConversation(value: unknown): Conversation {
   const v = record(value)
@@ -431,7 +443,12 @@ export function parseMessage(value: unknown): ChatMessage {
     role: v.role,
     content: array(v.content, (item) => {
       const b = record(item)
-      return { type: string(b.type), text: string(b.text), path: string(b.path) }
+      return {
+        type: string(b.type),
+        text: string(b.text),
+        path: string(b.path),
+        ...(b.attachmentRef === undefined ? {} : { attachmentRef: string(b.attachmentRef) }),
+      }
     }),
     status: string(v.status),
     createdAt: messageTimestamp(v.createdAt),
@@ -761,12 +778,13 @@ export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)
   if (
     Object.keys(v).some(
-      (key) => !['conversationId', 'workspaceId', 'modelId', 'text'].includes(key),
+      (key) => !['conversationId', 'workspaceId', 'modelId', 'text', 'attachments'].includes(key),
     )
   )
     throw new Error('消息参数无效')
   const text = string(v.text).trim()
-  if (!text || text.length > MAX_MESSAGE_LENGTH)
+  const attachments = v.attachments === undefined ? undefined : parseAttachments(v.attachments)
+  if ((!text && !attachments?.length) || text.length > MAX_MESSAGE_LENGTH)
     throw new Error('消息不能为空，且不能超过 100000 个字符')
   const workspaceId = v.workspaceId == null ? null : id(v.workspaceId)
   if (workspaceId && v.conversationId !== null) throw new Error('已有会话不能在发送时修改项目')
@@ -775,6 +793,7 @@ export function parseSendInput(value: unknown): SendMessageInput {
     workspaceId,
     modelId: id(v.modelId),
     text,
+    ...(attachments ? { attachments } : {}),
   }
 }
 export function parseSendResult(value: unknown): SendMessageResult {
@@ -784,17 +803,45 @@ export function parseSendResult(value: unknown): SendMessageResult {
 export function parseResendInput(value: unknown): ResendMessageInput {
   const v = record(value)
   if (
-    Object.keys(v).some((key) => !['conversationId', 'messageId', 'modelId', 'text'].includes(key))
+    Object.keys(v).some(
+      (key) =>
+        ![
+          'conversationId',
+          'messageId',
+          'modelId',
+          'text',
+          'attachments',
+          'retainedAttachments',
+          'expectedRunId',
+        ].includes(key),
+    )
   )
     throw new Error('重发参数无效')
   const text = string(v.text).trim()
-  if (!text || text.length > MAX_MESSAGE_LENGTH)
+  const attachments = v.attachments === undefined ? undefined : parseAttachments(v.attachments)
+  const retained =
+    v.retainedAttachments === undefined
+      ? undefined
+      : array(v.retainedAttachments, (item) => integer(item))
+  const expectedRunId = v.expectedRunId === undefined ? undefined : id(v.expectedRunId)
+  if (
+    retained &&
+    (retained.some((index) => index >= 64) ||
+      new Set(retained).size !== retained.length ||
+      retained.length + (attachments?.length ?? 0) > MAX_ATTACHMENTS ||
+      (retained.length && !expectedRunId))
+  )
+    throw new Error('原消息附件参数无效')
+  if ((!text && !attachments?.length && !retained?.length) || text.length > MAX_MESSAGE_LENGTH)
     throw new Error('消息不能为空，且不能超过 100000 个字符')
   return {
     conversationId: id(v.conversationId),
     messageId: id(v.messageId),
     modelId: id(v.modelId),
     text,
+    ...(attachments ? { attachments } : {}),
+    ...(retained ? { retainedAttachments: retained } : {}),
+    ...(expectedRunId ? { expectedRunId } : {}),
   }
 }
 export function parseResendResult(value: unknown): ResendMessageResult {

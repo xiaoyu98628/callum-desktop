@@ -35,6 +35,8 @@ export const IPC_CHANNELS = {
   getConversationHistory: 'callum:chat:history',
   listRunSteps: 'callum:chat:steps',
   getStepDetails: 'callum:chat:step-details',
+  previewAttachment: 'callum:chat:attachment-preview',
+  previewDraftAttachment: 'callum:chat:draft-attachment-preview',
   sendMessage: 'callum:chat:send',
   resendMessage: 'callum:chat:resend',
   compactConversation: 'callum:chat:compact',

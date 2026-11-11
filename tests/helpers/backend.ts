@@ -69,6 +69,7 @@ export async function seedModel(
   profile: string,
   baseUrl: string,
   approvalPolicy: 'on-request' | 'always' = 'on-request',
+  imageInput = false,
 ): Promise<string> {
   const client = new RpcClient(
     backendExecutable,
@@ -99,7 +100,7 @@ export async function seedModel(
         remote_model_id: 'local-fixture',
         enabled: true,
         context_window: 1_000_000,
-        model_type: [],
+        model_type: imageInput ? ['text', 'image'] : [],
       }),
     )
     return id(model.id)

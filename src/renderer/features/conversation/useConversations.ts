@@ -1,4 +1,4 @@
-import { computed, inject, onMounted, onScopeDispose, provide } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide, watch } from 'vue'
 import { createConversationState } from './state'
 import { createExecutionInteractions } from './execution-interactions'
 import { unwrap, upsert, boundMessages } from './state-utils'
@@ -20,8 +20,12 @@ import type {
   WorkspaceChange,
   WorkspaceUpdate,
 } from '@shared/chat'
+import { MAX_ATTACHMENT_BATCH_BYTES } from '@shared/attachments'
+import { addImageFiles, attachmentInputs } from './attachment-files'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
+
+const IMAGE_INPUT_REQUIRED = '当前模型未启用图片输入，请在模型设置中启用或切换模型。'
 
 function createConversations() {
   const state = createConversationState()
@@ -54,7 +58,7 @@ function createConversations() {
     get: () => state.drafts[draftKey()] ?? '',
     set: (value: string) => {
       const key = draftKey()
-      if (!(key in state.drafts) && Object.keys(state.drafts).length >= 100) {
+      if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
         state.error = '草稿数量已达上限，请发送或清空已有草稿。'
         return
       }
@@ -63,9 +67,19 @@ function createConversations() {
         draftWorkspaces.set(key, state.workspaceId)
       } else {
         delete state.drafts[key]
-        draftWorkspaces.delete(key)
+        if (!state.draftAttachments[key]?.length) draftWorkspaces.delete(key)
       }
     },
+  })
+  const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
+  const imageInput = computed(
+    () => state.models.find((model) => model.id === state.modelId)?.imageInput === true,
+  )
+  watch(imageInput, (enabled) => {
+    if (!enabled) return
+    // 只清除已失效的图片启用提示，保留其他发送失败及服务错误。
+    if (state.error === IMAGE_INPUT_REQUIRED) state.error = ''
+    if (state.editing?.error === IMAGE_INPUT_REQUIRED) state.editing.error = ''
   })
   const activeRun = computed(
     () =>
@@ -214,6 +228,7 @@ function createConversations() {
     rememberHidden(hiddenConversations, conversationId)
     if (deleted) {
       delete state.drafts[conversationId]
+      delete state.draftAttachments[conversationId]
       draftWorkspaces.delete(conversationId)
     }
     state.conversations = state.conversations.filter((item) => item.id !== conversationId)
@@ -227,6 +242,7 @@ function createConversations() {
       for (const [key, owner] of draftWorkspaces) {
         if (owner === workspaceId) {
           delete state.drafts[key]
+          delete state.draftAttachments[key]
           draftWorkspaces.delete(key)
         }
       }
@@ -861,9 +877,57 @@ function createConversations() {
       }
     }
   }
+  function addAttachments(files: File[], editing = false): void {
+    if (!files.length || state.sending || state.resending) return
+    const edit = editing ? state.editing : null
+    const errorTarget = edit ?? state
+    errorTarget.error = ''
+    if (!imageInput.value) {
+      errorTarget.error = IMAGE_INPUT_REQUIRED
+      return
+    }
+    try {
+      const held = [
+        ...Object.values(state.draftAttachments).flat(),
+        ...(state.editing?.files ?? []),
+      ]
+      if (
+        [...held, ...files].reduce((sum, file) => sum + file.size, 0) >
+        2 * MAX_ATTACHMENT_BATCH_BYTES
+      )
+        throw new Error('所有草稿合计最多暂存 64 MiB，请清空不再使用的附件。')
+      if (edit) {
+        edit.files = addImageFiles(edit.files, files, edit.retainedAttachments.length)
+      } else {
+        const key = draftKey()
+        if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100)
+          throw new Error('草稿数量已达上限，请发送或清空已有草稿。')
+        state.draftAttachments[key] = addImageFiles(draftAttachments.value, files)
+        draftWorkspaces.set(key, state.workspaceId)
+      }
+    } catch (error) {
+      errorTarget.error = message(error)
+    }
+  }
+  function removeAttachment(index: number, editing = false): void {
+    if (state.sending || state.resending) return
+    if (editing) {
+      const edit = state.editing
+      if (!edit) return
+      if (index < edit.retainedAttachments.length) edit.retainedAttachments.splice(index, 1)
+      else edit.files.splice(index - edit.retainedAttachments.length, 1)
+    } else {
+      const key = draftKey()
+      state.draftAttachments[key]?.splice(index, 1)
+      if (!state.draftAttachments[key]?.length) {
+        delete state.draftAttachments[key]
+        if (!state.drafts[key]) draftWorkspaces.delete(key)
+      }
+    }
+  }
   async function send(): Promise<void> {
     if (state.executionSettingsSaving) return
-    if (isCompactCommand(draft.value)) {
+    if (!draftAttachments.value.length && isCompactCommand(draft.value)) {
       await compact(true)
       return
     }
@@ -877,7 +941,8 @@ function createConversations() {
       state.serviceError ||
       state.modelsLoading ||
       state.modelError ||
-      !draft.value.trim() ||
+      (!draft.value.trim() && !draftAttachments.value.length) ||
+      (draftAttachments.value.length > 0 && !imageInput.value) ||
       !state.modelId
     )
       return
@@ -885,6 +950,7 @@ function createConversations() {
     state.error = ''
     const conversationId = state.selectedId,
       text = draft.value,
+      files = draftAttachments.value.slice(),
       token = selection
     const key = draftKey()
     const workspaceId = conversationId ? null : state.workspaceId
@@ -895,10 +961,12 @@ function createConversations() {
           workspaceId,
           text,
           modelId: state.modelId,
+          ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
         }),
       )
-      if (state.drafts[key] === text) {
+      if ((state.drafts[key] ?? '') === text) {
         delete state.drafts[key]
+        delete state.draftAttachments[key]
         draftWorkspaces.delete(key)
       }
       if (token === selection && !disposed) await openConversation(result.conversationId, true)
@@ -944,11 +1012,21 @@ function createConversations() {
       editUnavailable.value ||
       !target ||
       target.id !== messageId ||
-      target.content.some((block) => block.type !== 'text')
+      target.content.some((block) => block.type !== 'text' && block.type !== 'image')
     )
       return
     const text = messageText(target.content)
-    state.editing = { messageId, originalText: text, text, error: '' }
+    state.editing = {
+      messageId,
+      originalText: text,
+      text,
+      error: '',
+      runId: target.runId,
+      files: [],
+      retainedAttachments: target.content.flatMap((block, index) =>
+        block.type === 'image' ? [index] : [],
+      ),
+    }
   }
   function cancelEditing(): void {
     if (!state.resending) state.editing = null
@@ -961,12 +1039,14 @@ function createConversations() {
     if (
       !target ||
       edit.messageId !== target.id ||
+      edit.runId !== target.runId ||
       edit.originalText !== messageText(target.content)
     ) {
       edit.error = '原提问已变化，请取消编辑并重新加载对话后核对。'
       return
     }
-    if (!edit.text.trim() || edit.text.trim().length > MAX_MESSAGE_LENGTH) {
+    const attachmentCount = edit.retainedAttachments.length + edit.files.length
+    if ((!edit.text.trim() && !attachmentCount) || edit.text.trim().length > MAX_MESSAGE_LENGTH) {
       edit.error = '消息不能为空，且不能超过 100000 个字符。'
       return
     }
@@ -976,6 +1056,10 @@ function createConversations() {
       !state.models.some((item) => item.id === state.modelId)
     ) {
       edit.error = '请选择可用模型后重新发送。'
+      return
+    }
+    if (attachmentCount && !imageInput.value) {
+      edit.error = IMAGE_INPUT_REQUIRED
       return
     }
     const token = selection
@@ -988,6 +1072,10 @@ function createConversations() {
           messageId: edit.messageId,
           modelId: state.modelId,
           text: edit.text,
+          ...(target.content.some((block) => block.type === 'image') || edit.files.length
+            ? { expectedRunId: edit.runId, retainedAttachments: edit.retainedAttachments.slice() }
+            : {}),
+          ...(edit.files.length ? { attachments: await attachmentInputs(edit.files.slice()) } : {}),
         }),
       )
       if (!disposed && selection === token && state.selectedId === conversationId) {
@@ -1052,6 +1140,10 @@ function createConversations() {
     initialize,
     state,
     draft,
+    draftAttachments,
+    imageInput,
+    addAttachments,
+    removeAttachment,
     activeRun,
     compactUnavailable,
     compact,

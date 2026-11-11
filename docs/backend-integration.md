@@ -51,7 +51,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 - `shared/models.ts` 校验配置字段、UUIDv7、长度、HTTP/HTTPS 根地址和明确的密钥操作；拒绝 URL 内的账号密码、查询参数、片段及未知输入字段。服务类型选项集中定义在 `PROVIDER_SERVICES`，类型由选项推导；当前仅提供 Chat Completions（`chatcompletions`）。供应商新增默认选中，编辑回填已保存的类型；主进程校验后按所选协议提交。未知已有类型不会被静默改为默认值。后续扩展选项时必须同时落实 Go 服务对应的协议支持。
 - 配置写入互斥，拒绝并发重复操作；失败后释放写入状态。API 返回成功并核对记录标识后才显示已保存；列表加载失败与写入失败分开提示，不自动重发写请求。
-- `model.update` 是完整替换。适配层保存基础字段前读取最新模型，保留后端已有的 `max_output_tokens`、`capabilities`、`model_type` 和 `reasoning_levels`，避免未编辑的元数据被清空。`contextWindow` 映射 Go 的 `context_window`，可在模型编辑表单中填写 1 至 1000000000 的整数；新建不预填容量，旧配置缺失时明确补充，界面不猜测厂商容量。未提交该字段的内部调用保留后端原值。
+- `model.update` 是完整替换。适配层保存基础字段前读取最新模型，保留后端已有的 `max_output_tokens`、`capabilities` 和 `reasoning_levels`，避免未编辑的元数据被清空。模型配置的 `inputTypes` 数组回填 `model_type` 中的 `text`、`image`；表单固定选择文本，图片可选。IPC 拒绝缺少文本、重复项和未提供的类型选项；保存时合并最新模型中未展示的其他类型，不改写 `capabilities.image_input`。未提交 `inputTypes` 的内部调用保留原有类型，读取旧配置时不自动改写数据库。对话概览的 `imageInput` 仍从 `model_type` 是否包含 `image` 派生。`contextWindow` 映射 Go 的 `context_window`，可在模型编辑表单中填写 1 至 1000000000 的整数；新建不预填容量，旧配置缺失时明确补充，界面不猜测厂商容量。未提交该字段的内部调用保留后端原值。
 - 供应商编辑留空密钥时不发送 `api_key` 字段；只有明确替换或清除时才传入值。列表只返回 `hasApiKey` 状态，客户端不请求或回显已有密钥。
 - 凭据存储仍由 Go 服务持有。随附服务将 API Key 以 AES-256-GCM 密文保存在本地 SQLite，主密钥由 macOS 钥匙串、Windows Credential Manager 或 Linux Secret Service 持有；客户端不管理或导出主密钥。系统凭据不可用时明确失败，不回退明文。客户端不把密钥写入 localStorage、sessionStorage、查询快照或日志；关闭编辑弹窗时销毁表单的临时凭据状态。
 - 客户端不使用模型 SDK、厂商预设或自动模型发现。实际模型网络请求由 Go 执行。
@@ -118,6 +118,10 @@ Windows 已接通 AppContainer、限制令牌与 Job 的平台边界：受限模
 提示的定义、注入与预算处理由后端维护，见后端 `docs/design/conversations.md` 的工具与审批实现约定。
 
 API Key 的旧明文在 Go 启动时迁移，结构版本为 4；失败阻止业务启动并保留可重试状态。密文携带主密钥标识，同一系统用户移动目录仍可读取，跨机器复制数据库不会携带系统主密钥。旧备份和系统快照不由迁移擦除。详细迁移、恢复及平台要求由后端 `docs/storage.md` 维护。配置错误 `1012` / `credentials_unavailable` 通过现有错误通道展示，不自动重试写操作。
+
+## 会话图片附件
+
+Electron 从用户选择、粘贴和拖放的文件取得有界字节，主进程在隔离的附件暂存目录生成临时文件。`conversation.send` 与 `conversation.resend` 通过 stdio 传入临时路径，Go 保存原图到 `<data-dir>/attachments/`。主进程完成请求后清理暂存文件，取得后端实例锁后回收上次异常退出的暂存内容。已受理消息使用 `attachment_ref`。编辑重发提交原执行标识和保留图片索引。历史预览通过消息索引调用 `conversation.attachment_preview`，界面无需读取任意本地路径。草稿图片数量通过 `draft_images` 计入上下文估算。
 
 ## 联调与验证边界
 
