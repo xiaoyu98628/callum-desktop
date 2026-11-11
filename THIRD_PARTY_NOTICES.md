@@ -1,5 +1,13 @@
 # 第三方源码说明
 
+## 随附 Python 与 Node.js
+
+`resources/runtimes/archives/` 保存 Astral python-build-standalone 的完整 Python 发行归档及 Node.js 官方完整发行归档。固定版本、目标架构、上游地址与 SHA-256 见 `resources/runtimes/sources.json`。
+
+上游归档内的许可证和第三方声明原样保留，并随离线解压结果一同提供；其许可范围以相应归档内容为准。这些资源独立于 Electron 内部的 Node.js。资源布局和准备入口见 [桌面端开发](docs/development.md#内置-pythonnode-资源)。
+
+## shadcn-vue 组件源码
+
 `src/renderer/components/ui/button/` 的组件源码来自 [shadcn-vue](https://github.com/unovue/shadcn-vue)，本项目对默认属性及格式作了调整。其许可证如下；该许可证仅适用于对应第三方源码，不替本仓库其他代码指定许可证。
 
 ```text

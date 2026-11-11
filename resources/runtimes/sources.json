@@ -1,0 +1,89 @@
+{
+  "format_version": 1,
+  "targets": [
+    {
+      "directory": "darwin-arm64",
+      "platform": "darwin",
+      "arch": "arm64",
+      "python": {
+        "version": "3.14.10",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "f15ec3d15460dd66c2eb88639b152cd9040e7d1ece11e38bf89e8f53f0171e02",
+        "archive": "cpython-3.14.10+20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "prefix": "python",
+        "entry": "bin/python3"
+      },
+      "node": {
+        "version": "26.13.0",
+        "url": "https://nodejs.org/download/release/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+        "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6",
+        "archive": "node-v26.13.0-darwin-arm64.tar.gz",
+        "prefix": "node-v26.13.0-darwin-arm64",
+        "entry": "bin/node"
+      }
+    },
+    {
+      "directory": "darwin-x64",
+      "platform": "darwin",
+      "arch": "amd64",
+      "python": {
+        "version": "3.14.10",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "85f8e54798e8e6aa58d2253f013d815c5616343cc0d15cbea882fca78bdfeae2",
+        "archive": "cpython-3.14.10+20261110-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "prefix": "python",
+        "entry": "bin/python3"
+      },
+      "node": {
+        "version": "26.13.0",
+        "url": "https://nodejs.org/download/release/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+        "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e",
+        "archive": "node-v26.13.0-darwin-x64.tar.gz",
+        "prefix": "node-v26.13.0-darwin-x64",
+        "entry": "bin/node"
+      }
+    },
+    {
+      "directory": "win32-x64",
+      "platform": "windows",
+      "arch": "amd64",
+      "python": {
+        "version": "3.14.10",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "32b6cf90a03e2bc15fda8d2ab7ff78c4870f138887d612932650ce764efaab8f",
+        "archive": "cpython-3.14.10+20261110-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "prefix": "python",
+        "entry": "python.exe"
+      },
+      "node": {
+        "version": "26.13.0",
+        "url": "https://nodejs.org/download/release/v26.13.0/node-v26.13.0-win-x64.zip",
+        "sha256": "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a",
+        "archive": "node-v26.13.0-win-x64.zip",
+        "prefix": "node-v26.13.0-win-x64",
+        "entry": "node.exe"
+      }
+    },
+    {
+      "directory": "win32-arm64",
+      "platform": "windows",
+      "arch": "arm64",
+      "python": {
+        "version": "3.14.10",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "0fc229d477a86e9797d4732b03a5bbc02c503cb81515c986b723038a12c520df",
+        "archive": "cpython-3.14.10+20261110-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "prefix": "python",
+        "entry": "python.exe"
+      },
+      "node": {
+        "version": "26.13.0",
+        "url": "https://nodejs.org/download/release/v26.13.0/node-v26.13.0-win-arm64.zip",
+        "sha256": "a9427139595156ef484e1fb08957676e09d4232368dd1743a2a9f93f3d241b14",
+        "archive": "node-v26.13.0-win-arm64.zip",
+        "prefix": "node-v26.13.0-win-arm64",
+        "entry": "node.exe"
+      }
+    }
+  ]
+}

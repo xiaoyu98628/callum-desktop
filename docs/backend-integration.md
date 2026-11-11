@@ -18,7 +18,8 @@
 ## 程序与数据路径
 
 - 开发与本地构建预览从应用构建位置解析仓库 `resources/`，发布程序以 `process.resourcesPath` 为资源根目录。
-- macOS arm64 选择 `backend/darwin-arm64/callum`；Windows x64 选择 `backend/win32-ia32/callum.exe`，通过 WOW64 使用随附的 x86 服务。程序位于 ASAR 外，macOS 保留执行权限。其他平台与架构明确返回缺少适用程序。
+- macOS x64/ARM64 分别选择 `backend/darwin-x64/callum`、`backend/darwin-arm64/callum`；Windows x64/ARM64 分别选择 `backend/win32-x64/callum.exe`、`backend/win32-arm64/callum.exe`。服务与客户端架构一致。程序位于 ASAR 外，macOS 保留执行权限，其他目标明确拒绝。
+- 四个平台的 Python/Node 资源选择 `runtimes/unpacked/<平台>/`，开发构建前从仓库 `runtimes/archives/` 离线生成。主进程以独立的 `--runtime-dir` 启动参数传入绝对目录，Go 读取清单并校验全部文件；版本固定为 Python 3.14.10、Node 26.13.0。运行时资源及私有数据目录互不包含，程序执行由 Go 命令工具持有。准备流程见 [桌面端开发](development.md#内置-pythonnode-资源)。
 - 安装包资源映射尚未配置；后续配置须按上述目录复制目标资源，约定见 [资源约定](../resources/backend/README.md)。Windows 原生联调仍待 Windows 环境验证。
 - `backend/data-directory.ts` 统一计算 Go 数据目录：默认由系统家目录得到 `~/.callum` 的绝对路径，开发、预览和发布一致。显式设置 `CALLUM_USER_DATA_DIR` 时优先使用 `<隔离用户数据目录>/backend`，测试不会访问真实家目录。`ChatService` 接收已确定的绝对数据路径，不再自行附加 `backend`，通过 `--data-dir` 传给服务。
 - 新服务数据目录权限为 `0700`，不擅自改变已有权限。数据库、配置、模型凭据及实例锁均由 Go 管理，Electron 不直接读取或修改 SQLite。Electron 缓存和外观偏好仍使用原系统应用数据目录。
@@ -29,7 +30,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 ## stdio 传输与连接生命周期
 
-`rpc-client.ts` 无 Shell 启动固定程序，stdout 只作协议通道。持续消费 stderr，握手前最多保留 16 KiB 诊断，仅从结构化启动错误中识别已验证的数据目录占用原因并转换为固定提示；未知诊断只给出就绪前退出信息，不转发原文。握手成功、失败或关闭时清理缓冲，运行后只消费，避免对话与凭据进入界面或客户端日志。客户端仅在应用边界记录脱敏故障，当前不写入客户端文件日志。
+`rpc-client.ts` 无 Shell 启动固定程序，stdout 只作协议通道。持续消费 stderr，握手前最多保留 16 KiB 诊断，从结构化启动错误中识别数据目录占用和内置运行时校验失败并转换为固定提示；未知诊断只给出就绪前退出信息，不转发原文。握手成功、失败或关闭时清理缓冲，运行后只消费，避免对话与凭据进入界面或客户端日志。客户端仅在应用边界记录脱敏故障，当前不写入客户端文件日志。
 
 - 逐行 UTF-8 JSON-RPC 2.0，以字符串请求 ID 关联响应；使用有界字节缓冲处理分片、粘包和 UTF-8 边界，拒绝损坏数据。
 - 就绪通知验证服务名、协议版本 `1` 和当前通信上限；启动等待 15 秒。

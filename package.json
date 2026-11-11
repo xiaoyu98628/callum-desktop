@@ -19,7 +19,11 @@
     "format:check": "prettier --check .",
     "test": "node --test tests/unit/*.test.ts",
     "test:e2e": "npm run build && playwright test",
-    "check": "npm run typecheck && npm run lint && npm test && npm run format:check"
+    "check": "npm run typecheck && npm run lint && npm test && npm run format:check",
+    "prepare:runtimes": "node scripts/prepare-runtimes.ts",
+    "predev": "npm run prepare:runtimes",
+    "prebuild": "npm run prepare:runtimes",
+    "pretest": "npm run prepare:runtimes"
   },
   "dependencies": {
     "@lucide/vue": "1.67.0",

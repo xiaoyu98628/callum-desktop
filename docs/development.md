@@ -5,8 +5,10 @@
 ## 环境与启动
 
 - Node.js **26.13.0**，由 nvm 管理；npm **11.20.0**。
-- 随附 Go 程序覆盖 macOS Apple Silicon（darwin-arm64）和 Windows x86（win32-ia32）；Windows x64 客户端通过 WOW64 使用 x86 服务。macOS 桌面对话已有验证，Windows 原生启动与桌面联调仍待 Windows 环境验收；其他平台尚无配套服务程序。
+- 随附 Go 程序及 Python/Node 归档覆盖 macOS Intel x64、Apple Silicon ARM64，以及 Windows x64、ARM64；服务与客户端使用相同架构。macOS ARM64 已有实际调用验证，其他目标原生运行及桌面联调仍需对应环境验收。
 - 安装依赖需要访问 npm 注册表；首次启动或主动安装 Electron 二进制时需要访问其下载服务。
+
+`npm run dev`、`npm run build` 和 `npm test` 的前置步骤使用仓库内归档离线准备当前平台运行时。资源布局和维护步骤见 [内置 Python/Node 资源](#内置-pythonnode-资源)。
 
 ```bash
 nvm use
@@ -31,8 +33,16 @@ Node.js 版本由 `.nvmrc` 和 `package.json` 约束。Electron 内置的 Node.j
 ```text
 resources/
   backend/
-    darwin-arm64/callum          随附的 macOS arm64 Go 服务程序
-    win32-ia32/callum.exe        Windows x64 客户端使用的 x86 Go 服务程序
+    darwin-arm64/callum          macOS Apple Silicon 服务
+    darwin-x64/callum            macOS Intel 服务
+    win32-x64/callum.exe         Windows x64 服务
+    win32-arm64/callum.exe       Windows ARM64 服务
+  runtimes/
+    sources.json                固定版本、来源和归档校验值
+    archives/                   四平台完整上游归档（入 Git）
+    unpacked/                   离线生成的完整运行时及清单（不入 Git）
+scripts/
+  prepare-runtimes.ts            调用随附服务离线准备资源
 src/
   main/
     index.ts                    应用入口和启动失败处理
@@ -72,26 +82,62 @@ docs/
 
 ## 开发与检查命令
 
-| 命令                   | 用途                                    |
-| ---------------------- | --------------------------------------- |
-| `npm run dev`          | 开发模式，启动 Electron 和热更新        |
-| `npm run typecheck`    | 分别检查主进程、测试和 Vue 界面         |
-| `npm run lint`         | 代码规范及跨进程导入边界检查            |
-| `npm test`             | 使用 Node.js 内置测试运行器执行单元测试 |
-| `npm run format:check` | 检查格式，不修改文件                    |
-| `npm run format`       | 格式化文件，会修改源码和文档            |
-| `npm run check`        | 类型、规范、单元测试和格式检查          |
-| `npm run build`        | 类型检查并构建三个进程的产物            |
-| `npm start`            | 用 Electron 打开已有构建产物            |
-| `npm run test:e2e`     | 构建并在真实 Electron 中验证桌面行为    |
+| 命令                       | 用途                                    |
+| -------------------------- | --------------------------------------- |
+| `npm run prepare:runtimes` | 从仓库归档离线准备当前平台运行时        |
+| `npm run dev`              | 开发模式，启动 Electron 和热更新        |
+| `npm run typecheck`        | 分别检查主进程、测试和 Vue 界面         |
+| `npm run lint`             | 代码规范及跨进程导入边界检查            |
+| `npm test`                 | 使用 Node.js 内置测试运行器执行单元测试 |
+| `npm run format:check`     | 检查格式，不修改文件                    |
+| `npm run format`           | 格式化文件，会修改源码和文档            |
+| `npm run check`            | 类型、规范、单元测试和格式检查          |
+| `npm run build`            | 类型检查并构建三个进程的产物            |
+| `npm start`                | 用 Electron 打开已有构建产物            |
+| `npm run test:e2e`         | 构建并在真实 Electron 中验证桌面行为    |
 
 生产构建输出到 `out/main`、`out/preload`、`out/renderer`。`npm run build` 不生成安装包；安装格式、签名和分发方式在发布需求确定后配置。
 
-Windows 开发环境使用 Node.js 26.13.0 x64，在 PowerShell 中执行本页的 `npm ci`、`npm run dev`，或执行 `npm run build` 后运行 `npm start`。Go 程序的平台选择与路径见 [Go 服务接入](backend-integration.md#程序与数据路径)，程序来源、哈希及安装资源映射见 [服务程序资源](../resources/backend/README.md)。Windows ARM64 的资源与运行验证尚未落实。
+Windows 开发环境使用 Node.js 26.13.0 x64，在 PowerShell 中执行本页的 `npm ci`、`npm run dev`，或执行 `npm run build` 后运行 `npm start`。Go 程序的平台选择与路径见 [Go 服务接入](backend-integration.md#程序与数据路径)，程序来源、哈希及安装资源映射见 [服务程序资源](../resources/backend/README.md)。Windows x64 与 ARM64 均使用对应原生服务；原生运行仍需 Windows 环境验收。
 
 Electron 测试直接使用项目中的 Electron，不需要另外下载 Playwright 浏览器。测试会创建独立临时用户目录，并在退出后清理；截图和失败产物保存在忽略的 `.artifacts/` 下。
 
 Electron 端到端测试默认设置 `CALLUM_TEST_BACKGROUND=1`，在隔离数据目录中保持窗口隐藏，不主动聚焦；macOS 同时隐藏测试应用的 Dock 图标。该开关只在非打包应用且显式提供 `CALLUM_USER_DATA_DIR` 时生效。后台测试禁用渲染进程后台节流以验证流式更新，不更改正常启动行为。
+
+## 内置 Python/Node 资源
+
+四个平台 `darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64` 均固定 Python 3.14.10 与 Node 26.13.0。Python 使用 Astral `python-build-standalone` 的 `20261110 install_only_stripped`，Node 使用官方完整发行包；标准库、配套文件、许可证均保留。
+
+`resources/runtimes/archives/` 中的八份完整归档直接纳入普通 Git，单个归档小于 100 MiB；不使用 Git LFS。`sources.json` 记录版本、架构、上游来源、归档文件名、SHA-256 和入口。归档不会因克隆时的换行转换而改变。只有可重新生成的 `unpacked/` 被 Git 忽略；格式检查与 ESLint 忽略归档和上游解压内容。
+
+正常开发无需 Go 源码或本机 Go。以下命令通过当前平台随附 `callum prepare-runtimes` 校验本地归档并解压：
+
+```sh
+npm run prepare:runtimes
+npm run prepare:runtimes -- --all
+```
+
+第一条只准备当前平台，第二条准备全部四个平台。`npm run dev`、`npm run build`、`npm test` 均自动执行当前平台准备。归档缺失或校验失败直接报错，不访问 GitHub 或 Node 下载地址。随附服务的准备子命令只允许离线操作，不打开数据库或启动 stdio 服务。该离线约定仅针对内置解释器；`npm ci` 和首次获取 Electron 仍需各自的下载服务。
+
+准备结果位于 `resources/runtimes/unpacked/<平台>/`，包含 Python、Node 及完整性清单 `manifest.json`。解压在隔离暂存目录进行，拒绝越界路径、硬链接和特殊文件，校验全部成功后才激活平台目录。每次准备都会验证归档及已有解压内容；重复执行不替换有效目录，损坏或版本不符拒绝覆盖。更新资源时应在新输出目录完成核验，并在服务关闭后替换生成目录，不能修改共享运行时安装第三方依赖。
+
+维护者需要升级归档时，从 Go 服务源码仓库运行：
+
+```sh
+go run -mod=readonly ./cmd/prepare-runtimes \
+  --sources /absolute/path/callum-desktop/resources/runtimes/sources.json \
+  --output /absolute/path/new-runtime-output \
+  --cache /absolute/path/callum-desktop/resources/runtimes/archives \
+  --download
+```
+
+只有此独立维护命令显式传入 `--download` 才允许获取缺失归档；正常开发命令和应用启动不使用该选项。新归档及来源清单应一同评审入库，已有归档校验失败不会被自动覆盖。
+
+主进程将 `runtimes/unpacked/<平台>/` 的绝对路径经 `--runtime-dir` 传入同架构 Go 服务。启动及执行时继续校验资源，执行、审批、沙箱、输出、取消和进程回收由 Go 持有。终端用户使用已随附的解释器，服务运行期不下载、不解压、不升级资源；设置中不提供多版本切换。
+
+`npm run build` 不生成安装包。后续打包必须将目标 `backend/<平台>/` 与已经解压的 `runtimes/unpacked/<平台>/` 完整放入 ASAR 外同名目录；归档入库不等于已验证安装包复制。
+
+macOS ARM64 的真实解释器及完整客户端调用链已验证；macOS Intel、Windows x64/ARM64 的资源校验与 Go 交叉构建不能替代对应设备的原生运行验收。
 
 ## 数据目录与通信边界
 

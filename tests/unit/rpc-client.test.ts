@@ -98,6 +98,15 @@ for (const [name, diagnostic, expected] of [
     /在就绪前退出/,
   ],
   [
+    '内置解释器损坏',
+    JSON.stringify({
+      level: 'ERROR',
+      module: 'main',
+      error: '加载内置运行时: secret-private-path',
+    }),
+    /内置 Python\/Node 资源校验失败/,
+  ],
+  [
     '诊断容量边界',
     'x'.repeat(16 * 1024) +
       '\n' +

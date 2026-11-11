@@ -61,6 +61,7 @@ import {
   contextUsageFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcConnectionError, RpcError } from './rpc-client.ts'
+import { resolveResourceTarget, resolveRuntimeDirectory } from './runtime-assets.ts'
 import { ModelCatalog } from './model-catalog.ts'
 import {
   boundSteps,
@@ -95,6 +96,7 @@ function startupError(error: unknown, phase: string): string {
     if (code === 'EACCES' || code === 'EPERM') return '没有执行对话服务程序的权限，请检查文件权限。'
     return '无法访问对话服务程序，请检查客户端服务资源。'
   }
+  if (phase === 'runtime') return '未找到完整的内置 Python/Node 资源，请重新准备客户端运行时资源。'
   if (phase === 'directory') {
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS')
       return '服务数据目录不可写，请检查目录权限。'
@@ -165,13 +167,18 @@ export class ChatService {
       const executable = resolveBackendExecutable(resourceRoot)
       phase = 'executable'
       await access(executable, constants.X_OK)
+      phase = 'runtime'
+      const runtimeDirectory = resolveRuntimeDirectory(resourceRoot)
+      const manifest = await lstat(join(runtimeDirectory, 'manifest.json'))
+      if (!manifest.isFile() || manifest.isSymbolicLink())
+        throw new Error('内置运行时清单必须是普通文件')
       phase = 'directory'
       await mkdir(dataDirectory, { recursive: true, mode: 0o700 })
       if (this.closing) return
       phase = 'handshake'
       const client = new RpcClient(
         executable,
-        ['--data-dir', dataDirectory],
+        ['--data-dir', dataDirectory, '--runtime-dir', runtimeDirectory],
         (method, params) => this.receive(method, params),
         (error) => {
           if (this.closing || this.client !== client) return
@@ -1111,17 +1118,19 @@ export class ChatService {
   }
 }
 
-/** Windows x64 客户端使用随附的 x86 服务；资源路径不依赖当前工作目录。 */
+/** 服务程序与客户端采用相同架构，资源路径不依赖当前工作目录。 */
 export function resolveBackendExecutable(
   resourceRoot: string,
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,
 ): string {
-  if (platform === 'darwin' && architecture === 'arm64')
-    return join(resourceRoot, 'backend', 'darwin-arm64', 'callum')
-  if (platform === 'win32' && architecture === 'x64')
-    return join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe')
-  throw new Error(`当前没有适用于 ${platform}-${architecture} 的服务程序。`)
+  if (!isAbsolute(resourceRoot)) throw new Error('服务资源根目录必须是绝对路径')
+  return join(
+    resourceRoot,
+    'backend',
+    resolveResourceTarget(platform, architecture),
+    platform === 'win32' ? 'callum.exe' : 'callum',
+  )
 }
 export function publicChatError(error: unknown): string {
   if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')

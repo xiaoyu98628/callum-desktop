@@ -25,6 +25,8 @@ export default defineConfig(
     'playwright-report/**',
     '.artifacts/**',
     '.idea/**',
+    'resources/runtimes/archives/**',
+    'resources/runtimes/unpacked/**',
   ]),
   js.configs.recommended,
   ts.configs.recommended,
@@ -35,7 +37,13 @@ export default defineConfig(
     rules: { '@typescript-eslint/consistent-type-imports': 'error' },
   },
   {
-    files: ['*.{js,ts}', 'src/main/**/*.ts', 'src/preload/**/*.ts', 'tests/**/*.ts'],
+    files: [
+      '*.{js,ts}',
+      'scripts/**/*.ts',
+      'src/main/**/*.ts',
+      'src/preload/**/*.ts',
+      'tests/**/*.ts',
+    ],
     languageOptions: { globals: globals.node },
   },
   {

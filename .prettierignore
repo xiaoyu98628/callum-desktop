@@ -7,3 +7,5 @@ playwright-report
 .artifacts
 .idea
 package-lock.json
+resources/runtimes/archives
+resources/runtimes/unpacked

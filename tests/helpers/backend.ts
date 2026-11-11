@@ -1,19 +1,51 @@
-import { join, relative, isAbsolute } from 'node:path'
+import { dirname, join, relative, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID, createHash } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
+import { realpath, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveBackendExecutable } from '../../src/main/backend/chat-service.ts'
 import { RpcClient } from '../../src/main/backend/rpc-client.ts'
 import { array, id, record } from '../../src/shared/chat.ts'
+import { resolveRuntimeDirectory } from '../../src/main/backend/runtime-assets.ts'
 
 export const resourceRoot = fileURLToPath(new URL('../../resources/', import.meta.url))
 export const supportedBackend =
-  (process.platform === 'darwin' && process.arch === 'arm64') ||
-  (process.platform === 'win32' && process.arch === 'x64')
+  (process.platform === 'darwin' || process.platform === 'win32') &&
+  (process.arch === 'arm64' || process.arch === 'x64')
 export const backendExecutable = supportedBackend ? resolveBackendExecutable(resourceRoot) : ''
+
+/** 仅用于启动与失败重试测试；受控文件不用于验证解释器执行能力。 */
+export async function createRuntimeFixture(resources: string): Promise<string> {
+  const root = resolveRuntimeDirectory(resources)
+  const python = process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
+  const node = process.platform === 'win32' ? 'node/node.exe' : 'node/bin/node'
+  const data = Buffer.from('controlled-startup-fixture\n')
+  const files = []
+  for (const name of [node, python]) {
+    const full = join(root, name)
+    await mkdir(dirname(full), { recursive: true })
+    await writeFile(full, data, { mode: 0o755 })
+    files.push({
+      path: name,
+      size: data.length,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    })
+  }
+  await writeFile(
+    join(root, 'manifest.json'),
+    JSON.stringify({
+      format_version: 1,
+      platform: process.platform === 'win32' ? 'windows' : 'darwin',
+      arch: process.arch === 'x64' ? 'amd64' : 'arm64',
+      python: { version: '3.14.10', path: python },
+      node: { version: '26.13.0', path: node },
+      files,
+    }),
+  )
+  return root
+}
 
 /** 只定位指定隔离配置下的直接子进程，拒绝终止其他测试或日常服务。 */
 export async function findTestBackend(parentId: number, profile: string): Promise<number> {
@@ -40,7 +72,7 @@ export async function findTestBackend(parentId: number, profile: string): Promis
           commandLine.toLowerCase().startsWith(`${path.toLowerCase()} --data-dir `),
         ) &&
         [dataDirectory, `"${dataDirectory}"`].some((path) =>
-          commandLine.endsWith(` --data-dir ${path}`),
+          commandLine.includes(` --data-dir ${path} --runtime-dir `),
         )
       )
     })

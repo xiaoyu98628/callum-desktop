@@ -117,6 +117,11 @@ export class RpcClient {
           continue
         if (value.error.split(/\r?\n/).includes('该数据目录已有运行中的 Callum 服务'))
           return '该数据目录已有运行中的 Callum 服务，请关闭占用该目录的服务后重试。'
+        if (
+          value.error.startsWith('加载内置运行时:') ||
+          value.error === '运行时资源与私有数据目录不得重叠'
+        )
+          return '内置 Python/Node 资源校验失败，请重新准备客户端运行时资源。'
       } catch {
         /* 非结构化或超出边界的诊断不用于生成对外原因。 */
       }
