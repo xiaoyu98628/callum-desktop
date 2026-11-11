@@ -14,20 +14,20 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-两平台程序均由包含内置 Python/Node 资源接入及只读保护的同一后端工作区构建。源码指纹 SHA-256 为 `c1bf456da2b766f99c09507bcf0127bd1a657b3208084a018fd4131075c8aa62`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含内置 Python/Node 资源接入及只读保护的同一后端工作区构建。源码指纹 SHA-256 为 `8e0e64747dc59a33157a2659949842f05fdb566ea0506db1b3de971f1a4fa975`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `2caa879f05e3be7c4b64d820d6588412fd9f6674787c5bd7b658a30749ba58cb` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `a79df0b0a91c9e463d1a50127437254e77895f03940b89e7bfede1324622a612` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `9399eed4049990e21912c4f9b31f5d6af73f9c92c1739461a87857d7e0d5837f` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `d855e19808e913c11e76f390411e662192a1dbdaf99cc5b6145553992d2f4aff` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `660a1dc43b9dc2aec040a67619ddda265f3c6af94d588192384e0c19ecfa54fb` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `f9f21acb4d9b937e5ea257ca30aa7f5519f6db81e180e6c851ad5fe694a5817e` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `ba490be8c84ce984041e51a9f052c86904cad4e231397167c3b5fe7f45c1b261` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `0ddadeb891118e53aae14144b3ae20591eced88e36048a439eaa92a6305508b2` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
 ## 随附程序兼容说明
 
-本次随附服务接受 `--runtime-dir`。客户端传入 `runtimes/unpacked/<平台>/`，固定 Python 3.14.10 与 Node 26.13.0；资源清单及全部内容由 Go 校验，命令执行继续使用既有审批和沙箱。此功能不变更数据库结构，也不提供运行期下载或版本切换。完整上游归档保存在仓库 `resources/runtimes/archives/`，开发、构建和测试前由随附程序的 `prepare-runtimes` 子命令严格离线解压，不依赖 Go 源码或本机 Go；该子命令不打开业务数据库。来源和准备步骤见 [运行时资源准备](../../docs/development.md#内置-pythonnode-资源)。
+本次随附服务接受 `--runtime-dir`。客户端传入 `runtimes/unpacked/<平台>/`，固定 Python 3.14.10 与 Node 26.13.0；资源清单及全部内容由 Go 校验，命令执行继续使用既有审批和沙箱。内置运行时的 `run_command` 定义版本为 `6`：模型每轮收到直接调用 `python3`/`node` 的示例及实际内置入口，不必由用户重复提醒；仅在确需 Shell 语法时使用非登录 Shell 与内置绝对路径。此功能不变更数据库结构，也不提供运行期下载或版本切换。完整上游归档保存在仓库 `resources/runtimes/archives/`，开发、构建和测试前由随附程序的 `prepare-runtimes` 子命令严格离线解压，不依赖 Go 源码或本机 Go；该子命令不打开业务数据库。来源和准备步骤见 [运行时资源准备](../../docs/development.md#内置-pythonnode-资源)。
 
 当前随附程序使用数据库结构版本 `4`。版本 `1`、`2` 和 `3` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
 
@@ -41,7 +41,7 @@ resources/backend/
 | 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                       |
 | 协议接口     | 消息历史统一使用 `conversation.history`；`conversation.messages` 已移除并返回 `-32601`，现有事件字段及步骤的 `context_message`、`reasoning`、`operation` 保持原有格式    |
 
-两平台程序支持托管图片、保留原图重发、按消息索引预览和草稿图片用量估算。会话图片保存在数据目录的 `attachments/` 下。
+四平台程序支持托管图片、保留原图重发、按消息索引预览和草稿图片用量估算。会话图片保存在数据目录的 `attachments/` 下。
 
 图片输入由用户选择的 `models.model_type` 包含 `image` 启用，`models.capabilities.image_input` 只记录模型拥有的能力；未选中图片类型时不启用上传与发送。客户端“输入类型”多选组固定保留文本，图片可选，保存时保留能力对象和未展示的其他类型。表结构版本保持 `4`，启动时不自动改写既有模型选择。
 

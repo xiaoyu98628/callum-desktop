@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, mkdir, copyFile, chmod, writeFile, rm } from 'node:fs/promises'
+import {
+  mkdtemp,
+  mkdir,
+  copyFile,
+  chmod,
+  readFile,
+  realpath,
+  writeFile,
+  rm,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createServer } from 'node:http'
@@ -34,16 +43,28 @@ test('解释器资源按四个平台的匹配架构选择离线解压目录', ()
 })
 
 test(
-  '客户端传入的资源目录贯通模型工具、Go 沙箱与真实 Python/Node',
+  '模型每轮收到内置解释器入口和直接调用示例，真实 Python/Node 沿 Go 沙箱执行',
   { skip: !supportedBackend },
   async () => {
-    const profile = await mkdtemp(join(tmpdir(), 'callum-bundled-runtime-'))
     const results: string[] = []
+    const instructions: string[] = []
+    const runtimeRoot = await realpath(resolveRuntimeDirectory(resourceRoot))
+    const manifest = record(JSON.parse(await readFile(join(runtimeRoot, 'manifest.json'), 'utf8')))
+    const entries = [record(manifest.python), record(manifest.node)].map((entry) =>
+      join(runtimeRoot, String(entry.path)),
+    )
+    const profile = await mkdtemp(join(tmpdir(), 'callum-bundled-runtime-'))
     const upstream = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = []
         for await (const chunk of request) chunks.push(Buffer.from(chunk))
         const input = record(JSON.parse(Buffer.concat(chunks).toString()))
+        if (Array.isArray(input.tools) && input.tools.length > 0) {
+          const commandTool = array(input.tools, record)
+            .map((tool) => record(tool.function))
+            .find((tool) => tool.name === 'run_command')
+          instructions.push(String(commandTool?.description ?? ''))
+        }
         const messages = array(input.messages, record)
         const last = messages.at(-1)
         let message: Record<string, unknown> = { role: 'assistant', content: '运行时验证' }
@@ -71,7 +92,7 @@ test(
                   arguments: JSON.stringify({
                     command: python
                       ? [
-                          'python',
+                          'python3',
                           '-c',
                           'import sys; assert "runtimes" in sys.executable; print(sys.version.split()[0])',
                         ]
@@ -136,6 +157,12 @@ test(
         }
       }
       assert.equal(results.length, 2)
+      assert.ok(instructions.length >= 4, '两次执行的工具调用前后均应携带调用指引')
+      for (const description of instructions) {
+        for (const entry of entries) assert.ok(description.includes(JSON.stringify(entry)))
+        assert.ok(description.includes('["python3","-c","print(1)"]'))
+        assert.ok(description.includes('["node","-e","console.log(1)"]'))
+      }
       assert.match(results[0] ?? '', /3\.14\.10/)
       assert.match(results[1] ?? '', /v26\.13\.0/)
       for (const result of results) {
