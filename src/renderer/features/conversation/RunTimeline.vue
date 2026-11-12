@@ -3,17 +3,18 @@ import { parseApprovalReview, record } from '@shared/chat'
 import { computed, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue'
 import {
   ChevronDownIcon,
-  FileTextIcon,
+  BookOpenIcon,
   FolderOpenIcon,
+  LoaderCircleIcon,
   PencilIcon,
   SearchIcon,
-  TerminalIcon,
+  SquareTerminalIcon,
 } from '@lucide/vue'
 import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
 import {
   STEP_PAGE_SIZE,
   commandStepInput,
-  stepLabel,
+  toolStepSummary,
   stepParameters,
   stepResult,
 } from '@shared/steps'
@@ -82,6 +83,43 @@ const currentGroupId = computed(() => {
     )
   return currentOperationGroup(items.value, latest)
 })
+const now = ref(Date.now())
+const summaries = computed(
+  () =>
+    new Map(
+      rows.value.map((step) => [
+        step.id,
+        toolStepSummary(step, now.value, props.connected, !!step.targetLabel),
+      ]),
+    ),
+)
+const ticking = computed(
+  () =>
+    showContent.value &&
+    props.active &&
+    props.connected &&
+    rows.value.some(
+      (step) => step.name === 'run_command' && step.status === 'running' && step.startedAt !== null,
+    ),
+)
+let clock: ReturnType<typeof setInterval> | undefined
+function stopClock(): void {
+  clearInterval(clock)
+  clock = undefined
+}
+watch(
+  ticking,
+  (value) => {
+    stopClock()
+    now.value = Date.now()
+    // 一轮过程共用一个计时器，断连、收起、终态及卸载时释放。
+    if (value)
+      clock = setInterval(() => {
+        now.value = Date.now()
+      }, 1000)
+  },
+  { immediate: true },
+)
 const live = computed(() =>
   props.snapshots.find(
     (step) =>
@@ -104,15 +142,11 @@ const savedResult = computed(() => stepResult(detail.value?.value.output ?? ''))
 const commandInput = computed(() =>
   commandStepInput(detail.value?.value.input ?? live.value?.input ?? ''),
 )
-const completedActionLabels = new Map([
-  ['run_command', '已运行'],
-  ['read_file', '已读取'],
-  ['search_text', '已搜索'],
-])
-function operationLabel(step: TimelineStep): string {
-  if (step.status === 'completed' && step.targetLabel)
-    return completedActionLabels.get(step.name) ?? stepLabel(step)
-  return stepLabel(step)
+function summary(step: TimelineStep): ReturnType<typeof toolStepSummary> {
+  return (
+    summaries.value.get(step.id) ??
+    toolStepSummary(step, now.value, props.connected, !!step.targetLabel)
+  )
 }
 let records: TimelineWindow | undefined
 let generation = 0,
@@ -125,9 +159,7 @@ let browsingHistory = false
 let navigationRoot: HTMLElement | null = null
 let edgeObserver: IntersectionObserver | undefined
 let sizeObserver: ResizeObserver | undefined
-let nearStart = false,
-  nearEnd = false,
-  userNavigated = false
+let userNavigated = false
 let direction: 'previous' | 'next' = 'next'
 let lastScrollTop = 0
 let lastScrollHeight = 0
@@ -208,6 +240,12 @@ async function restore(saved: ReturnType<typeof anchor>, action: string): Promis
   }
 }
 // 由主消息区滚动和不可见边缘触发读取；方向用于防止有界窗口在两端反复切换。
+function atEdge(element: HTMLElement | null): boolean {
+  if (!element || !navigationRoot) return false
+  const edge = element.getBoundingClientRect()
+  const root = navigationRoot.getBoundingClientRect()
+  return edge.bottom >= root.top - 120 && edge.top <= root.bottom + 120
+}
 function schedule(): void {
   if (scrollFrame !== undefined || !showContent.value || disposed) return
   scrollFrame = requestAnimationFrame(() => {
@@ -217,26 +255,26 @@ function schedule(): void {
       void load('next')
       return
     }
-    if (direction === 'previous' && userNavigated && nearStart && hasPrevious.value) {
+    if (
+      direction === 'previous' &&
+      userNavigated &&
+      atEdge(beforeRows.value) &&
+      hasPrevious.value
+    ) {
       void load('previous')
       return
     }
-    // 折叠的长组最多预取一个窗口，展开或实际滚动后再继续，避免后台扫完整段历史。
-    const readingGroup = !!viewport.value?.querySelector(
-      '[data-operation-group][data-expanded="true"]',
-    )
-    const canAdvance =
-      rows.value.length < STEP_PAGE_SIZE * 3 ||
-      userNavigated ||
-      readingGroup ||
-      !items.value.some((item) => item.kind === 'operations')
-    if (direction === 'next' && nearEnd && hasMore.value && canAdvance) void load('next')
+    // 每次用实际布局复核边缘，避免窗口替换后观察器的旧状态造成越过当前阅读位置。
+    // 历史填满窗口后，一次明确导航只推进一批，保留中间的压缩及状态记录供阅读。
+    const canAdvance = rows.value.length < STEP_PAGE_SIZE * 3 || userNavigated
+    if (direction === 'next' && atEdge(afterRows.value) && hasMore.value && canAdvance)
+      void load('next')
   })
 }
 function scroll(): void {
   const root = navigationRoot
   if (!root) return
-  // 操作组收起会夹紧 scrollTop；布局引起的滚动不能触发历史回读。
+  // 详情收起会夹紧 scrollTop；布局引起的滚动不能触发历史回读。
   if (
     root.scrollHeight === lastScrollHeight &&
     (!props.active || !followTail.value || browsingHistory)
@@ -244,7 +282,10 @@ function scroll(): void {
     if (root.scrollTop < lastScrollTop - 1) {
       direction = 'previous'
       userNavigated = true
-    } else if (root.scrollTop > lastScrollTop + 1) direction = 'next'
+    } else if (root.scrollTop > lastScrollTop + 1) {
+      direction = 'next'
+      userNavigated = true
+    }
   }
   lastScrollTop = root.scrollTop
   lastScrollHeight = root.scrollHeight
@@ -288,7 +329,6 @@ function disconnectNavigation(): void {
   navigationRoot?.removeEventListener('pointerdown', pointerNavigation)
   navigationRoot?.removeEventListener('keydown', key)
   navigationRoot = null
-  nearStart = nearEnd = false
 }
 function connectNavigation(): void {
   disconnectNavigation()
@@ -302,16 +342,7 @@ function connectNavigation(): void {
   root.addEventListener('wheel', wheel, { passive: true })
   root.addEventListener('pointerdown', pointerNavigation, { passive: true })
   root.addEventListener('keydown', key)
-  edgeObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.target === beforeRows.value) nearStart = entry.isIntersecting
-        if (entry.target === afterRows.value) nearEnd = entry.isIntersecting
-      }
-      schedule()
-    },
-    { root, rootMargin: '120px 0px' },
-  )
+  edgeObserver = new IntersectionObserver(schedule, { root, rootMargin: '120px 0px' })
   edgeObserver.observe(beforeRows.value)
   edgeObserver.observe(afterRows.value)
   sizeObserver = new ResizeObserver(schedule)
@@ -384,13 +415,7 @@ async function load(action: 'next' | 'previous'): Promise<void> {
     const saved = anchor()
     updateRows()
     if (action === 'next' && !hasMore.value) browsingHistory = false
-    // 历史工具组全部收起时，每次导航只推进一批，避免短页面连续预取越过压缩标记。
-    if (
-      action === 'next' &&
-      (!props.active || browsingHistory) &&
-      !viewport.value?.querySelector('[data-operation-group][data-expanded="true"]')
-    )
-      userNavigated = false
+    if (action === 'next' && (!props.active || browsingHistory)) userNavigated = false
     await restore(saved, action)
   } catch (value) {
     if (alive(token)) error.value = fail(value)
@@ -569,6 +594,7 @@ watch(
 )
 onScopeDispose(() => {
   disposed = true
+  stopClock()
   disconnectNavigation()
   generation++
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
@@ -676,37 +702,42 @@ onScopeDispose(() => {
               class="activity-tool"
               :data-step-id="step.id"
               :expanded="opened === step.id"
-              :aria-label="`工具详情：${operationLabel(step)}${step.targetLabel ? ` ${step.targetLabel}` : ''}`"
+              :aria-label="`工具详情：${summary(step).label}${step.targetLabel ? ` ${step.targetLabel}` : ''}`"
+              :title="step.targetTitle || step.targetLabel"
               @toggle="toggle(step)"
               @changed="changed"
               @collapsed="clearToolDetail(step)"
             >
               <template #label>
                 <span class="activity-tool-label">
-                  <TerminalIcon v-if="step.name === 'run_command'" aria-hidden="true" />
+                  <SquareTerminalIcon v-if="step.name === 'run_command'" aria-hidden="true" />
                   <PencilIcon v-else-if="step.name === 'apply_patch'" aria-hidden="true" />
                   <SearchIcon v-else-if="step.name === 'search_text'" aria-hidden="true" />
                   <FolderOpenIcon v-else-if="step.name === 'list_directory'" aria-hidden="true" />
-                  <FileTextIcon v-else aria-hidden="true" />
+                  <BookOpenIcon v-else aria-hidden="true" />
                   <span
                     class="shrink-0"
                     :class="{
-                      'activity-shimmer':
-                        active && connected && ['running', 'pending'].includes(step.status),
+                      'activity-shimmer': active && summary(step).running,
                       'text-destructive': step.status === 'failed',
                       'activity-tool-waiting': [
                         'awaiting_approval',
                         'awaiting_user_input',
                       ].includes(step.status),
                     }"
-                    >{{ operationLabel(step) }}</span
+                    >{{ summary(step).label }}</span
                   >
                   <span
-                    v-if="step.targetLabel"
+                    v-if="step.targetLabel && !summary(step).hideTarget"
                     class="activity-tool-target"
-                    :title="step.targetLabel"
+                    :class="{ 'activity-file-target': step.name === 'read_file' }"
                     >{{ step.targetLabel }}</span
                   >
+                  <LoaderCircleIcon
+                    v-if="active && summary(step).running && summary(step).hideTarget"
+                    class="activity-tool-spinner"
+                    aria-hidden="true"
+                  />
                 </span>
               </template>
               <div

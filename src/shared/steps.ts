@@ -1,8 +1,16 @@
 import type { ChatStep } from './chat.ts'
+import { elapsedStepTime } from './run-time.ts'
 
 export const STEP_PAGE_SIZE = 50
 export const STEP_TEXT_LIMIT = 512 * 1024
 export const STEP_OUTPUT_LIMIT = 64 * 1024
+
+const completedToolLabels: Record<string, string> = {
+  read_file: '已读取',
+  search_text: '已在',
+  list_directory: '已查看目录',
+  apply_patch: '已编辑',
+}
 
 /** 截取展示内容时不拆开 UTF-16 代理对，原始持久化数据不受影响。 */
 export function truncateStepText(text: string, limit: number): string {
@@ -49,19 +57,53 @@ export function stepLabel(step: ChatStep): string {
   return labels[step.status] ?? action
 }
 
+/** 单行工具状态仅依据服务端步骤；不将参数拒绝或未知终态显示为执行成功。 */
+export function toolStepSummary(
+  step: ChatStep,
+  now: number,
+  connected: boolean,
+  hasTarget = true,
+): { label: string; hideTarget: boolean; running: boolean } {
+  if (
+    !connected &&
+    ['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(step.status)
+  )
+    return { label: '连接已断开 · 状态待核对', hideTarget: false, running: false }
+  const running = step.status === 'running'
+  let label = stepLabel(step)
+  let hideTarget = false
+  if (step.name === 'run_command') {
+    const elapsed = elapsedStepTime(step, now)
+    if (running) {
+      label = '正在运行'
+      if (elapsed !== null && elapsed >= 1000) {
+        label = `命令已运行 ${Math.floor(elapsed / 1000)}s`
+        hideTarget = true
+      }
+    } else if (step.status === 'completed') {
+      // “在 N 秒内”采用向上取整，不能把 2.9 秒显示成在 2 秒内完成。
+      label =
+        elapsed !== null && elapsed >= 1000 ? `已在 ${Math.ceil(elapsed / 1000)}s 内运行` : '已运行'
+    }
+  } else if (step.status === 'completed' && hasTarget) {
+    label = completedToolLabels[step.name] ?? label
+  } else if (step.name === 'search_text' && running && hasTarget) label = '正在'
+  return { label, hideTarget, running }
+}
+
 export function stepTarget(step: ChatStep): string {
   try {
     const input: unknown = JSON.parse(step.input)
     if (typeof input !== 'object' || input === null || !('arguments' in input)) return ''
     const args = input.arguments
     if (typeof args !== 'object' || args === null) return ''
-    if (step.name === 'search_text' && 'query' in args && typeof args.query === 'string')
-      return JSON.stringify(args.query)
+    if (step.name === 'search_text' && 'query' in args && typeof args.query === 'string') {
+      const path = 'path' in args && typeof args.path === 'string' ? args.path : ''
+      return `${path ? pathName(path, parseStepParameters(step.input)?.actual_path) : '指定目录'} 中搜索 ${JSON.stringify(args.query)}`
+    }
     if ('path' in args && typeof args.path === 'string') {
       const actual = parseStepParameters(step.input)?.actual_path
-      const windows = /^[a-z]:[\\/]|^\\\\/i.test(typeof actual === 'string' ? actual : args.path)
-      const path = windows ? args.path.replaceAll('\\', '/') : args.path
-      return path.replace(/\/+$/, '').split('/').at(-1) || args.path
+      return pathName(args.path, actual)
     }
     if (
       'command' in args &&
@@ -79,6 +121,30 @@ export function stepTarget(step: ChatStep): string {
     /* 历史记录缺少可识别参数时，详情仍可显示服务端保存的原文。 */
   }
   return ''
+}
+
+function pathName(path: string, actual: unknown): string {
+  const windows = /^[a-z]:[\\/]|^\\\\/i.test(typeof actual === 'string' ? actual : path)
+  const normalized = windows ? path.replaceAll('\\', '/') : path
+  return normalized.replace(/\/+$/, '').split('/').at(-1) || path
+}
+
+/** 文件标题优先展示服务端固定的实际路径；命令仍由详情保留完整参数边界。 */
+export function stepTargetTitle(step: ChatStep): string {
+  const parameters = parseStepParameters(step.input)
+  const args = parameters?.arguments
+  if (
+    typeof args === 'object' &&
+    args !== null &&
+    'path' in args &&
+    typeof args.path === 'string'
+  ) {
+    const path = typeof parameters?.actual_path === 'string' ? parameters.actual_path : args.path
+    if (step.name === 'search_text' && 'query' in args && typeof args.query === 'string')
+      return `在 ${path} 中搜索 ${JSON.stringify(args.query)}`
+    return path
+  }
+  return stepTarget(step)
 }
 
 function parseStepParameters(input: string): Record<string, unknown> | null {

@@ -1,5 +1,5 @@
 import type { ChatStep, StepPage } from './chat.ts'
-import { STEP_PAGE_SIZE, stepTarget, truncateStepText } from './steps.ts'
+import { STEP_PAGE_SIZE, stepTarget, stepTargetTitle, truncateStepText } from './steps.ts'
 
 const PAGE_CACHE_SIZE = 3
 const CURSOR_CACHE_SIZE = 128
@@ -8,6 +8,7 @@ const TARGET_LABEL_LIMIT = 240
 
 export interface TimelineStep extends ChatStep {
   targetLabel: string
+  targetTitle?: string
   compactionTrigger?: 'automatic' | 'manual' | null
 }
 
@@ -37,6 +38,7 @@ function overview(step: ChatStep): TimelineStep {
       target.length > TARGET_LABEL_LIMIT
         ? truncateStepText(target, TARGET_LABEL_LIMIT - 1) + '…'
         : target,
+    targetTitle: truncateStepText(stepTargetTitle(step), 4096),
     reasoning: truncateStepText(step.reasoning ?? '', OVERVIEW_TEXT_LIMIT),
     reasoningTruncated:
       step.reasoningTruncated || (step.reasoning?.length ?? 0) > OVERVIEW_TEXT_LIMIT,
@@ -51,6 +53,7 @@ function mergeOverview(old: TimelineStep | undefined, next: TimelineStep): Timel
   return {
     ...next,
     targetLabel: next.targetLabel || old.targetLabel,
+    targetTitle: next.targetTitle || old.targetTitle || '',
     compactionTrigger: next.compactionTrigger ?? old.compactionTrigger ?? null,
     reasoning: next.reasoning || old.reasoning || '',
     reasoningTruncated: old.reasoningTruncated || next.reasoningTruncated || false,

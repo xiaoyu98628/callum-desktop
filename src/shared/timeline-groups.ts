@@ -16,7 +16,7 @@ export interface CompactionGroup {
 export type TimelineItem =
   { kind: 'model'; id: string; step: TimelineStep } | OperationGroup | CompactionGroup
 
-/** 概述和思考保持原顺序；其间连续的操作合为一组，不跨过可见的模型说明。 */
+/** 思考与说明保持原顺序；其间连续操作形成可展开的组，不跨过压缩记录。 */
 export function groupTimeline(steps: TimelineStep[]): TimelineItem[] {
   const items: TimelineItem[] = []
   for (const step of steps) {
@@ -34,7 +34,7 @@ export function groupTimeline(steps: TimelineStep[]): TimelineItem[] {
     else
       items.push({
         kind: 'operations',
-        // 长组跨批读取时沿用父步骤身份，不因首条操作移出窗口而丢失折叠状态。
+        // 连续操作沿用父步骤身份，避免窗口更新重新挂载仍在查看的单条详情。
         id: `operations:${step.parentStepId ?? step.id}${previous?.kind === 'compaction' ? `:after:${previous.id}` : ''}`,
         steps: [step],
       })
@@ -42,14 +42,13 @@ export function groupTimeline(steps: TimelineStep[]): TimelineItem[] {
   return items
 }
 
-/** 下一次模型调用开始即结束上一操作组；未读完的历史不能被当成当前操作。 */
+/** 下一模型阶段开始即结束上一操作组；窗口尾部不能代替执行的实际最新步骤。 */
 export function currentOperationGroup(
   items: TimelineItem[],
   latest: ChatStep | undefined,
 ): string | null {
   if (!latest || !['tool_call', 'user_input'].includes(latest.type)) return null
   const groups = items.filter((item) => item.kind === 'operations')
-  // 压缩可能插入同一批工具之间，优先匹配实际步骤，避免把前一段误当成当前组。
   return (
     groups.find((item) => item.steps.some((step) => step.id === latest.id))?.id ??
     groups.findLast((item) =>
@@ -61,27 +60,24 @@ export function currentOperationGroup(
   )
 }
 
-/** 标题按完成顺序列出动作类型，其他状态单独汇总。 */
-export function operationSummary(steps: ChatStep[]): {
-  label: string
-  notice: string
-  danger: boolean
-  waiting: boolean
-} {
+/** 汇总已完成的动作类型；等待、失败及其他终态单独展示，不把失败归为完成。 */
+export function operationSummary(
+  steps: ChatStep[],
+  connected = true,
+): { label: string; notice: string; danger: boolean; waiting: boolean } {
   const actions: Record<string, string> = {
     read_file: '读取文件',
     list_directory: '查看目录',
     search_text: '搜索内容',
     apply_patch: '编辑文件',
-    run_command: '运行命令',
+    run_command: '运行了命令',
     request_user_input: '结束补充输入',
   }
   const completed = new Set<string>()
   const statuses = new Map<string, number>()
   for (const step of steps) {
-    if (step.status === 'completed') {
-      completed.add(actions[step.name] ?? '执行其他操作')
-    } else statuses.set(step.status, (statuses.get(step.status) ?? 0) + 1)
+    if (step.status === 'completed') completed.add(actions[step.name] ?? '执行其他操作')
+    else statuses.set(step.status, (statuses.get(step.status) ?? 0) + 1)
   }
   const notices: string[] = []
   for (const [status, label] of [
@@ -95,12 +91,14 @@ export function operationSummary(steps: ChatStep[]): {
     if (count) notices.push(`${count} 项${label}`)
   }
   const running = (statuses.get('running') ?? 0) + (statuses.get('pending') ?? 0)
-  if (running) notices.push(`${running} 项正在执行`)
+  const waiting = statuses.has('awaiting_approval') || statuses.has('awaiting_user_input')
+  if (connected && running) notices.push(`${running} 项正在执行`)
+  if (!connected && (running || waiting)) notices.push('连接已断开，状态待核对')
   return {
     label: completed.size ? `已${[...completed].join('、')}` : '操作记录',
     notice: notices.join('、'),
     danger: statuses.has('failed') || statuses.has('interrupted'),
-    waiting: statuses.has('awaiting_approval') || statuses.has('awaiting_user_input'),
+    waiting,
   }
 }
 

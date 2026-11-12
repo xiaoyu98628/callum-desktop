@@ -1619,7 +1619,7 @@ test.describe('真实 Go 对话交互', () => {
       await disclosure.click()
       await timeline
         .getByRole('button', {
-          name: /^工具详情：已运行 .*process\.cwd/,
+          name: /^工具详情：(已运行|已在 \d+s 内运行) .*process\.cwd/,
         })
         .click()
       await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -5595,7 +5595,7 @@ test.describe('Codex 风格过程展示', () => {
     await thinking.press('Space')
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
     const command = overview.getByRole('button', {
-      name: /^工具详情：已运行 .*controlled-fold-output/,
+      name: /^工具详情：(已运行|已在 \d+s 内运行) .*controlled-fold-output/,
     })
     await expect(command).toBeVisible()
     await expect(overview.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -5705,7 +5705,7 @@ test.describe('Codex 风格过程展示', () => {
       .screenshot({ path: '.artifacts/screenshots/activity-command-detail-dark.png' })
   })
 
-  test('概述间合并多项操作，阶段结束自动收起，审批和失败始终可见', async ({
+  test('分组可展开收起，组内单行对齐，计时和审批失败在历史中保留', async ({
     desktop,
     modelEndpoint,
   }) => {
@@ -5713,61 +5713,102 @@ test.describe('Codex 风格过程展示', () => {
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const operations = answer.locator('.activity-tool')
     const groups = answer.locator('[data-operation-group]')
     const firstGroup = groups.first()
     const firstToggle = firstGroup.getByRole('button', { name: /^操作分组：/ })
     await expect(input).toBeEnabled()
     await input.fill('操作分组')
     await input.press('Enter')
-    await expect(answer).toContainText('我会先核对目录和文件')
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
-    await expect(firstToggle.locator('.activity-shimmer')).toHaveCSS(
-      'animation-name',
-      'activity-shimmer',
-    )
-    await expect(firstToggle.locator('.activity-group-label > svg')).toHaveCSS(
-      'animation-name',
-      'none',
-    )
+    await expect(operations).toHaveCount(5)
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')
-    await expect(firstToggle.locator('.activity-shimmer')).toHaveCount(0)
-    await expect(firstGroup.getByRole('region', { name: '本组操作', exact: true })).toHaveCount(0)
+    await expect(operations).toHaveCount(0)
+    await expect(firstToggle).toHaveText('已查看目录、读取文件、搜索内容、运行了命令')
+    await expect(firstToggle.locator('.activity-chevron')).toHaveCSS('opacity', '1')
     await firstToggle.focus()
     await firstToggle.press('Enter')
-    await expect(firstGroup.getByRole('button', { name: /^工具详情：/ })).toHaveCount(4)
-    const command = firstGroup.getByRole('button', {
-      name: /^工具详情：已运行 .*controlled-group-output/,
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(operations).toHaveCount(5)
+    const file = answer.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true })
+    await expect(file).toBeVisible()
+    const headerBounds = await firstToggle.boundingBox()
+    const fileBounds = await file.boundingBox()
+    expect(Math.abs(headerBounds!.x - fileBounds!.x)).toBeLessThan(1)
+    const labelBounds = await firstToggle.locator('.activity-label').boundingBox()
+    const arrowBounds = await firstToggle.locator('.activity-chevron').boundingBox()
+    expect(arrowBounds!.x - labelBounds!.x - labelBounds!.width).toBeLessThanOrEqual(8)
+    await expect(file).toHaveAttribute('title', /[\\/]fixture\.txt$/)
+    await expect(file.locator('.activity-file-target')).toHaveCSS(
+      'text-decoration-line',
+      'underline',
+    )
+    await file.focus()
+    await file.press('Enter')
+    await expect(answer.getByLabel('工具结果', { exact: true })).toContainText('controlled-file')
+    await file.press('Space')
+    await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
+    await expect(
+      answer.getByRole('button', { name: /工具详情：已在 .* 中搜索 "controlled-file"/ }),
+    ).toBeVisible()
+    const command = answer.getByRole('button', {
+      name: /^工具详情：(已运行|已在 \d+s 内运行) .*controlled-group-output/,
     })
+    await expect(command).toBeVisible()
     await expect(command).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
+    await command.focus()
     await command.press('Enter')
-    await expect(firstGroup.getByLabel('工具结果', { exact: true })).toContainText(
+    await expect(answer.getByLabel('工具结果', { exact: true })).toContainText(
       'controlled-group-output',
     )
-    await firstGroup.getByRole('button', { name: /^工具详情：已运行 .*setTimeout/ }).click()
-    await expect(
-      firstGroup
-        .locator('.activity-terminal')
-        .filter({ hasText: 'setTimeout' })
-        .getByLabel('工具结果', { exact: true }),
-    ).toHaveText('无输出。')
+    await expect(answer.getByLabel('命令', { exact: true })).toContainText('long-command-tail')
+    await firstToggle.click()
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
     await firstToggle.press('Space')
-    await firstToggle.press('Enter')
     await expect(command).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
+    const slowCommand = answer.getByRole('button', {
+      name: /^工具详情：已在 \d+s 内运行 .*setTimeout/,
+    })
+    await expect(slowCommand).toBeVisible()
+    const fixedLabel = await slowCommand.locator('.activity-tool-label > span').first().innerText()
+    await page.waitForTimeout(1100)
+    await expect(slowCommand.locator('.activity-tool-label > span').first()).toHaveText(fixedLabel)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(700, 650),
+    )
+    await expect
+      .poll(() =>
+        command
+          .locator('.activity-tool-target')
+          .evaluate((element) => element.scrollWidth > element.clientWidth),
+      )
+      .toBe(true)
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+    await input.focus()
+    await page.mouse.move(1, 1)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-expanded-light.png',
+      animations: 'disabled',
+    })
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
-    const lastGroup = groups.last()
-    const lastToggle = lastGroup.getByRole('button', { name: /^操作分组：/ })
-    await expect(groups).toHaveCount(2)
+    const failed = answer.getByRole('button', {
+      name: /^工具详情：读取文件失败 .*missing-group-file/,
+    })
+    const pending = answer.getByRole('button', { name: /^工具详情：运行命令 · 等待审批/ })
+    await expect(failed).toBeVisible()
+    await expect(failed.locator('.text-destructive')).toBeVisible()
+    await expect(pending).toBeVisible()
+    await expect(pending.locator('.activity-shimmer')).toHaveCount(0)
+    await expect(pending).not.toContainText('命令已运行')
+    const lastToggle = groups.last().getByRole('button', { name: /^操作分组：/ })
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'true')
-    await expect(lastToggle).toContainText('1 项等待审批')
-    await expect(lastToggle).toContainText('1 项失败')
-    await expect(lastToggle.locator('.activity-shimmer')).toHaveCount(0)
     await lastToggle.click()
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(lastToggle).toContainText('1 项等待审批')
@@ -5778,11 +5819,13 @@ test.describe('Codex 风格过程展示', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await toggle.click()
     await expect(groups).toHaveCount(2)
-    for (const group of await groups.all())
-      await expect(group.getByRole('button', { name: /^操作分组：/ })).toHaveAttribute(
-        'aria-expanded',
-        'false',
-      )
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await expect(failed).toBeVisible()
     await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
     await page.reload()
     await page
@@ -5791,20 +5834,40 @@ test.describe('Codex 风格过程展示', () => {
       .click()
     await toggle.click()
     await expect(groups).toHaveCount(2)
-    await expect(lastToggle).toContainText('1 项失败')
-    await expect(lastToggle).not.toContainText('等待审批')
-    await input.fill('操作分组')
-    await input.press('Enter')
-    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
-    modelEndpoint!.continueProcess()
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
-    await firstToggle.click()
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(answer).toContainText('第一组检查已完成')
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(input).toBeEnabled()
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await expect(slowCommand.locator('.activity-tool-label > span').first()).toHaveText(fixedLabel)
+    await expect(failed).toBeVisible()
+    await expect(pending).toHaveCount(0)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '操作分组', exact: true })
+      .click()
+    await toggle.click()
+    await expect(groups).toHaveCount(2)
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-expanded-dark.png',
+      animations: 'disabled',
+    })
+    for (const group of await groups.all())
+      await group.getByRole('button', { name: /^操作分组：/ }).click()
+    await expect(operations).toHaveCount(0)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-collapsed-dark.png',
+      animations: 'disabled',
+    })
   })
 
   test('终端块展示实时输出、非零退出和历史命令结果，读取失败可重试', async ({
@@ -5827,15 +5890,27 @@ test.describe('Codex 风格过程展示', () => {
     await pendingCommand.click()
     await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(terminal.getByLabel('实时输出', { exact: true })).toContainText('command-started')
-    const runningCommand = answer.getByRole('button', { name: /^工具详情：正在运行命令/ })
-    const status = runningCommand.getByText('正在运行命令', { exact: true })
+    const runningCommand = answer.getByRole('button', {
+      name: /^工具详情：(正在运行|命令已运行 \d+s)/,
+    })
+    const status = runningCommand.locator('.activity-shimmer')
+    await expect(status).toHaveText(/命令已运行 \d+s/)
+    await expect(runningCommand.locator('.activity-tool-target')).toHaveCount(0)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-running-light.png',
+      animations: 'disabled',
+    })
     await expect(status).toHaveCSS('animation-name', 'activity-shimmer')
-    await expect(runningCommand.locator('.activity-tool-label > svg')).toHaveCSS(
+    await expect(runningCommand.locator('.activity-tool-label > svg').first()).toHaveCSS(
       'animation-name',
       'none',
     )
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await expect(status).toHaveCSS('animation-name', 'none')
+    await expect(runningCommand.locator('.activity-tool-spinner')).toHaveCSS(
+      'animation-name',
+      'none',
+    )
     await expect(status).toBeVisible()
     await stop.click()
     await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
@@ -5854,7 +5929,7 @@ test.describe('Codex 风格过程展示', () => {
       .getByRole('button', { name: '命令取消步骤', exact: true })
       .click()
     await openDetails.click()
-    await answer.getByRole('button', { name: /^工具详情：已运行 / }).click()
+    await answer.getByRole('button', { name: /^工具详情：(已运行|已在 \d+s 内运行) / }).click()
     await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
       /command-out\s+\[stderr\]\s+command-err/,
     )
@@ -6069,14 +6144,12 @@ test.describe('过程自动读取与固定分隔线', () => {
     expect(expected).toHaveLength(220)
     const group = timeline.locator('[data-operation-group]').first()
     const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
-    // 超过一个窗口的长组不把局部数量伪装成整组次数。
     await expect(groupToggle).toContainText('操作记录')
-    await expect(groupToggle).not.toContainText('次')
     await groupToggle.click()
+    await expect(groupToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(
-      group.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }).first(),
+      overview.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }).first(),
     ).toBeVisible()
-    await expect(group.locator('.activity-reveal-enter-active')).toHaveCount(0)
     const seen = new Set<string>()
     const loaded = async () =>
       overview
@@ -6099,6 +6172,10 @@ test.describe('过程自动读取与固定分隔线', () => {
         const ids = await loaded()
         ids.forEach((id) => seen.add(id))
         expect(ids.length).toBeLessThanOrEqual(150)
+        if (!ids.includes(expected.at(-1)!)) {
+          await scroller.hover()
+          await page.mouse.wheel(0, 10000)
+        }
         return ids.includes(expected.at(-1)!)
       })
       .toBe(true)
@@ -6108,7 +6185,10 @@ test.describe('过程自动读取与固定分隔线', () => {
     await scroller.evaluate((element) => {
       element.scrollTop = 0
     })
-    await groupToggle.hover()
+    await overview
+      .getByRole('button', { name: /^工具详情：/ })
+      .first()
+      .hover()
     await page.mouse.wheel(0, -10000)
     await expect
       .poll(async () => {

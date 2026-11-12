@@ -4,10 +4,10 @@ import type { ChatStep, RunStatus } from '../../src/shared/chat.ts'
 import type { TimelineStep } from '../../src/shared/timeline-window.ts'
 import { TimelineWindow } from '../../src/shared/timeline-window.ts'
 import {
-  currentOperationGroup,
   groupTimeline,
-  operationSummary,
   compactionStatus,
+  currentOperationGroup,
+  operationSummary,
 } from '../../src/shared/timeline-groups.ts'
 
 function step(sequence: number, name = 'read_file', status: RunStatus = 'completed'): TimelineStep {
@@ -73,50 +73,6 @@ test('两段概述之间的连续操作合并为一组，文字和操作顺序�
   assert.equal(groupTimeline([step(1), step(2)]).length, 1)
 })
 
-test('当前组由实际最新步骤确定，下一模型阶段及未加载的其他组不会展开历史', () => {
-  const first = step(2)
-  const items = groupTimeline([model(1), first])
-  assert.equal(currentOperationGroup(items, first), 'operations:model-1')
-  assert.equal(currentOperationGroup(items, step(3)), 'operations:model-1')
-  assert.equal(currentOperationGroup(items, model(4)), null)
-  assert.equal(currentOperationGroup(items, { ...step(5), parentStepId: 'model-4' }), null)
-  assert.equal(currentOperationGroup(items, undefined), null)
-})
-
-test('完成动作在摘要中去重，失败、审批、取消和中断按实际状态汇总', () => {
-  const summary = operationSummary([
-    step(1),
-    step(2),
-    step(3, 'run_command'),
-    step(4, 'apply_patch'),
-    step(5, 'read_file', 'failed'),
-    step(6, 'run_command', 'awaiting_approval'),
-    step(7, 'request_user_input', 'awaiting_user_input'),
-    step(8, 'run_command', 'cancelled'),
-    step(9, 'run_command', 'interrupted'),
-    step(10, 'run_command', 'running'),
-    step(11, 'run_command', 'pending'),
-  ])
-  assert.equal(summary.label, '已读取文件、运行命令、编辑文件')
-  for (const text of [
-    '1 项等待审批',
-    '1 项等待补充输入',
-    '1 项失败',
-    '1 项已取消',
-    '1 项已中断',
-    '2 项正在执行',
-  ])
-    assert.ok(summary.notice.includes(text))
-  assert.equal(summary.danger, true)
-  assert.equal(summary.waiting, true)
-  const waiting = operationSummary([step(1, 'run_command', 'awaiting_approval')])
-  assert.equal(waiting.label, '操作记录')
-  assert.equal(waiting.danger, false)
-  assert.equal(waiting.waiting, true)
-  assert.equal(operationSummary([step(1, 'custom-tool')]).label, '已执行其他操作')
-  assert.equal(operationSummary([step(1, 'request_user_input')]).label, '已结束补充输入')
-})
-
 test('跨批长组保持身份，前后读取后概述边界仍正确', async () => {
   const source: ChatStep[] = [
     model(1),
@@ -150,11 +106,55 @@ test('跨批长组保持身份，前后读取后概述边界仍正确', async ()
   )
   const first = items[0]!
   assert.ok(first.kind === 'operations')
-  assert.equal(operationSummary(first.steps).label, '已读取文件')
   assert.ok(first.steps.length < 220)
   while (window.hasPrevious) await window.previous()
   assert.equal(groupTimeline(window.steps)[0]?.kind, 'model')
   assert.equal(groupTimeline(window.steps)[1]?.id, firstId)
+})
+
+test('分组依据实际最新步骤切换，下一模型阶段和压缩记录结束上一组', () => {
+  const first = step(2)
+  const items = groupTimeline([model(1), first, compression(3), step(4)])
+  assert.equal(currentOperationGroup(items, first), items[1]?.id)
+  assert.equal(currentOperationGroup(items, step(4)), items[3]?.id)
+  assert.equal(currentOperationGroup(items, model(5)), null)
+  assert.equal(currentOperationGroup(items, compression(3)), null)
+  assert.equal(currentOperationGroup(items, { ...step(6), parentStepId: 'other-model' }), null)
+  assert.equal(currentOperationGroup(items, undefined), null)
+})
+
+test('分组汇总去重已完成动作，收起时保留审批、失败、取消和断连提示', () => {
+  const steps = [
+    step(1),
+    step(2),
+    step(3, 'run_command'),
+    step(4, 'apply_patch'),
+    step(5, 'read_file', 'failed'),
+    step(6, 'run_command', 'awaiting_approval'),
+    step(7, 'request_user_input', 'awaiting_user_input'),
+    step(8, 'run_command', 'cancelled'),
+    step(9, 'run_command', 'interrupted'),
+    step(10, 'run_command', 'running'),
+    step(11, 'run_command', 'pending'),
+  ]
+  const summary = operationSummary(steps)
+  assert.equal(summary.label, '已读取文件、运行了命令、编辑文件')
+  for (const text of [
+    '1 项等待审批',
+    '1 项等待补充输入',
+    '1 项失败',
+    '1 项已取消',
+    '1 项已中断',
+    '2 项正在执行',
+  ])
+    assert.ok(summary.notice.includes(text))
+  assert.equal(summary.danger, true)
+  assert.equal(summary.waiting, true)
+  const offline = operationSummary(steps, false)
+  assert.ok(offline.notice.includes('状态待核对'))
+  assert.ok(!offline.notice.includes('正在执行'))
+  assert.equal(operationSummary([step(1, 'read_file', 'failed')]).label, '操作记录')
+  assert.equal(operationSummary([step(1, 'custom-tool')]).label, '已执行其他操作')
 })
 
 function compression(sequence: number, status: RunStatus = 'completed'): TimelineStep {
@@ -189,15 +189,7 @@ test('连续压缩独立成行，不进入工具分组，阶段顺序与原始�
     items.flatMap((item) => (item.kind === 'model' ? [item.step] : item.steps)),
     source,
   )
-  assert.equal(currentOperationGroup(items, source[3]), null)
-  assert.equal(currentOperationGroup(items, source[4]), items[3]?.id)
   assert.equal(new Set(items.map((item) => item.id)).size, items.length)
-  assert.deepEqual(
-    items
-      .filter((item) => item.kind === 'operations')
-      .map((item) => operationSummary(item.steps).label),
-    ['已读取文件', '已读取文件'],
-  )
 })
 
 test('压缩完成只依据压缩步骤，连续批次仍在运行时保留进度，手动与旧记录不误报自动', () => {

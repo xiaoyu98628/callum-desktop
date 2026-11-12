@@ -1,5 +1,20 @@
 import { isActiveRun } from './chat.ts'
-import type { ChatRun } from './chat.ts'
+import type { ChatRun, ChatStep } from './chat.ts'
+
+/** 工具从获准执行时开始计时，审批等待不计入；中断时间不能当作实际结束时间。 */
+export function elapsedStepTime(step: ChatStep, now: number): number | null {
+  if (step.status === 'interrupted' || step.startedAt === null) return null
+  const end = step.status === 'running' ? now : step.finishedAt
+  if (
+    end === null ||
+    !Number.isSafeInteger(end) ||
+    !Number.isSafeInteger(step.startedAt) ||
+    step.startedAt < 0 ||
+    end < step.startedAt
+  )
+    return null
+  return end - step.startedAt
+}
 
 /** 执行总用时包含等待审批；中断恢复时间不是实际结束时间，不能据此计算耗时。 */
 export function elapsedRunTime(run: ChatRun, now: number): number | null {

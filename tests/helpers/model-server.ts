@@ -284,7 +284,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         const completed = messages
           .slice(afterUser)
           .filter((message) => message.role === 'tool').length
-        if (completed >= 6) {
+        if (completed >= 7) {
           emit(response, { content: '操作分组检查已完成。' })
           finish(response)
           return
@@ -303,12 +303,18 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   { name: 'list_directory', arguments: { path: dirname(fixturePath) } },
                   { name: 'read_file', arguments: { path: fixturePath } },
                   {
+                    name: 'search_text',
+                    arguments: { path: dirname(fixturePath), query: 'controlled-file', limit: 10 },
+                  },
+                  {
                     name: 'run_command',
                     arguments: {
                       command: [
                         process.execPath,
                         '-e',
-                        "process.stdout.write('controlled-group-output')",
+                        "process.stdout.write('controlled-group-output'); // " +
+                          'long-command-'.repeat(40) +
+                          'long-command-tail',
                       ],
                       cwd: dirname(fixturePath),
                     },
