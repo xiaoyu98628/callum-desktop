@@ -12,6 +12,10 @@
 
 归档中的许可证、版权和第三方声明随完整资源保留，适用许可以对应文件为准。Git 使用 GPL-2.0，Git LFS 使用 MIT，GCM 使用 MIT；配套组件遵循各自许可。对应源码可从 [Dugite 构建及依赖定义](https://github.com/desktop/dugite-native/tree/v2.56.1)、[Git v2.56.1](https://github.com/git/git/tree/v2.56.1)、[Git for Windows v2.56.1.windows.1](https://github.com/git-for-windows/git/tree/v2.56.1.windows.1)、[Git LFS v3.8.1](https://github.com/git-lfs/git-lfs/tree/v3.8.1)、[GCM v2.9.1](https://github.com/git-ecosystem/git-credential-manager/tree/v2.9.1) 获取。`resources/runtimes/licenses/` 另保留从相同标签取得的 Git、Git LFS、GCM 和 Dugite 许可证正文，补齐 macOS 上游归档未单独提供的许可文本。当前工作不包含安装包分发；分发时需继续保留随附声明，并按各组件许可提供对应源码及构建材料。
 
+## Go 服务的 Shell 语法解析器
+
+随附 Go 服务使用 [mvdan/sh v3.14.1](https://github.com/mvdan/sh/tree/v3.14.1) 的 `syntax` 包静态识别 sh/bash 调用形式，不使用其解释执行器。对应 BSD 3-Clause 许可证完整保存在 `resources/runtimes/licenses/mvdan-sh-LICENSE`，随公共许可目录一同保留。
+
 ## shadcn-vue 组件源码
 
 `src/renderer/components/ui/button/` 的组件源码来自 [shadcn-vue](https://github.com/unovue/shadcn-vue)，本项目对默认属性及格式作了调整。其许可证如下；该许可证仅适用于对应第三方源码，不替本仓库其他代码指定许可证。

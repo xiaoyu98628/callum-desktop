@@ -43,17 +43,22 @@ test('解释器资源按四个平台的匹配架构选择离线解压目录', ()
 })
 
 test(
-  '模型每轮收到内置解释器入口和直接调用示例，真实 Python/Node/Git 沿 Go 沙箱执行',
+  '模型每轮收到命令选择规则，直接调用内置命令并独立使用目录工具',
   { skip: !supportedBackend },
   async () => {
     const results: string[] = []
     const instructions: string[] = []
+    const rejections: string[] = []
+    let correctionSeen = false
     const runtimeRoot = await realpath(resolveRuntimeDirectory(resourceRoot))
     const manifest = record(JSON.parse(await readFile(join(runtimeRoot, 'manifest.json'), 'utf8')))
     const entries = [record(manifest.python), record(manifest.node), record(manifest.git)].map(
       (entry) => join(runtimeRoot, String(entry.path)),
     )
     const profile = await mkdtemp(join(tmpdir(), 'callum-bundled-runtime-'))
+    const workspace = join(profile, 'workspace with spaces')
+    await mkdir(workspace)
+    await writeFile(join(workspace, 'marker.txt'), 'directory fixture')
     const upstream = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = []
@@ -67,18 +72,33 @@ test(
         }
         const messages = array(input.messages, record)
         const last = messages.at(-1)
+        const correction = messages.some(
+          (item) =>
+            item.role === 'system' && String(item.content).includes('服务端工具参数校验反馈'),
+        )
+        if (correction) correctionSeen = true
+        assert.ok(
+          !JSON.stringify(messages).includes('runtime-invalid-json'),
+          '坏批次不应进入后续上下文',
+        )
+        const user = messages.findLast((item) => item.role === 'user')
+        const text =
+          typeof user?.content === 'string'
+            ? user.content
+            : array(user?.content, record)
+                .map((part) => part.text)
+                .join('')
+        const toolError =
+          last?.role === 'tool' ? record(JSON.parse(String(last.content))).error : undefined
+        const rejected = toolError === undefined ? undefined : record(toolError)
         let message: Record<string, unknown> = { role: 'assistant', content: '运行时验证' }
         let reason = 'stop'
-        if (last?.role === 'tool') {
-          results.push(String(last.content))
+        if (last?.role === 'tool' && rejected === undefined) {
+          let firstTool = messages.length - 1
+          while (firstTool > 0 && messages[firstTool - 1]?.role === 'tool') firstTool--
+          results.push(...messages.slice(firstTool).map((item) => String(item.content)))
           message.content = '内置解释器已完成'
         } else if (Array.isArray(input.tools) && input.tools.length > 0) {
-          const text =
-            typeof last?.content === 'string'
-              ? last.content
-              : array(last?.content, record)
-                  .map((part) => part.text)
-                  .join('')
           const python = text === 'python'
           message = {
             role: 'assistant',
@@ -104,11 +124,75 @@ test(
                               '-e',
                               'if(!process.execPath.includes("runtimes"))process.exit(2);console.log(process.version)',
                             ],
-                    cwd: profile,
+                    cwd: workspace,
                   }),
                 },
               },
+              ...(text === 'git'
+                ? [
+                    {
+                      ...(input.stream === true ? { index: 1 } : {}),
+                      id: 'runtime-git-directory',
+                      type: 'function',
+                      function: {
+                        name: 'list_directory',
+                        arguments: JSON.stringify({ path: workspace, limit: 40 }),
+                      },
+                    },
+                  ]
+                : []),
             ],
+          }
+          if (text === 'git' && rejected === undefined && !correction) {
+            message.tool_calls = [
+              {
+                ...(input.stream === true ? { index: 0 } : {}),
+                id: 'runtime-invalid-valid',
+                type: 'function',
+                function: {
+                  name: 'run_command',
+                  arguments: JSON.stringify({ command: ['git', '--version'], cwd: workspace }),
+                },
+              },
+              {
+                ...(input.stream === true ? { index: 1 } : {}),
+                id: 'runtime-invalid-json',
+                type: 'function',
+                function: { name: 'run_command', arguments: '{"["string""]</｜｜DSML｜｜: ' },
+              },
+            ]
+          } else if (text === 'git' && correction) {
+            message.tool_calls = [
+              {
+                ...(input.stream === true ? { index: 0 } : {}),
+                id: 'runtime-simple-shell',
+                type: 'function',
+                function: {
+                  name: 'run_command',
+                  arguments: JSON.stringify({
+                    command: ['sh', '-c', 'git --version; echo header; ls'],
+                    cwd: workspace,
+                  }),
+                },
+              },
+            ]
+          } else if (text === 'git' && rejected !== undefined) {
+            assert.equal(rejected.kind, 'invalid_arguments')
+            const error = String(rejected.message)
+            rejections.push(error)
+            if (error.includes('sh/bash -c')) {
+              message.tool_calls = [
+                {
+                  ...(input.stream === true ? { index: 0 } : {}),
+                  id: 'runtime-wrong-command-type',
+                  type: 'function',
+                  function: {
+                    name: 'run_command',
+                    arguments: JSON.stringify({ command: '["git","--version"]', cwd: workspace }),
+                  },
+                },
+              ]
+            } else assert.ok(error.includes('字符串数组'))
           }
           reason = 'tool_calls'
         }
@@ -159,17 +243,30 @@ test(
           await setTimeout(20)
         }
       }
-      assert.equal(results.length, 3)
-      assert.ok(instructions.length >= 6, '三次执行的工具调用前后均应携带调用指引')
+      assert.equal(results.length, 4)
+      assert.equal(rejections.length, 2)
+      assert.equal(correctionSeen, true)
+      assert.ok(instructions.length >= 9, '三次执行的工具调用前后均应携带调用指引')
       for (const description of instructions) {
         for (const entry of entries) assert.ok(description.includes(JSON.stringify(entry)))
         assert.ok(description.includes('["python3","-c","print(1)"]'))
         assert.ok(description.includes('["node","-e","console.log(1)"]'))
+        assert.ok(description.includes('["git","status","--short"]'))
+        assert.ok(description.includes('多个独立操作分别发起工具调用'))
+        assert.ok(description.includes('查看目录优先使用 list_directory'))
+        assert.ok(description.includes('确需管道、重定向、条件控制等 Shell 语法'))
+        assert.ok(description.includes('Shell 字符串里的程序不会经过裸命令固定映射'))
       }
       assert.match(results[0] ?? '', /3\.14\.10/)
       assert.match(results[1] ?? '', /v26\.13\.0/)
       assert.match(results[2] ?? '', /git version 2\.56\.1/)
-      for (const result of results) {
+      const directory = record(record(JSON.parse(results[3] ?? '{}')).result)
+      assert.deepEqual(
+        array(directory.entries, record).map((entry) => entry.name),
+        ['marker.txt'],
+      )
+      assert.equal(directory.truncated, false)
+      for (const result of results.slice(0, 3)) {
         assert.match(result, /"exit_code":0/)
         assert.match(result, /"cleanup_complete":true/)
       }
