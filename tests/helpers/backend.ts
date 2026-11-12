@@ -23,7 +23,15 @@ export async function createRuntimeFixture(resources: string): Promise<string> {
   const node = process.platform === 'win32' ? 'node/node.exe' : 'node/bin/node'
   const data = Buffer.from('controlled-startup-fixture\n')
   const files = []
-  for (const name of [node, python]) {
+  const git = process.platform === 'win32' ? 'git/cmd/git.exe' : 'git/bin/git'
+  for (const name of [
+    node,
+    python,
+    git,
+    'git/etc/gitconfig',
+    'git/libexec/helper',
+    'git/share/templates/sample',
+  ].sort()) {
     const full = join(root, name)
     await mkdir(dirname(full), { recursive: true })
     await writeFile(full, data, { mode: 0o755 })
@@ -36,11 +44,18 @@ export async function createRuntimeFixture(resources: string): Promise<string> {
   await writeFile(
     join(root, 'manifest.json'),
     JSON.stringify({
-      format_version: 1,
+      format_version: 2,
       platform: process.platform === 'win32' ? 'windows' : 'darwin',
       arch: process.arch === 'x64' ? 'amd64' : 'arm64',
       python: { version: '3.14.10', path: python },
       node: { version: '26.13.0', path: node },
+      git: {
+        version: '2.56.1',
+        path: git,
+        exec_path: 'git/libexec',
+        template_path: 'git/share/templates',
+        config_path: 'git/etc/gitconfig',
+      },
       files,
     }),
   )
@@ -89,7 +104,8 @@ export async function findTestBackend(parentId: number, profile: string): Promis
       .find(
         (match) =>
           match?.[2] === String(parentId) &&
-          match[3] === `${backendExecutable} --data-dir ${dataDirectory}`,
+          match[3] ===
+            `${backendExecutable} --data-dir ${dataDirectory} --runtime-dir ${resolveRuntimeDirectory(resourceRoot)}`,
       )
     if (child?.[1]) return Number(child[1])
   }

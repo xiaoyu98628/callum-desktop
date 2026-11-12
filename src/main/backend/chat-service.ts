@@ -96,7 +96,8 @@ function startupError(error: unknown, phase: string): string {
     if (code === 'EACCES' || code === 'EPERM') return '没有执行对话服务程序的权限，请检查文件权限。'
     return '无法访问对话服务程序，请检查客户端服务资源。'
   }
-  if (phase === 'runtime') return '未找到完整的内置 Python/Node 资源，请重新准备客户端运行时资源。'
+  if (phase === 'runtime')
+    return '未找到完整的内置 Python/Node/Git 资源，请重新准备客户端运行时资源。'
   if (phase === 'directory') {
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS')
       return '服务数据目录不可写，请检查目录权限。'

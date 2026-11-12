@@ -121,7 +121,7 @@ export class RpcClient {
           value.error.startsWith('加载内置运行时:') ||
           value.error === '运行时资源与私有数据目录不得重叠'
         )
-          return '内置 Python/Node 资源校验失败，请重新准备客户端运行时资源。'
+          return '内置 Python/Node/Git 资源校验失败，请重新准备客户端运行时资源。'
       } catch {
         /* 非结构化或超出边界的诊断不用于生成对外原因。 */
       }

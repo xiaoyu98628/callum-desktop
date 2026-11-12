@@ -43,15 +43,15 @@ test('解释器资源按四个平台的匹配架构选择离线解压目录', ()
 })
 
 test(
-  '模型每轮收到内置解释器入口和直接调用示例，真实 Python/Node 沿 Go 沙箱执行',
+  '模型每轮收到内置解释器入口和直接调用示例，真实 Python/Node/Git 沿 Go 沙箱执行',
   { skip: !supportedBackend },
   async () => {
     const results: string[] = []
     const instructions: string[] = []
     const runtimeRoot = await realpath(resolveRuntimeDirectory(resourceRoot))
     const manifest = record(JSON.parse(await readFile(join(runtimeRoot, 'manifest.json'), 'utf8')))
-    const entries = [record(manifest.python), record(manifest.node)].map((entry) =>
-      join(runtimeRoot, String(entry.path)),
+    const entries = [record(manifest.python), record(manifest.node), record(manifest.git)].map(
+      (entry) => join(runtimeRoot, String(entry.path)),
     )
     const profile = await mkdtemp(join(tmpdir(), 'callum-bundled-runtime-'))
     const upstream = createServer((request, response) => {
@@ -90,17 +90,20 @@ test(
                 function: {
                   name: 'run_command',
                   arguments: JSON.stringify({
-                    command: python
-                      ? [
-                          'python3',
-                          '-c',
-                          'import sys; assert "runtimes" in sys.executable; print(sys.version.split()[0])',
-                        ]
-                      : [
-                          'node',
-                          '-e',
-                          'if(!process.execPath.includes("runtimes"))process.exit(2);console.log(process.version)',
-                        ],
+                    command:
+                      text === 'git'
+                        ? ['git', '--version']
+                        : python
+                          ? [
+                              'python3',
+                              '-c',
+                              'import sys; assert "runtimes" in sys.executable; print(sys.version.split()[0])',
+                            ]
+                          : [
+                              'node',
+                              '-e',
+                              'if(!process.execPath.includes("runtimes"))process.exit(2);console.log(process.version)',
+                            ],
                     cwd: profile,
                   }),
                 },
@@ -130,7 +133,7 @@ test(
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const events: ChatEvent[] = []
       service.subscribe((event) => events.push(event))
-      for (const text of ['python', 'node']) {
+      for (const text of ['python', 'node', 'git']) {
         const accepted: SendMessageResult = await service.send({
           conversationId: null,
           modelId,
@@ -156,8 +159,8 @@ test(
           await setTimeout(20)
         }
       }
-      assert.equal(results.length, 2)
-      assert.ok(instructions.length >= 4, '两次执行的工具调用前后均应携带调用指引')
+      assert.equal(results.length, 3)
+      assert.ok(instructions.length >= 6, '三次执行的工具调用前后均应携带调用指引')
       for (const description of instructions) {
         for (const entry of entries) assert.ok(description.includes(JSON.stringify(entry)))
         assert.ok(description.includes('["python3","-c","print(1)"]'))
@@ -165,6 +168,7 @@ test(
       }
       assert.match(results[0] ?? '', /3\.14\.10/)
       assert.match(results[1] ?? '', /v26\.13\.0/)
+      assert.match(results[2] ?? '', /git version 2\.56\.1/)
       for (const result of results) {
         assert.match(result, /"exit_code":0/)
         assert.match(result, /"cleanup_complete":true/)
@@ -189,11 +193,11 @@ test('运行时缺失、清单损坏均阻止服务就绪，修复后可重试',
   await chmod(executable, 0o755)
   const service = new ChatService(join(profile, 'private-data'), resources)
   try {
-    await assert.rejects(service.overview(0), /内置 Python\/Node/)
+    await assert.rejects(service.overview(0), /内置 Python\/Node\/Git/)
     const runtimeRoot = await createRuntimeFixture(resources)
     await writeFile(join(runtimeRoot, 'node', 'extra-file'), 'unlisted')
     assert.equal((await service.retryStart()).status, 'startup-failed')
-    assert.match(String(Reflect.get(service, 'error')), /内置 Python\/Node 资源校验失败/)
+    assert.match(String(Reflect.get(service, 'error')), /内置 Python\/Node\/Git 资源校验失败/)
     await rm(join(runtimeRoot, 'node', 'extra-file'))
     assert.equal((await service.retryStart()).status, 'ready')
     assert.deepEqual(await service.catalog.list(), { providers: [], models: [] })

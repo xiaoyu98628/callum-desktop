@@ -104,7 +104,7 @@ for (const [name, diagnostic, expected] of [
       module: 'main',
       error: '加载内置运行时: secret-private-path',
     }),
-    /内置 Python\/Node 资源校验失败/,
+    /内置 Python\/Node\/Git 资源校验失败/,
   ],
   [
     '诊断容量边界',

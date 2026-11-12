@@ -48,13 +48,14 @@ test(
         directory: string
         python: { archive: string; url: string }
         node: { archive: string; url: string }
+        git: { archive: string; url: string }
       }[]
     }
     const target = sources.targets.find((entry) => entry.directory === resolveResourceTarget())
     assert.ok(target)
     const archives = join(resources, 'runtimes', 'archives')
     await mkdir(archives, { recursive: true })
-    for (const component of [target.python, target.node]) {
+    for (const component of [target.python, target.node, target.git]) {
       await copyFile(
         join(resourceRoot, 'runtimes', 'archives', component.archive),
         join(archives, component.archive),

@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "targets": [
     {
       "directory": "darwin-arm64",
@@ -20,6 +20,17 @@
         "archive": "node-v26.13.0-darwin-arm64.tar.gz",
         "prefix": "node-v26.13.0-darwin-arm64",
         "entry": "bin/node"
+      },
+      "git": {
+        "version": "2.56.1",
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.1/dugite-native-v2.56.1-238326e-macOS-arm64.tar.gz",
+        "sha256": "a882ec6882416b57d212a22bac845ae27944f96cf73453a864f6a12c17863a79",
+        "archive": "dugite-native-v2.56.1-238326e-macOS-arm64.tar.gz",
+        "prefix": ".",
+        "entry": "bin/git",
+        "exec_path": "libexec/git-core",
+        "template_path": "share/git-core/templates",
+        "config_path": "etc/gitconfig"
       }
     },
     {
@@ -41,6 +52,17 @@
         "archive": "node-v26.13.0-darwin-x64.tar.gz",
         "prefix": "node-v26.13.0-darwin-x64",
         "entry": "bin/node"
+      },
+      "git": {
+        "version": "2.56.1",
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.1/dugite-native-v2.56.1-238326e-macOS-x64.tar.gz",
+        "sha256": "3fdb0c2f102fe0273d64b5d5fb77315c19f2b4648a154593723cb9ed98f2bc7d",
+        "archive": "dugite-native-v2.56.1-238326e-macOS-x64.tar.gz",
+        "prefix": ".",
+        "entry": "bin/git",
+        "exec_path": "libexec/git-core",
+        "template_path": "share/git-core/templates",
+        "config_path": "etc/gitconfig"
       }
     },
     {
@@ -62,6 +84,17 @@
         "archive": "node-v26.13.0-win-x64.zip",
         "prefix": "node-v26.13.0-win-x64",
         "entry": "node.exe"
+      },
+      "git": {
+        "version": "2.56.1.windows.1",
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.1/dugite-native-v2.56.1-238326e-windows-x64.tar.gz",
+        "sha256": "e9fa2c78952aa2c2154c26dbd4999f93269896e9fc902fa9fe840412d4ffdb04",
+        "archive": "dugite-native-v2.56.1-238326e-windows-x64.tar.gz",
+        "prefix": ".",
+        "entry": "cmd/git.exe",
+        "exec_path": "ucrt64/libexec/git-core",
+        "template_path": "ucrt64/share/git-core/templates",
+        "config_path": "etc/gitconfig"
       }
     },
     {
@@ -83,6 +116,17 @@
         "archive": "node-v26.13.0-win-arm64.zip",
         "prefix": "node-v26.13.0-win-arm64",
         "entry": "node.exe"
+      },
+      "git": {
+        "version": "2.56.1.windows.1",
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.56.1/dugite-native-v2.56.1-238326e-windows-arm64.tar.gz",
+        "sha256": "c30eef9fc273f4f56f795b4be713726f8a2fd35832633f4e4b9f51a6f0cf8198",
+        "archive": "dugite-native-v2.56.1-238326e-windows-arm64.tar.gz",
+        "prefix": ".",
+        "entry": "cmd/git.exe",
+        "exec_path": "clangarm64/libexec/git-core",
+        "template_path": "clangarm64/share/git-core/templates",
+        "config_path": "etc/gitconfig"
       }
     }
   ]

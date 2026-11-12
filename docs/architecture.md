@@ -8,7 +8,7 @@
 
 ## 进程与依赖方向
 
-Python/Node 作为客户端资源随附，主进程仅根据资源根目录定位并向 Go 传入 `--runtime-dir`。完整性检查、裸命令解析、子进程专用 PATH、审批、沙箱、输出及回收由 Go 持有。窗口与渲染进程不直接启动解释器；运行期不下载或更新解释器，资源及私有数据目录分离。平台和准备方式见 [桌面端开发](development.md#内置-pythonnode-资源)。
+Python/Node/Git 作为客户端资源随附，主进程仅根据资源根目录定位并向 Go 传入 `--runtime-dir`。完整性检查、裸命令解析、子进程专用 PATH、审批、沙箱、输出及回收由 Go 持有。窗口与渲染进程不直接启动这些程序；运行期不下载或更新运行时资源，资源及私有数据目录分离。平台和准备方式见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
 
 ```mermaid
 flowchart LR
@@ -200,4 +200,4 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 
 ## 运行时归档与开发准备
 
-四平台完整 Python/Node 归档由客户端仓库 `resources/runtimes/archives/` 持有，来源清单固定版本及 SHA-256。`scripts/prepare-runtimes.ts` 在开发、构建和测试前调用同架构随附服务的离线子命令，生成 `resources/runtimes/unpacked/<平台>/`；不依赖 Go 源码，不打开业务数据库，不在应用启动时补下载。主进程只将已准备的绝对目录传给 Go，由后者持有校验与执行边界。资源布局和失败处理见 [桌面端开发](development.md#内置-pythonnode-资源)。
+四平台完整 Python/Node/Git 归档由客户端仓库 `resources/runtimes/archives/` 持有，来源清单固定版本及 SHA-256。`scripts/prepare-runtimes.ts` 在开发、构建和测试前调用同架构随附服务的离线子命令，生成 `resources/runtimes/unpacked/<平台>/`；不依赖 Go 源码，不打开业务数据库，不在应用启动时补下载。主进程只将已准备的绝对目录传给 Go，由后者持有校验与执行边界。资源布局和失败处理见 [桌面端开发](development.md#内置-pythonnodegit-资源)。

@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path'
 
-/** Callum 和解释器均选择客户端匹配的原生架构，不使用跨架构兼容层。 */
+/** Callum 与运行时均选择客户端匹配的原生架构，不使用跨架构兼容层。 */
 export function resolveResourceTarget(
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,

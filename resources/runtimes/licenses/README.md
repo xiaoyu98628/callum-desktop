@@ -1,0 +1,12 @@
+# Git 发行包许可文本
+
+归档内容未修改；其中已有的许可证和 NOTICE 随解压目录完整保留。此处补充固定版本的上游许可文本，尤其用于 macOS 归档未单独携带的 Git COPYING。
+
+| 文件                           | 原始来源                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| git-COPYING                    | [Git v2.56.1 COPYING](https://github.com/git/git/blob/v2.56.1/COPYING)                            |
+| git-lfs-LICENSE                | [Git LFS v3.8.1 LICENSE.md](https://github.com/git-lfs/git-lfs/blob/v3.8.1/LICENSE.md)            |
+| git-credential-manager-LICENSE | [GCM v2.9.1 LICENSE](https://github.com/git-ecosystem/git-credential-manager/blob/v2.9.1/LICENSE) |
+| dugite-native-LICENSE          | [Dugite v2.56.1 LICENSE.md](https://github.com/desktop/dugite-native/blob/v2.56.1/LICENSE.md)     |
+
+原始构建与依赖版本见 [Dugite v2.56.1](https://github.com/desktop/dugite-native/tree/v2.56.1)。除这些公共许可文本外，各发行包内配套依赖的许可证和声明同样保留。安装包资源复制尚未配置；后续分发必须同时包含本目录，具体约定见 [服务程序资源](../../backend/README.md#打包资源约定) 和 [第三方声明](../../../THIRD_PARTY_NOTICES.md)。
