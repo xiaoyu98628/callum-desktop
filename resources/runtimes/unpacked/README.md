@@ -1,32 +1,9 @@
-# Python/Node/Git 离线解压目录
+# Python/Node/Git 与技能依赖解压目录
 
-本说明文件随 Git 保存，用于保留目录并说明资源位置。各平台解压结果及临时文件由 Git 忽略，不重复提交。
+本说明随 Git 保存。平台解压结果及临时文件由 Git 忽略，不重复提交。
 
-从仓库根目录执行以下命令，使用 `resources/runtimes/archives/` 中的完整归档离线准备当前平台资源，无需手动放置文件：
+在客户端仓库执行 `npm run prepare:runtimes`，从 `resources/runtimes/archives/` 离线准备当前平台；添加 `-- --all` 准备全部平台。开发、构建、测试会自动执行准备步骤。
 
-```sh
-npm run prepare:runtimes
-```
+每个平台目录包含 `python/`、`node/`、`git/`、`native/` 和 `manifest.json`。`native/` 提供 LibreOffice、Poppler、HEIF 和 JPEG XR 转换工具。Windows 的 `native-executables.json` 指向同一目录内的真实可执行文件。Python 库与通用解释器合并。技能正文、脚本和参考资料由 `resources/skills/.system/` 持有，客户端初始化时复制到实际数据目录的 `skills/.system/`，运行时安装到同级 `runtimes/` 后才执行；Go 服务不内嵌技能包。
 
-`npm run dev`、`npm run build` 和 `npm test` 会自动执行该准备步骤。添加 `-- --all` 可准备全部四个平台。
-
-生成布局如下，每个平台目录包含完整 Python、Node、Git 和完整性清单：
-
-```text
-unpacked/
-  README.md
-  darwin-arm64/
-  darwin-x64/
-  win32-x64/
-  win32-arm64/
-
-<平台>/
-  python/
-  node/
-  git/
-  manifest.json
-```
-
-Go 服务实际执行对应平台目录中的 Python、Node 和 Git。完整资源来源、校验与维护方式见 [内置 Python/Node/Git 资源](../../../docs/development.md#内置-pythonnodegit-资源)。
-
-清单内部的 `format_version: 2` 仅用于格式校验，不加入目录。已有旧格式或损坏缓存时，准备命令仍拒绝覆盖；请在服务关闭后先备份原目录，再用已经校验的新资源替换。
+清单 `format_version: 3` 只用于格式校验。已有缓存不一致时拒绝覆盖；应在独立目录核验，并在服务关闭后备份和替换生成资源。详情见 [运行时资源准备](../../../docs/development.md#内置-pythonnodegit-资源)。

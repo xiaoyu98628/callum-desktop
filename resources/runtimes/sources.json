@@ -1,15 +1,15 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "targets": [
     {
       "directory": "darwin-arm64",
       "platform": "darwin",
       "arch": "arm64",
       "python": {
-        "version": "3.14.10",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
-        "sha256": "f15ec3d15460dd66c2eb88639b152cd9040e7d1ece11e38bf89e8f53f0171e02",
-        "archive": "cpython-3.14.10+20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "version": "3.12.14",
+        "url": "",
+        "archive": "callum-python-3.12.14-darwin-arm64.tar.gz",
+        "sha256": "fc334881f9f73a79da0c4eeb6330b1cba1ff7e9805f07eb26f60fa284403bcc9",
         "prefix": "python",
         "entry": "bin/python3"
       },
@@ -31,6 +31,55 @@
         "exec_path": "libexec/git-core",
         "template_path": "share/git-core/templates",
         "config_path": "etc/gitconfig"
+      },
+      "workspace": {
+        "runtime": {
+          "version": "26.1111.10934-flat",
+          "node_modules": "node/node_modules",
+          "bin_directory": "native"
+        },
+        "archives": [
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-01.tar.gz",
+            "sha256": "4fb1c415d6bba8f51c509de7d843430bd10f8b175a45a7d6b4c63799d2390bcd"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-02.tar.gz",
+            "sha256": "0be6857aa441acd2f8b2a9ea2337403c8fce8a1299ef702bb062977bc047a79e"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-03.tar.gz",
+            "sha256": "e74b1edf66e5fcd715a6d595fa26cf992d0240d95191f47d573752d724795567"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-04.tar.gz",
+            "sha256": "c930d45e55d5072c631b85a9755bebeaedc799498e93e445aabf5270661a1e2a"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-05.tar.gz",
+            "sha256": "5d1153a2c7463f8f3a52b568710c6c0228ed243d6e2ae91d853cf7359cb7442e"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-06.tar.gz",
+            "sha256": "5e57119cd5845a2f9e6e1af2e7ac74c7d1d102bc5bc2770a38ddf24ffd33efac"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-07.tar.gz",
+            "sha256": "c86bdd3a217865138b3cf15668a8348848bbb006af8c7cc2be7d4270ce2025a3"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-08.tar.gz",
+            "sha256": "eee79f5d0d3acfba784044a4689ebcabe6018854afe7dc81aa0945dcb31711b9"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-09.tar.gz",
+            "sha256": "d2eb34016ced8f84b8899a7fbc01cb02c96c821f3a662c1ba6e4262c1ba4a075"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-arm64-10.tar.gz",
+            "sha256": "0628b4dd75395dd52bc619a882cc9908e3f3e6f80a5a1f3732d3de826433946c"
+          }
+        ]
       }
     },
     {
@@ -38,10 +87,10 @@
       "platform": "darwin",
       "arch": "amd64",
       "python": {
-        "version": "3.14.10",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-x86_64-apple-darwin-install_only_stripped.tar.gz",
-        "sha256": "85f8e54798e8e6aa58d2253f013d815c5616343cc0d15cbea882fca78bdfeae2",
-        "archive": "cpython-3.14.10+20261110-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "version": "3.12.14",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "62891cf4a32ed18b6b4174def999184b5186371422c52dd92d941401db0f0e41",
+        "archive": "cpython-3.12.14+20260929-x86_64-apple-darwin-install_only_stripped.tar.gz",
         "prefix": "python",
         "entry": "bin/python3"
       },
@@ -63,6 +112,166 @@
         "exec_path": "libexec/git-core",
         "template_path": "share/git-core/templates",
         "config_path": "etc/gitconfig"
+      },
+      "python_packages": [
+        {
+          "name": "python-docx",
+          "version": "1.2.0",
+          "url": "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl",
+          "sha256": "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7",
+          "archive": "python_docx-1.2.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "docx/__init__.py"
+        },
+        {
+          "name": "openpyxl",
+          "version": "3.1.5",
+          "url": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+          "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+          "archive": "openpyxl-3.1.5-py2.py3-none-any.whl",
+          "prefix": ".",
+          "entry": "openpyxl/__init__.py"
+        },
+        {
+          "name": "python-pptx",
+          "version": "1.0.2",
+          "url": "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl",
+          "sha256": "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba",
+          "archive": "python_pptx-1.0.2-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "pptx/__init__.py"
+        },
+        {
+          "name": "lxml",
+          "version": "6.1.3",
+          "url": "https://files.pythonhosted.org/packages/a8/25/070c92013a1c029a602b03560d68772313d918268667fa993da7961759c9/lxml-6.1.3-cp312-cp312-macosx_10_13_x86_64.whl",
+          "sha256": "623c8799c17128753c65699f1c3aa32402657393a9ad6db09ed8b98ddf76611d",
+          "archive": "lxml-6.1.3-cp312-cp312-macosx_10_13_x86_64.whl",
+          "prefix": ".",
+          "entry": "lxml/__init__.py"
+        },
+        {
+          "name": "Pillow",
+          "version": "13.0.0",
+          "url": "https://files.pythonhosted.org/packages/7a/b8/58d79332229482eb0d27c82973850808c19d37e5bdc14443d3417bd373f5/pillow-13.0.0-cp312-cp312-macosx_10_13_x86_64.whl",
+          "sha256": "67c8d44ad89fa7eb88de5d6ef6199b1e03dd24974f85a67639fc8badb801fe79",
+          "archive": "pillow-13.0.0-cp312-cp312-macosx_10_13_x86_64.whl",
+          "prefix": ".",
+          "entry": "PIL/__init__.py"
+        },
+        {
+          "name": "typing_extensions",
+          "version": "4.16.0",
+          "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+          "archive": "typing_extensions-4.16.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "typing_extensions.py"
+        },
+        {
+          "name": "et-xmlfile",
+          "version": "2.0.0",
+          "url": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+          "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+          "archive": "et_xmlfile-2.0.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "et_xmlfile/__init__.py"
+        },
+        {
+          "name": "XlsxWriter",
+          "version": "3.3.1",
+          "url": "https://files.pythonhosted.org/packages/88/eb/1e6af9959a567901a7e7c7cef2e75883e487df223ed67f9a8977ff863bd8/xlsxwriter-3.3.1-py3-none-any.whl",
+          "sha256": "8e2c89e59d733fe59e112317218c64fbbc276d90a8c144ebd6f7fa15e7ab184a",
+          "archive": "xlsxwriter-3.3.1-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "xlsxwriter/__init__.py"
+        },
+        {
+          "name": "pdf2image",
+          "version": "1.17.0",
+          "url": "https://files.pythonhosted.org/packages/62/33/61766ae033518957f877ab246f87ca30a85b778ebaad65b7f74fa7e52988/pdf2image-1.17.0-py3-none-any.whl",
+          "archive": "pdf2image-1.17.0-py3-none-any.whl",
+          "sha256": "ecdd58d7afb810dffe21ef2b1bbc057ef434dabbac6c33778a38a3f7744a27e2",
+          "prefix": ".",
+          "entry": "pdf2image/__init__.py"
+        },
+        {
+          "name": "pypdf",
+          "version": "6.21.4",
+          "url": "https://files.pythonhosted.org/packages/3f/4b/77e8ad4ac42c9d93600f40541a50e9feb3a61d2bbee2d76f659346072051/pypdf-6.21.4-py3-none-any.whl",
+          "archive": "pypdf-6.21.4-py3-none-any.whl",
+          "sha256": "33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c",
+          "prefix": ".",
+          "entry": "pypdf/__init__.py"
+        },
+        {
+          "name": "reportlab",
+          "version": "4.4.9",
+          "url": "https://files.pythonhosted.org/packages/17/77/546e50edfaba6a0e58e8ec5fdc4446510227cec9e8f40172b60941d5a633/reportlab-4.4.9-py3-none-any.whl",
+          "archive": "reportlab-4.4.9-py3-none-any.whl",
+          "sha256": "68e2d103ae8041a37714e8896ec9b79a1c1e911d68c3bd2ea17546568cf17bfd",
+          "prefix": ".",
+          "entry": "reportlab/__init__.py"
+        },
+        {
+          "name": "charset-normalizer",
+          "version": "3.5.2",
+          "url": "https://files.pythonhosted.org/packages/fc/ad/d07d7862a62ffa6d79d68074d14823243dd235a77c45262acbf6adeb28bf/charset_normalizer-3.5.2-py3-none-any.whl",
+          "archive": "charset_normalizer-3.5.2-py3-none-any.whl",
+          "sha256": "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685",
+          "prefix": ".",
+          "entry": "charset_normalizer/__init__.py"
+        },
+        {
+          "name": "numpy",
+          "version": "2.3.5",
+          "url": "https://files.pythonhosted.org/packages/44/37/e669fe6cbb2b96c62f6bbedc6a81c0f3b7362f6a59230b23caa673a85721/numpy-2.3.5-cp312-cp312-macosx_10_13_x86_64.whl",
+          "archive": "numpy-2.3.5-cp312-cp312-macosx_10_13_x86_64.whl",
+          "sha256": "74ae7b798248fe62021dbf3c914245ad45d1a6b0cb4a29ecb4b31d0bfbc4cc3e",
+          "prefix": ".",
+          "entry": "numpy/__init__.py"
+        }
+      ],
+      "workspace": {
+        "runtime": {
+          "version": "26.1111.10934-native",
+          "node_modules": "node/lib/node_modules",
+          "bin_directory": "native"
+        },
+        "archives": [
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-01.tar.gz",
+            "sha256": "7a2ac23374eb2bdb552f3b230885bcbb3dd95026e564ee1d8b5795a7b5174920"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-02.tar.gz",
+            "sha256": "c84578878c0a2ed30d50878e945e194a9347ef2ece824d4099f0fdfd5c5360b8"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-03.tar.gz",
+            "sha256": "80361fcd71f4d65f87bc3918c0e9e653d5d8d99b944f168d5625d6245cab9e06"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-04.tar.gz",
+            "sha256": "8a415721a60d7517632e8ea056a301a70fdcb431643651fbabde737a0609f565"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-05.tar.gz",
+            "sha256": "7aa687fab572962ad80f1d503cfd45a4e173830238db683938762382e24476c0"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-06.tar.gz",
+            "sha256": "19e17076d82ba6e3297c73da253b6284214ba68e1b0c0cb4cff53fc58ce7f596"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-07.tar.gz",
+            "sha256": "09ed81d99556d1403414912bf76ad2f78a49de43e2c8479469270243eabfc78b"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-darwin-x64-08.tar.gz",
+            "sha256": "e0ff17babed2b33fa4b48a36dd5894457df5436ab2610666d097ce73410d46f1"
+          }
+        ]
       }
     },
     {
@@ -70,10 +279,10 @@
       "platform": "windows",
       "arch": "amd64",
       "python": {
-        "version": "3.14.10",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
-        "sha256": "32b6cf90a03e2bc15fda8d2ab7ff78c4870f138887d612932650ce764efaab8f",
-        "archive": "cpython-3.14.10+20261110-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "version": "3.12.14",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "f38e68f4d612ade6dd50c894fc80b14c0be0c3b5201145d6fff5f20b9323204d",
+        "archive": "cpython-3.12.14+20260929-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
         "prefix": "python",
         "entry": "python.exe"
       },
@@ -95,6 +304,174 @@
         "exec_path": "ucrt64/libexec/git-core",
         "template_path": "ucrt64/share/git-core/templates",
         "config_path": "etc/gitconfig"
+      },
+      "python_packages": [
+        {
+          "name": "python-docx",
+          "version": "1.2.0",
+          "url": "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl",
+          "sha256": "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7",
+          "archive": "python_docx-1.2.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "docx/__init__.py"
+        },
+        {
+          "name": "openpyxl",
+          "version": "3.1.5",
+          "url": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+          "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+          "archive": "openpyxl-3.1.5-py2.py3-none-any.whl",
+          "prefix": ".",
+          "entry": "openpyxl/__init__.py"
+        },
+        {
+          "name": "python-pptx",
+          "version": "1.0.2",
+          "url": "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl",
+          "sha256": "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba",
+          "archive": "python_pptx-1.0.2-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "pptx/__init__.py"
+        },
+        {
+          "name": "lxml",
+          "version": "6.1.3",
+          "url": "https://files.pythonhosted.org/packages/3a/5b/6ed903e4e6278a020c8a6f0dbbe78030d041840a6b4a64ea441a1e414077/lxml-6.1.3-cp312-cp312-win_amd64.whl",
+          "sha256": "3e9a00d1c2c30936f7add097c41afc5da6556c580909104aafd382cac92a855c",
+          "archive": "lxml-6.1.3-cp312-cp312-win_amd64.whl",
+          "prefix": ".",
+          "entry": "lxml/__init__.py"
+        },
+        {
+          "name": "Pillow",
+          "version": "13.0.0",
+          "url": "https://files.pythonhosted.org/packages/ff/cd/73a79ecdc822076002eb24b5e1e4a530b0bb5310fcb6d239abbec877110b/pillow-13.0.0-cp312-cp312-win_amd64.whl",
+          "sha256": "ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b",
+          "archive": "pillow-13.0.0-cp312-cp312-win_amd64.whl",
+          "prefix": ".",
+          "entry": "PIL/__init__.py"
+        },
+        {
+          "name": "typing_extensions",
+          "version": "4.16.0",
+          "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+          "archive": "typing_extensions-4.16.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "typing_extensions.py"
+        },
+        {
+          "name": "et-xmlfile",
+          "version": "2.0.0",
+          "url": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+          "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+          "archive": "et_xmlfile-2.0.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "et_xmlfile/__init__.py"
+        },
+        {
+          "name": "XlsxWriter",
+          "version": "3.3.1",
+          "url": "https://files.pythonhosted.org/packages/88/eb/1e6af9959a567901a7e7c7cef2e75883e487df223ed67f9a8977ff863bd8/xlsxwriter-3.3.1-py3-none-any.whl",
+          "sha256": "8e2c89e59d733fe59e112317218c64fbbc276d90a8c144ebd6f7fa15e7ab184a",
+          "archive": "xlsxwriter-3.3.1-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "xlsxwriter/__init__.py"
+        },
+        {
+          "name": "pdf2image",
+          "version": "1.17.0",
+          "url": "https://files.pythonhosted.org/packages/62/33/61766ae033518957f877ab246f87ca30a85b778ebaad65b7f74fa7e52988/pdf2image-1.17.0-py3-none-any.whl",
+          "archive": "pdf2image-1.17.0-py3-none-any.whl",
+          "sha256": "ecdd58d7afb810dffe21ef2b1bbc057ef434dabbac6c33778a38a3f7744a27e2",
+          "prefix": ".",
+          "entry": "pdf2image/__init__.py"
+        },
+        {
+          "name": "pypdf",
+          "version": "6.21.4",
+          "url": "https://files.pythonhosted.org/packages/3f/4b/77e8ad4ac42c9d93600f40541a50e9feb3a61d2bbee2d76f659346072051/pypdf-6.21.4-py3-none-any.whl",
+          "archive": "pypdf-6.21.4-py3-none-any.whl",
+          "sha256": "33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c",
+          "prefix": ".",
+          "entry": "pypdf/__init__.py"
+        },
+        {
+          "name": "reportlab",
+          "version": "4.4.9",
+          "url": "https://files.pythonhosted.org/packages/17/77/546e50edfaba6a0e58e8ec5fdc4446510227cec9e8f40172b60941d5a633/reportlab-4.4.9-py3-none-any.whl",
+          "archive": "reportlab-4.4.9-py3-none-any.whl",
+          "sha256": "68e2d103ae8041a37714e8896ec9b79a1c1e911d68c3bd2ea17546568cf17bfd",
+          "prefix": ".",
+          "entry": "reportlab/__init__.py"
+        },
+        {
+          "name": "charset-normalizer",
+          "version": "3.5.2",
+          "url": "https://files.pythonhosted.org/packages/fc/ad/d07d7862a62ffa6d79d68074d14823243dd235a77c45262acbf6adeb28bf/charset_normalizer-3.5.2-py3-none-any.whl",
+          "archive": "charset_normalizer-3.5.2-py3-none-any.whl",
+          "sha256": "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685",
+          "prefix": ".",
+          "entry": "charset_normalizer/__init__.py"
+        },
+        {
+          "name": "numpy",
+          "version": "2.3.5",
+          "url": "https://files.pythonhosted.org/packages/2d/57/8aeaf160312f7f489dea47ab61e430b5cb051f59a98ae68b7133ce8fa06a/numpy-2.3.5-cp312-cp312-win_amd64.whl",
+          "archive": "numpy-2.3.5-cp312-cp312-win_amd64.whl",
+          "sha256": "86945f2ee6d10cdfd67bcb4069c1662dd711f7e2a4343db5cecec06b87cf31aa",
+          "prefix": ".",
+          "entry": "numpy/__init__.py"
+        }
+      ],
+      "workspace": {
+        "runtime": {
+          "version": "26.1111.10934-native",
+          "node_modules": "node/node_modules",
+          "bin_directory": "native"
+        },
+        "archives": [
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-01.tar.gz",
+            "sha256": "7d66d49806b42ec3ab72a77c75dfe9572fa3b10a47c8b70e08ecaa52a8ec1e7b"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-02.tar.gz",
+            "sha256": "1ac69e47b445e5fbab97b6b5dbc2c27ea791c405cb7adeda80a7769860bdad77"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-03.tar.gz",
+            "sha256": "e47b7581cbfe66251700776d59a45bb6c3a37e92fed6e958fcefd9ec41ddd907"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-04.tar.gz",
+            "sha256": "e9ef8deb0bf8040d75de547c823dec903eadb0ddca0c58e514c62d1b332ef3ba"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-05.tar.gz",
+            "sha256": "b672f9561425d6ac2191f6cbf7441f5eaa1d783bcd90f5513d98f334270d9207"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-06.tar.gz",
+            "sha256": "9091ae25dfbae76e98f487c9ef4092baf485eecd2d49ed7e0f0cc7356013dac9"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-07.tar.gz",
+            "sha256": "04e1ade5337ce08fbd1f945814a96584fc1fd1d99a5c8084c9faf8075ea98685"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-08.tar.gz",
+            "sha256": "08f31dede048f065aad0203938875b0a1ab67dbd32d2ed148f525fcb7eb1cf21"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-09.tar.gz",
+            "sha256": "e81ec81fa8bad17a83dc05cdc40b3bdb5d12ec58015e3187db8a5a1ed6b274aa"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-x64-10.tar.gz",
+            "sha256": "6af1fd826a84edf755506242c486ccf582f480933c93917e4c857aa8789b5593"
+          }
+        ]
       }
     },
     {
@@ -102,10 +479,10 @@
       "platform": "windows",
       "arch": "arm64",
       "python": {
-        "version": "3.14.10",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.14.10%2B20261110-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
-        "sha256": "0fc229d477a86e9797d4732b03a5bbc02c503cb81515c986b723038a12c520df",
-        "archive": "cpython-3.14.10+20261110-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "version": "3.12.14",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "0569fbe45713c68b034e3c1a1372f5cbb802927d3037395fb3cc94e46401704d",
+        "archive": "cpython-3.12.14+20260929-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
         "prefix": "python",
         "entry": "python.exe"
       },
@@ -127,6 +504,174 @@
         "exec_path": "clangarm64/libexec/git-core",
         "template_path": "clangarm64/share/git-core/templates",
         "config_path": "etc/gitconfig"
+      },
+      "python_packages": [
+        {
+          "name": "python-docx",
+          "version": "1.2.0",
+          "url": "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl",
+          "sha256": "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7",
+          "archive": "python_docx-1.2.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "docx/__init__.py"
+        },
+        {
+          "name": "openpyxl",
+          "version": "3.1.5",
+          "url": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+          "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+          "archive": "openpyxl-3.1.5-py2.py3-none-any.whl",
+          "prefix": ".",
+          "entry": "openpyxl/__init__.py"
+        },
+        {
+          "name": "python-pptx",
+          "version": "1.0.2",
+          "url": "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl",
+          "sha256": "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba",
+          "archive": "python_pptx-1.0.2-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "pptx/__init__.py"
+        },
+        {
+          "name": "lxml",
+          "version": "6.1.3",
+          "url": "https://files.pythonhosted.org/packages/e4/1b/7bcebb7b6332cb3ae85e9c13b139adb6f23f75c71d84041c56a5005d9a29/lxml-6.1.3-cp312-cp312-win_arm64.whl",
+          "sha256": "1aeca87830c4fe649dcf93fe2b059525b71c72587f21be4ae4af7103082a79fa",
+          "archive": "lxml-6.1.3-cp312-cp312-win_arm64.whl",
+          "prefix": ".",
+          "entry": "lxml/__init__.py"
+        },
+        {
+          "name": "Pillow",
+          "version": "13.0.0",
+          "url": "https://files.pythonhosted.org/packages/4a/a3/be5a1236efd085b3984e4305da8f179ae9dab80c991d2ad78f2bd5c4c843/pillow-13.0.0-cp312-cp312-win_arm64.whl",
+          "sha256": "c3bc8ee0271387e0b1e3ad0ff893645990a656e79bf9c42f4f734a3642b11d51",
+          "archive": "pillow-13.0.0-cp312-cp312-win_arm64.whl",
+          "prefix": ".",
+          "entry": "PIL/__init__.py"
+        },
+        {
+          "name": "typing_extensions",
+          "version": "4.16.0",
+          "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+          "archive": "typing_extensions-4.16.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "typing_extensions.py"
+        },
+        {
+          "name": "et-xmlfile",
+          "version": "2.0.0",
+          "url": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+          "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+          "archive": "et_xmlfile-2.0.0-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "et_xmlfile/__init__.py"
+        },
+        {
+          "name": "XlsxWriter",
+          "version": "3.3.1",
+          "url": "https://files.pythonhosted.org/packages/88/eb/1e6af9959a567901a7e7c7cef2e75883e487df223ed67f9a8977ff863bd8/xlsxwriter-3.3.1-py3-none-any.whl",
+          "sha256": "8e2c89e59d733fe59e112317218c64fbbc276d90a8c144ebd6f7fa15e7ab184a",
+          "archive": "xlsxwriter-3.3.1-py3-none-any.whl",
+          "prefix": ".",
+          "entry": "xlsxwriter/__init__.py"
+        },
+        {
+          "name": "pdf2image",
+          "version": "1.17.0",
+          "url": "https://files.pythonhosted.org/packages/62/33/61766ae033518957f877ab246f87ca30a85b778ebaad65b7f74fa7e52988/pdf2image-1.17.0-py3-none-any.whl",
+          "archive": "pdf2image-1.17.0-py3-none-any.whl",
+          "sha256": "ecdd58d7afb810dffe21ef2b1bbc057ef434dabbac6c33778a38a3f7744a27e2",
+          "prefix": ".",
+          "entry": "pdf2image/__init__.py"
+        },
+        {
+          "name": "pypdf",
+          "version": "6.21.4",
+          "url": "https://files.pythonhosted.org/packages/3f/4b/77e8ad4ac42c9d93600f40541a50e9feb3a61d2bbee2d76f659346072051/pypdf-6.21.4-py3-none-any.whl",
+          "archive": "pypdf-6.21.4-py3-none-any.whl",
+          "sha256": "33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c",
+          "prefix": ".",
+          "entry": "pypdf/__init__.py"
+        },
+        {
+          "name": "reportlab",
+          "version": "4.4.9",
+          "url": "https://files.pythonhosted.org/packages/17/77/546e50edfaba6a0e58e8ec5fdc4446510227cec9e8f40172b60941d5a633/reportlab-4.4.9-py3-none-any.whl",
+          "archive": "reportlab-4.4.9-py3-none-any.whl",
+          "sha256": "68e2d103ae8041a37714e8896ec9b79a1c1e911d68c3bd2ea17546568cf17bfd",
+          "prefix": ".",
+          "entry": "reportlab/__init__.py"
+        },
+        {
+          "name": "charset-normalizer",
+          "version": "3.5.2",
+          "url": "https://files.pythonhosted.org/packages/fc/ad/d07d7862a62ffa6d79d68074d14823243dd235a77c45262acbf6adeb28bf/charset_normalizer-3.5.2-py3-none-any.whl",
+          "archive": "charset_normalizer-3.5.2-py3-none-any.whl",
+          "sha256": "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685",
+          "prefix": ".",
+          "entry": "charset_normalizer/__init__.py"
+        },
+        {
+          "name": "numpy",
+          "version": "2.3.5",
+          "url": "https://files.pythonhosted.org/packages/78/a6/aae5cc2ca78c45e64b9ef22f089141d661516856cf7c8a54ba434576900d/numpy-2.3.5-cp312-cp312-win_arm64.whl",
+          "archive": "numpy-2.3.5-cp312-cp312-win_arm64.whl",
+          "sha256": "f28620fe26bee16243be2b7b874da327312240a7cdc38b769a697578d2100013",
+          "prefix": ".",
+          "entry": "numpy/__init__.py"
+        }
+      ],
+      "workspace": {
+        "runtime": {
+          "version": "26.1111.10934-native",
+          "node_modules": "node/node_modules",
+          "bin_directory": "native"
+        },
+        "archives": [
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-01.tar.gz",
+            "sha256": "11365e37b3e1f3ec65adb4bd959c0c4c8883678ae45c16289ab2b55d3be3eb58"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-02.tar.gz",
+            "sha256": "d59b2da0973a4d3c282c7696ff06b2504b3e398a1d12be421a8b49fd50cb3423"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-03.tar.gz",
+            "sha256": "39d522599f2ab19e3a186d3a918f867abbda86d8e52ec88377c7fe1b693c8e87"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-04.tar.gz",
+            "sha256": "32cb7030ca4b50e5eab82dc30fe4e1ba9fc8c983e3c3050f0acdacc55a877a91"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-05.tar.gz",
+            "sha256": "f8296a7686c85d44eaad6cb42b876e05c6458f3c8536adf53011fa2e65d3d688"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-06.tar.gz",
+            "sha256": "75048093f464305ba88ae95f5c2ffd00f14f94fb919b97a7ff3f4251e4f59bc6"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-07.tar.gz",
+            "sha256": "9387a5e3befe850e5ebb74d352b7ce460f78cb9121a25fb7ac8062130bffa5da"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-08.tar.gz",
+            "sha256": "4204f63ec988c692eafa71187f1e583a1d52a214ff5b870e8b59335e309b76e7"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-09.tar.gz",
+            "sha256": "0f5c3afefa0495c36165ee291b0c4bc057330b3903a7259f95fc1765590f5d4f"
+          },
+          {
+            "archive": "callum-native-26.1111.10934-win32-arm64-10.tar.gz",
+            "sha256": "6d9676d9ae2602b19a6db931c205566aa9b6b5c96fa822deee4d112377eb11bd"
+          }
+        ]
       }
     }
   ]

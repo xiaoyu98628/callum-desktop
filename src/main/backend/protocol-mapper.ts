@@ -115,6 +115,9 @@ export function messageFromRpc(value: unknown): ChatMessage {
         text: b.text === undefined ? '' : string(b.text),
         path: b.path === undefined ? '' : string(b.path),
         ...(b.attachment_ref === undefined ? {} : { attachmentRef: string(b.attachment_ref) }),
+        ...(b.name === undefined ? {} : { name: string(b.name) }),
+        ...(b.mime === undefined ? {} : { mime: string(b.mime) }),
+        ...(b.size === undefined ? {} : { size: integer(b.size) }),
       }
     }),
   })

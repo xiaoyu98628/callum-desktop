@@ -162,6 +162,60 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      const deliveredFollowUp =
+        messages.findLast((message) => message.role === 'user')?.content === '读取已交付文件'
+      if (deliveredFollowUp) {
+        let name = ''
+        let args: unknown = {}
+        if (role === 'user') {
+          const published = messages.find((message) => {
+            if (message.role !== 'tool' || typeof message.content !== 'string') return false
+            return message.content.includes('"published":true')
+          })
+          if (!published) throw new Error('历史缺少交付文件记录')
+          const metadata = record(JSON.parse(String(published.content)))
+          const attachment = record(record(metadata.result).attachment)
+          name = 'open_attachment'
+          args = { attachment_ref: string(attachment.attachment_ref) }
+        } else if (role === 'tool') {
+          const result = record(record(JSON.parse(text)).result)
+          if (typeof result.path === 'string' && typeof result.work_directory === 'string') {
+            name = 'read_file'
+            args = { path: result.path }
+          }
+        }
+        if (name) {
+          emit(response, {
+            tool_calls: [
+              {
+                index: 0,
+                id: `followup-${name}`,
+                type: 'function',
+                function: { name, arguments: JSON.stringify(args) },
+              },
+            ],
+          })
+          finish(response, 'tool_calls')
+          return
+        }
+      }
+      if (role === 'user' && text === '生成交付文件') {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'publish-file',
+              type: 'function',
+              function: {
+                name: 'publish_artifact',
+                arguments: JSON.stringify({ path: fixturePath }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (role === 'user' && (text === 'AI 审批目录' || text === 'AI 审批转人工')) {
         emit(response, {
           tool_calls: [

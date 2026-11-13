@@ -49,18 +49,34 @@ test(
         python: { archive: string; url: string }
         node: { archive: string; url: string }
         git: { archive: string; url: string }
+        python_packages?: { archive: string; url: string }[]
+        workspace?: { archives: { archive: string }[] }
       }[]
     }
     const target = sources.targets.find((entry) => entry.directory === resolveResourceTarget())
     assert.ok(target)
     const archives = join(resources, 'runtimes', 'archives')
     await mkdir(archives, { recursive: true })
-    for (const component of [target.python, target.node, target.git]) {
+    for (const component of [
+      target.python,
+      target.node,
+      target.git,
+      ...(target.python_packages ?? []),
+    ]) {
       await copyFile(
         join(resourceRoot, 'runtimes', 'archives', component.archive),
         join(archives, component.archive),
       )
-      component.url = 'https://example.invalid/must-not-download'
+      // 保持 wheel 的固定来源域名约束；即使允许访问该地址也无法提供资源。
+      component.url = target.python_packages?.includes(component)
+        ? 'https://files.pythonhosted.org/must-not-download'
+        : 'https://example.invalid/must-not-download'
+    }
+    for (const archive of target.workspace?.archives ?? []) {
+      await copyFile(
+        join(resourceRoot, 'runtimes', 'archives', archive.archive),
+        join(archives, archive.archive),
+      )
     }
     await writeFile(join(resources, 'runtimes', 'sources.json'), JSON.stringify(sources))
     prepareRuntimes(resources)

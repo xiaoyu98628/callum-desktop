@@ -73,6 +73,9 @@ export interface ContentBlock {
   text: string
   path: string
   attachmentRef?: string
+  name?: string
+  mime?: string
+  size?: number
 }
 export interface ChatMessage {
   id: string
@@ -448,6 +451,9 @@ export function parseMessage(value: unknown): ChatMessage {
         text: string(b.text),
         path: string(b.path),
         ...(b.attachmentRef === undefined ? {} : { attachmentRef: string(b.attachmentRef) }),
+        ...(b.name === undefined ? {} : { name: string(b.name) }),
+        ...(b.mime === undefined ? {} : { mime: string(b.mime) }),
+        ...(b.size === undefined ? {} : { size: integer(b.size) }),
       }
     }),
     status: string(v.status),

@@ -27,6 +27,7 @@ export default defineConfig(
     '.idea/**',
     'resources/runtimes/archives/**',
     'resources/runtimes/unpacked/**',
+    'resources/skills/**',
   ]),
   js.configs.recommended,
   ts.configs.recommended,

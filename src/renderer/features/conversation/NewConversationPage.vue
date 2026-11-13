@@ -29,7 +29,13 @@ import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
 import AttachmentPicker from './AttachmentPicker.vue'
 import AttachmentList from './AttachmentList.vue'
-import { dragFiles, dropFiles, pasteFiles } from './attachment-files'
+import {
+  dragFiles,
+  dropFiles,
+  pasteFiles,
+  isImageAttachment,
+  isImageFile,
+} from './attachment-files'
 import type { AttachmentItem } from './attachment-files'
 import { AttachmentPreviews, attachmentPreviewsKey } from './attachment-previews'
 import ContextUsageControl from './ContextUsageControl.vue'
@@ -70,6 +76,22 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
+const savingAttachment = ref(false)
+const attachmentSaveError = ref('')
+async function saveAttachment(item: AttachmentItem): Promise<void> {
+  if (item.source instanceof File || savingAttachment.value) return
+  savingAttachment.value = true
+  attachmentSaveError.value = ''
+  try {
+    const result = await getDesktopApi().saveAttachment(item.source)
+    if (!result.ok) throw new Error(result.error)
+  } catch (error) {
+    if (state.selectedId === item.source.conversationId)
+      attachmentSaveError.value = error instanceof Error ? error.message : '附件保存失败，请重试。'
+  } finally {
+    savingAttachment.value = false
+  }
+}
 const previews = new AttachmentPreviews(async (item) => {
   const api = getDesktopApi()
   const result =
@@ -82,6 +104,12 @@ const previews = new AttachmentPreviews(async (item) => {
 provide(attachmentPreviewsKey, previews)
 watch(
   () => state.selectedId,
+  () => {
+    attachmentSaveError.value = ''
+  },
+)
+watch(
+  () => state.selectedId,
   () => previews.clear(),
   { flush: 'sync' },
 )
@@ -90,23 +118,27 @@ const draftItems = computed<AttachmentItem[]>(() =>
   draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
 )
 function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
+  const block = item.content[index]!
   return {
     key: `history:${item.conversationId}/${item.id}/${item.runId}/${index}`,
-    label: `图片 ${item.content.slice(0, index + 1).filter((block) => block.type === 'image').length}`,
+    label:
+      block.type === 'file'
+        ? block.name || '文件附件'
+        : `图片 ${item.content.slice(0, index + 1).filter((block) => block.type === 'image').length}`,
+    kind: block.type === 'file' ? 'file' : 'image',
+    ...(block.size === undefined ? {} : { size: block.size }),
     source: { conversationId: item.conversationId, messageId: item.id, index },
   }
 }
 const historyImages = computed(
   () =>
     new Map(
-      messages.value
-        .filter((item) => item.role === 'user')
-        .map((item) => [
-          item.id,
-          item.content.flatMap((block, index) =>
-            block.type === 'image' ? [historyAttachment(item, index)] : [],
-          ),
-        ]),
+      messages.value.map((item) => [
+        item.id,
+        item.content.flatMap((block, index) =>
+          block.type === 'image' || block.type === 'file' ? [historyAttachment(item, index)] : [],
+        ),
+      ]),
     ),
 )
 const editItems = computed<AttachmentItem[]>(() => {
@@ -209,8 +241,18 @@ const usageInput = computed<ContextUsageInput | null>(() =>
         conversationId: state.selectedId,
         workspaceId: state.selectedId ? null : state.workspaceId,
         modelId: state.modelId,
-        draft: requestingCompact.value ? '' : draft.value,
-        ...(draftItems.value.length ? { draftImages: draftItems.value.length } : {}),
+        draft: requestingCompact.value
+          ? ''
+          : draft.value +
+            draftAttachments.value
+              .filter((file) => !isImageFile(file))
+              .map(
+                (file) => `\n附件：${file.name}，${file.size} 字节，类型 ${file.type || '未知'}。`,
+              )
+              .join(''),
+        ...(draftAttachments.value.some(isImageFile)
+          ? { draftImages: draftAttachments.value.filter(isImageFile).length }
+          : {}),
       },
 )
 const usageHintOpen = ref(false)
@@ -297,7 +339,8 @@ const canSend = computed(
     !state.modelError &&
     availableModel.value &&
     (!requestingCompact.value || !compactUnavailable.value) &&
-    (draftItems.value.length ? imageInput.value : !!draft.value.trim()),
+    (!!draftItems.value.length || !!draft.value.trim()) &&
+    (!draftItems.value.some(isImageAttachment) || imageInput.value),
 )
 const runLabels = {
   pending: '正在准备回答…',
@@ -684,12 +727,20 @@ onScopeDispose(() => {
                 @inspect="pauseFollowing"
                 @changed="followRunLayout(item.runId)"
               />
-              <MarkdownMessage
-                v-if="item.role === 'assistant'"
-                :content="item.content"
-                :streaming="activeRun?.id === item.runId"
-                @rendered="followRunLayout(item.runId)"
-              />
+              <div v-if="item.role === 'assistant'">
+                <MarkdownMessage
+                  :content="item.content.filter((block) => !['image', 'file'].includes(block.type))"
+                  :streaming="activeRun?.id === item.runId"
+                  @rendered="followRunLayout(item.runId)"
+                />
+                <AttachmentList
+                  :items="historyImages.get(item.id) ?? []"
+                  downloadable
+                  :saving="savingAttachment"
+                  @save="saveAttachment"
+                  @changed="nextTick(() => followRunLayout(item.runId))"
+                />
+              </div>
               <MessageEditor
                 v-else-if="state.editing?.messageId === item.id"
                 v-model="state.editing.text"
@@ -707,15 +758,22 @@ onScopeDispose(() => {
                 <AttachmentList
                   :items="historyImages.get(item.id) ?? []"
                   class="justify-end"
+                  downloadable
+                  :saving="savingAttachment"
+                  @save="saveAttachment"
                   @changed="nextTick(() => followRunLayout(item.runId))"
                 />
                 <div
-                  v-if="item.content.some((block) => block.type !== 'image')"
+                  v-if="
+                    item.content.some((block) => block.type !== 'image' && block.type !== 'file')
+                  "
                   data-user-message-text
                   class="w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2"
                 >
                   <div
-                    v-for="(block, index) in item.content.filter((block) => block.type !== 'image')"
+                    v-for="(block, index) in item.content.filter(
+                      (block) => block.type !== 'image' && block.type !== 'file',
+                    )"
                     :key="index"
                     class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
                   >
@@ -740,7 +798,7 @@ onScopeDispose(() => {
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&
-                  item.content.every((block) => block.type === 'text' || block.type === 'image')
+                  item.content.every((block) => ['text', 'image', 'file'].includes(block.type))
                 "
                 :edit-disabled="editUnavailable"
                 :class="item.role === 'user' ? 'justify-end' : ''"
@@ -781,6 +839,9 @@ onScopeDispose(() => {
             />
           </template>
         </div>
+        <p v-if="attachmentSaveError" role="alert" class="mt-5 text-sm text-destructive">
+          {{ attachmentSaveError }}
+        </p>
         <p
           v-if="
             latestRun &&
@@ -911,7 +972,10 @@ onScopeDispose(() => {
           :disabled="state.sending"
           @remove="removeAttachment"
         />
-        <p v-if="draftItems.length && !imageInput" class="mb-1 text-xs text-muted-foreground">
+        <p
+          v-if="draftItems.some(isImageAttachment) && !imageInput"
+          class="mb-1 text-xs text-muted-foreground"
+        >
           当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
         </p>
         <label for="new-message" class="sr-only">消息</label>
@@ -946,7 +1010,7 @@ onScopeDispose(() => {
           @keydown="keydown"
         ></textarea>
         <div class="mt-2 flex items-center gap-2">
-          <AttachmentPicker :disabled="attachmentBusy || !imageInput" @files="receiveFiles" />
+          <AttachmentPicker :disabled="attachmentBusy" @files="receiveFiles" />
           <ApprovalModeSelector class="mr-auto" />
           <div class="flex min-w-0 items-center gap-2">
             <ContextUsageControl

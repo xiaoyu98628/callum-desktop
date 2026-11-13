@@ -202,4 +202,10 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 
 ## 运行时归档与开发准备
 
-四平台完整 Python/Node/Git 归档由客户端仓库 `resources/runtimes/archives/` 持有，来源清单固定版本及 SHA-256。`scripts/prepare-runtimes.ts` 在开发、构建和测试前调用同架构随附服务的离线子命令，生成 `resources/runtimes/unpacked/<平台>/`；不依赖 Go 源码，不打开业务数据库，不在应用启动时补下载。主进程只将已准备的绝对目录传给 Go，由后者持有校验与执行边界。资源布局和失败处理见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
+客户端拥有 `resources/skills/.system/` 中的自带技能及运行资源。初始化先用 Go `resource-lock` 模式独占数据目录；客户端完成运行时事务安装和系统技能安装后，释放锁并启动正式服务。`runtime-installation.ts` 负责固定 `DataDir/runtimes/` 的复制、哈希、激活和中断恢复，`skill-assets.ts` 负责 `.system` 更新与旧副本备份。安装失败不进入可发送状态；取消等待安装清理后释放锁。Go 保留通用发现、只读校验、权限及执行，不包含 Office 解析器。
+
+系统技能位于 `DataDir/skills/.system/<技能名>/`，用户技能位于 `DataDir/skills/<技能名>/`；默认根目录为 `~/.callum`。Go 在下一轮重新扫描，用户按元数据 name 覆盖同名系统技能，删除后恢复系统技能。备份隐藏目录不进入技能上下文。
+
+普通附件通过主进程暂存并交给 Go 保存。`open_attachment` 为本轮工具提供只读副本和私有可写工作目录，结束后回收；`publish_artifact` 保留交付副本到会话。另存只通过固定的 `saveAttachment` IPC 入口：主进程按会话、消息、索引读取原始附件，校验分段进度及总量，显示系统保存对话框，再以同目录临时文件完成写入和替换；渲染进程不能传入任意来源或目标路径，不持有原件字节。
+
+四平台资源由客户端固定归档及校验值描述；开发准备生成 `resources/runtimes/unpacked/<平台>/`，它仅作为安装来源。实际运行固定在 `DataDir/runtimes/{python,node,git,native}`，Node 依赖位于 `node/node_modules/`，清单保存平台、版本和哈希。裸命令和技能查询共用 Python 3.12.14，审批及沙箱保持有效。

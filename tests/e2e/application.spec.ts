@@ -7,6 +7,7 @@ import { test as base, expect } from '@playwright/test'
 import type { ElectronApplication, Locator, Page } from '@playwright/test'
 import { findTestBackend, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
+import { createOfficeFixtures } from '../helpers/office-fixtures'
 import { ChatService } from '../../src/main/backend/chat-service'
 import {
   MARKDOWN_CODE,
@@ -568,6 +569,108 @@ testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', asy
   await expect(reopened.getByText('v0.1.0', { exact: true })).toBeVisible()
 })
 
+test.describe('Office 文件附件', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务与 Office 依赖')
+
+  test('回答中的交付文件在原件删除及重载后仍能另存', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await input.fill('生成交付文件')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const save = answer.getByRole('button', { name: '另存为fixture.txt', exact: true })
+    await expect(save).toBeVisible()
+    await rm(join(profile, 'fixture.txt'))
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '生成交付文件', exact: true })
+      .click()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await expect(save).toBeVisible()
+    await expect(answer).not.toContainText('暂不支持展示的内容')
+    const destination = join(profile, 'saved-result.txt')
+    await desktop.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+    }, destination)
+    await save.click()
+    await expect
+      .poll(() =>
+        readFile(destination, 'utf8').catch((error: unknown) => {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null
+          throw error
+        }),
+      )
+      .toBe('controlled-file')
+    await page.screenshot({ path: '.artifacts/screenshots/office-artifact.png' })
+    await input.fill('读取已交付文件')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toHaveCount(2)
+    await expect(answer).toContainText('已读取测试文件。')
+    expect(
+      modelEndpoint?.requests.some(
+        (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
+      ),
+    ).toBe(true)
+  })
+
+  test('文字模型可添加真实 Office 文件，历史保留名称并支持编辑重发', async ({
+    desktop,
+    profile,
+  }) => {
+    const files = await createOfficeFixtures(profile)
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
+    await page.locator('input[type=file]').setInputFiles(files)
+    const composer = page.locator('form').last()
+    for (const name of ['plan.docx', 'income.xlsx', 'review.pptx']) {
+      await expect(composer.getByRole('group', { name, exact: true })).toBeVisible()
+    }
+    await expect(composer.getByRole('img')).toHaveCount(0)
+    await input.fill('分析这些 Office 文件')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    for (const name of ['plan.docx', 'income.xlsx', 'review.pptx']) {
+      await expect(user.getByRole('group', { name, exact: true })).toBeVisible()
+    }
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await editor.getByRole('button', { name: '移除income.xlsx', exact: true }).click()
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeEnabled()
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(user.getByRole('group', { name: 'income.xlsx', exact: true })).toHaveCount(0)
+    await expect(user.getByRole('group', { name: 'plan.docx', exact: true })).toBeVisible()
+    await expect(user.getByRole('group', { name: 'review.pptx', exact: true })).toBeVisible()
+    await rm(files[0]!)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '分析这些 Office 文件', exact: true })
+      .click()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await expect(
+      page
+        .getByRole('article', { name: '你的消息', exact: true })
+        .last()
+        .getByRole('group', { name: 'plan.docx', exact: true }),
+    ).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/office-attachments.png' })
+  })
+})
+
 test.describe('图片附件', () => {
   test.use({ withModel: true, imageInput: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
@@ -575,7 +678,7 @@ test.describe('图片附件', () => {
   test('多图缩略图在气泡上方和草稿中展示，编辑替换后不复用旧图', async ({ desktop, profile }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
     const emptyInputHeight = await input.evaluate(
       (element) => element.getBoundingClientRect().height,
     )
@@ -746,7 +849,9 @@ test.describe('图片附件', () => {
 
   test('缩略图读取失败保留移除和重试入口，后续有效图片可继续显示', async ({ desktop, profile }) => {
     const page = await desktop.firstWindow()
-    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled({
+      timeout: 30_000,
+    })
     const path = join(profile, '损坏.png')
     await writeFile(path, 'invalid image')
     await page.locator('input[type=file]').setInputFiles(path)
@@ -791,15 +896,15 @@ test.describe('图片附件', () => {
       page.getByRole('button', { name: '编辑模型 仅文字模型', exact: true }),
     ).toBeVisible()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
-    const picker = page.getByRole('button', { name: '添加图片', exact: true })
+    const picker = page.getByRole('button', { name: '添加附件', exact: true })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const selectModel = async (name: string): Promise<void> => {
       await page.getByRole('combobox', { name: '模型', exact: true }).click()
       await page.getByRole('option', { name, exact: true }).click()
     }
-    await expect(input).toBeEnabled()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
     await selectModel('仅文字模型')
-    await expect(picker).toBeDisabled()
+    await expect(picker).toBeEnabled()
     const base64 =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
     await input.evaluate((element, data) => {
@@ -884,9 +989,7 @@ test.describe('图片附件', () => {
         enabled ? ['text', 'image'] : ['text'],
       )
       await page.getByRole('button', { name: '新对话', exact: true }).click()
-      await expect(page.getByRole('button', { name: '添加图片', exact: true })).toBeEnabled({
-        enabled,
-      })
+      await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
       const overview = await page.evaluate(() => window.callum.getChatOverview(0))
       expect(overview.ok && overview.value.models[0]?.imageInput === true).toBe(enabled)
     }
@@ -903,7 +1006,7 @@ test.describe('图片附件', () => {
     await writeFile(path, Buffer.from(base64, 'base64'))
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
     await page.locator('input[type=file]').setInputFiles(path)
     await page.getByRole('button', { name: 'screen.png', exact: true }).click()
     const preview = page.getByRole('dialog', { name: '图片预览' })

@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { inject, onScopeDispose, ref, watch } from 'vue'
-import { XIcon } from '@lucide/vue'
+import { XIcon, FileTextIcon, DownloadIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { AttachmentItem } from './attachment-files'
+import { isImageAttachment } from './attachment-files'
 import AttachmentThumbnail from './AttachmentThumbnail.vue'
 import { attachmentPreviewsKey } from './attachment-previews'
 
-const props = defineProps<{ items: AttachmentItem[]; removable?: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ remove: [index: number]; changed: [] }>()
+const props = defineProps<{
+  items: AttachmentItem[]
+  removable?: boolean
+  disabled?: boolean
+  downloadable?: boolean
+  saving?: boolean
+}>()
+const emit = defineEmits<{ remove: [index: number]; changed: []; save: [item: AttachmentItem] }>()
 const previews = inject(attachmentPreviewsKey)
 if (!previews) throw new Error('图片预览服务未初始化')
 const modal = ref<HTMLDialogElement | null>(null)
@@ -18,6 +25,10 @@ const error = ref('')
 let revision = 0
 let controller: AbortController | undefined
 let selected: AttachmentItem | null = null
+
+function fileKilobytes(item: AttachmentItem): number {
+  return Math.ceil((item.size ?? (item.source instanceof File ? item.source.size : 0)) / 1024)
+}
 
 async function preview(item: AttachmentItem): Promise<void> {
   if (!modal.value) return
@@ -68,7 +79,7 @@ onScopeDispose(() => {
 <template>
   <ul
     v-if="items.length"
-    aria-label="图片附件"
+    :aria-label="items.every(isImageAttachment) ? '图片附件' : '附件'"
     class="my-1 flex max-w-full flex-wrap items-start gap-2"
   >
     <li
@@ -77,6 +88,7 @@ onScopeDispose(() => {
       class="group/attachment relative shrink-0"
     >
       <button
+        v-if="isImageAttachment(item)"
         type="button"
         class="block overflow-hidden rounded-lg border-0 bg-transparent p-0 ring-1 ring-inset ring-border/50 transition-shadow hover:ring-foreground/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         :title="item.label"
@@ -85,6 +97,32 @@ onScopeDispose(() => {
       >
         <AttachmentThumbnail :item="item" :compact="!removable" @changed="emit('changed')" />
       </button>
+      <div
+        v-else
+        role="group"
+        :aria-label="item.label"
+        class="flex h-14 max-w-60 min-w-40 items-center gap-2 rounded-lg border bg-muted/30 px-3"
+      >
+        <FileTextIcon class="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div class="min-w-0">
+          <p class="truncate text-xs" :title="item.label">{{ item.label }}</p>
+          <p class="mt-0.5 text-[10px] text-muted-foreground">
+            {{ fileKilobytes(item) }} KB · 文件
+          </p>
+        </div>
+        <Button
+          v-if="downloadable && !removable"
+          type="button"
+          variant="ghost"
+          size="icon"
+          class="ml-auto size-7 shrink-0"
+          :aria-label="`另存为${item.label}`"
+          :disabled="saving"
+          @click="emit('save', item)"
+        >
+          <DownloadIcon class="size-4" aria-hidden="true" />
+        </Button>
+      </div>
       <Button
         v-if="removable"
         type="button"

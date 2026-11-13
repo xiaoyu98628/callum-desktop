@@ -21,7 +21,7 @@ import type {
   WorkspaceUpdate,
 } from '@shared/chat'
 import { MAX_ATTACHMENT_BATCH_BYTES } from '@shared/attachments'
-import { addImageFiles, attachmentInputs } from './attachment-files'
+import { addAttachmentFiles, attachmentInputs, isImageFile } from './attachment-files'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
 
@@ -882,7 +882,7 @@ function createConversations() {
     const edit = editing ? state.editing : null
     const errorTarget = edit ?? state
     errorTarget.error = ''
-    if (!imageInput.value) {
+    if (files.some(isImageFile) && !imageInput.value) {
       errorTarget.error = IMAGE_INPUT_REQUIRED
       return
     }
@@ -897,12 +897,12 @@ function createConversations() {
       )
         throw new Error('所有草稿合计最多暂存 64 MiB，请清空不再使用的附件。')
       if (edit) {
-        edit.files = addImageFiles(edit.files, files, edit.retainedAttachments.length)
+        edit.files = addAttachmentFiles(edit.files, files, edit.retainedAttachments.length)
       } else {
         const key = draftKey()
         if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100)
           throw new Error('草稿数量已达上限，请发送或清空已有草稿。')
-        state.draftAttachments[key] = addImageFiles(draftAttachments.value, files)
+        state.draftAttachments[key] = addAttachmentFiles(draftAttachments.value, files)
         draftWorkspaces.set(key, state.workspaceId)
       }
     } catch (error) {
@@ -942,7 +942,7 @@ function createConversations() {
       state.modelsLoading ||
       state.modelError ||
       (!draft.value.trim() && !draftAttachments.value.length) ||
-      (draftAttachments.value.length > 0 && !imageInput.value) ||
+      (draftAttachments.value.some(isImageFile) && !imageInput.value) ||
       !state.modelId
     )
       return
@@ -1012,7 +1012,7 @@ function createConversations() {
       editUnavailable.value ||
       !target ||
       target.id !== messageId ||
-      target.content.some((block) => block.type !== 'text' && block.type !== 'image')
+      target.content.some((block) => !['text', 'image', 'file'].includes(block.type))
     )
       return
     const text = messageText(target.content)
@@ -1024,7 +1024,7 @@ function createConversations() {
       runId: target.runId,
       files: [],
       retainedAttachments: target.content.flatMap((block, index) =>
-        block.type === 'image' ? [index] : [],
+        block.type === 'image' || block.type === 'file' ? [index] : [],
       ),
     }
   }
@@ -1058,7 +1058,11 @@ function createConversations() {
       edit.error = '请选择可用模型后重新发送。'
       return
     }
-    if (attachmentCount && !imageInput.value) {
+    if (
+      (edit.files.some(isImageFile) ||
+        edit.retainedAttachments.some((index) => target.content[index]?.type === 'image')) &&
+      !imageInput.value
+    ) {
       edit.error = IMAGE_INPUT_REQUIRED
       return
     }
@@ -1072,7 +1076,8 @@ function createConversations() {
           messageId: edit.messageId,
           modelId: state.modelId,
           text: edit.text,
-          ...(target.content.some((block) => block.type === 'image') || edit.files.length
+          ...(target.content.some((block) => block.type === 'image' || block.type === 'file') ||
+          edit.files.length
             ? { expectedRunId: edit.runId, retainedAttachments: edit.retainedAttachments.slice() }
             : {}),
           ...(edit.files.length ? { attachments: await attachmentInputs(edit.files.slice()) } : {}),

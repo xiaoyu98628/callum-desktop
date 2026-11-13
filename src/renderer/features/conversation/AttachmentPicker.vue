@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { PaperclipIcon } from '@lucide/vue'
-import { IMAGE_ACCEPT } from '@shared/attachments'
 import { Button } from '@/components/ui/button'
 
 defineProps<{ disabled: boolean }>()
@@ -16,15 +15,15 @@ function selected(): void {
 </script>
 
 <template>
-  <input ref="input" type="file" :accept="IMAGE_ACCEPT" multiple hidden @change="selected" />
+  <input ref="input" type="file" multiple hidden @change="selected" />
   <Button
     type="button"
     variant="ghost"
     size="icon"
     class="size-7 shrink-0 rounded-full text-muted-foreground"
     :disabled="disabled"
-    aria-label="添加图片"
-    title="添加图片"
+    aria-label="添加附件"
+    title="添加附件"
     @click="input?.click()"
   >
     <PaperclipIcon class="size-4" aria-hidden="true" />

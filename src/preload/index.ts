@@ -228,6 +228,9 @@ const desktopApi: DesktopApi = {
       parseAttachmentPreview,
     )
   },
+  async saveAttachment(input) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.saveAttachment, input), boolean)
+  },
   async previewDraftAttachment(input) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.previewDraftAttachment, input),

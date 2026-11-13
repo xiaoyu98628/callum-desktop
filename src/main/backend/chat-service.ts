@@ -1,5 +1,7 @@
 import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { installSkillAssets } from './skill-assets.ts'
+import { installRuntimeAssets } from './runtime-installation.ts'
 import { isAbsolute, join } from 'node:path'
 import { parseAttachmentPreview, parseAttachments } from '../../shared/attachments.ts'
 import type {
@@ -98,6 +100,10 @@ function startupError(error: unknown, phase: string): string {
   }
   if (phase === 'runtime')
     return '未找到完整的内置 Python/Node/Git 资源，请重新准备客户端运行时资源。'
+  if (phase === 'runtime-install')
+    return '无法安装内置运行时，请检查资源完整性、数据目录权限及磁盘空间；原有目录按安装恢复记录保留。'
+  if (phase === 'skills')
+    return '无法安装随附技能，请检查客户端技能资源、数据目录权限及磁盘空间；用户技能保留，自带技能旧副本已备份。'
   if (phase === 'directory') {
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS')
       return '服务数据目录不可写，请检查目录权限。'
@@ -152,6 +158,8 @@ export class ChatService {
   private stagingDirectory = ''
   private readonly transfers = new Set<Promise<unknown>>()
   private closing = false
+  private startupAbort = new AbortController()
+  private installing = false
   private closeTask: Promise<void> | null = null
 
   constructor(dataDirectory: string, resourceRoot: string) {
@@ -161,6 +169,7 @@ export class ChatService {
     void this.ready.catch(() => undefined)
   }
   private async initialize(dataDirectory: string, resourceRoot: string): Promise<void> {
+    this.startupAbort = new AbortController()
     let phase = 'path'
     try {
       if (!isAbsolute(dataDirectory)) throw new Error('服务数据目录必须是绝对路径')
@@ -169,12 +178,43 @@ export class ChatService {
       phase = 'executable'
       await access(executable, constants.X_OK)
       phase = 'runtime'
-      const runtimeDirectory = resolveRuntimeDirectory(resourceRoot)
-      const manifest = await lstat(join(runtimeDirectory, 'manifest.json'))
+      const sourceRuntime = resolveRuntimeDirectory(resourceRoot)
+      const manifest = await lstat(join(sourceRuntime, 'manifest.json'))
       if (!manifest.isFile() || manifest.isSymbolicLink())
         throw new Error('内置运行时清单必须是普通文件')
       phase = 'directory'
       await mkdir(dataDirectory, { recursive: true, mode: 0o700 })
+      if (this.closing) return
+      phase = 'handshake'
+      const guard = new RpcClient(
+        executable,
+        ['resource-lock', '--data-dir', dataDirectory],
+        () => undefined,
+        (error) => {
+          if (this.closing || this.client !== guard) return
+          this.error = error.message
+          this.startupAbort.abort(error)
+        },
+      )
+      this.client = guard
+      await guard.ready
+      if (this.closing) return
+      const canonicalData = await realpath(dataDirectory)
+      phase = 'runtime-install'
+      let runtimeDirectory: string
+      this.installing = true
+      try {
+        runtimeDirectory = await installRuntimeAssets(
+          sourceRuntime,
+          canonicalData,
+          this.startupAbort.signal,
+        )
+        phase = 'skills'
+        await installSkillAssets(resourceRoot, canonicalData, this.startupAbort.signal)
+      } finally {
+        this.installing = false
+      }
+      await guard.close()
       if (this.closing) return
       phase = 'handshake'
       const client = new RpcClient(
@@ -712,6 +752,60 @@ export class ChatService {
       }),
     )
   }
+  /** 通过当前消息的固定索引分段读取原件，不向渲染进程暴露任意路径。 */
+  async readAttachmentFile(
+    input: AttachmentPreviewInput,
+  ): Promise<{ name: string; bytes: Buffer }> {
+    const chunks: Buffer[] = []
+    let offset = 0
+    let name = ''
+    let size = -1
+    for (;;) {
+      const value = record(
+        await this.request('conversation.attachment_read', {
+          conversation_id: input.conversationId,
+          message_id: input.messageId,
+          index: input.index,
+          offset,
+        }),
+      )
+      const nextName = string(value.name)
+      const nextSize = value.size
+      const encoded = string(value.data)
+      if (
+        typeof nextSize !== 'number' ||
+        !Number.isSafeInteger(nextSize) ||
+        nextSize < 0 ||
+        nextSize > 16 * 1024 * 1024 ||
+        !nextName ||
+        nextName.length > 1024 ||
+        /[\p{Cc}/\\]/u.test(nextName) ||
+        value.offset !== offset ||
+        encoded.length > Math.ceil((1024 * 1024) / 3) * 4 ||
+        /[^A-Za-z0-9+/=]/.test(encoded)
+      )
+        throw new Error('附件读取结果无效')
+      if (size < 0) {
+        name = nextName
+        size = nextSize
+      }
+      if (name !== nextName || size !== nextSize) throw new Error('附件在读取期间发生变化')
+      const bytes = Buffer.from(encoded, 'base64')
+      if (
+        bytes.toString('base64') !== encoded ||
+        bytes.length !== Math.min(1024 * 1024, size - offset)
+      )
+        throw new Error('附件片段无效')
+      chunks.push(bytes)
+      offset += bytes.length
+      if (value.next_offset === null) {
+        if (offset !== size) throw new Error('附件读取不完整')
+        return { name, bytes: Buffer.concat(chunks, size) }
+      }
+      if (value.next_offset !== offset || bytes.length === 0 || offset >= size)
+        throw new Error('附件读取没有推进')
+    }
+  }
   async previewDraftAttachment(input: AttachmentInput): Promise<AttachmentPreview> {
     return this.withStagedAttachments([input], async ([path]) =>
       parseAttachmentPreview(await this.request('conversation.attachment_preview', { path })),
@@ -719,12 +813,18 @@ export class ChatService {
   }
   private withMessageContent<T>(
     input: SendMessageInput | ResendMessageInput,
-    action: (content: { type: string; text?: string; path?: string }[]) => Promise<T>,
+    action: (
+      content: { type: string; text?: string; path?: string; name?: string }[],
+    ) => Promise<T>,
   ): Promise<T> {
     return this.withStagedAttachments(input.attachments, (paths) =>
       action([
         ...(input.text.trim() ? [{ type: 'text', text: input.text }] : []),
-        ...paths.map((path) => ({ type: 'image', path })),
+        ...paths.map((path, index) => ({
+          type: input.attachments?.[index]?.kind ?? 'image',
+          path,
+          ...(input.attachments?.[index]?.name ? { name: input.attachments[index]!.name } : {}),
+        })),
       ]),
     )
   }
@@ -1087,9 +1187,13 @@ export class ChatService {
   }
   private async shutdown(): Promise<void> {
     this.closing = true
+    this.startupAbort.abort(new Error('应用正在退出。'))
     this.setState({ status: 'closing' })
     // 退出可能发生在握手期间，先关闭已创建的进程，不能等待就绪超时后才取消启动。
-    const closeClient = this.client?.close() ?? Promise.resolve()
+    // 安装期间先取消并等待文件清理，再由初始化释放实例锁。
+    const closeClient = this.installing
+      ? Promise.resolve()
+      : (this.client?.close() ?? Promise.resolve())
     void closeClient.catch(() => undefined)
     try {
       await this.ready

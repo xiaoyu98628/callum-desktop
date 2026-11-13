@@ -52,10 +52,11 @@ test(
     let correctionSeen = false
     const runtimeRoot = await realpath(resolveRuntimeDirectory(resourceRoot))
     const manifest = record(JSON.parse(await readFile(join(runtimeRoot, 'manifest.json'), 'utf8')))
-    const entries = [record(manifest.python), record(manifest.node), record(manifest.git)].map(
-      (entry) => join(runtimeRoot, String(entry.path)),
-    )
     const profile = await mkdtemp(join(tmpdir(), 'callum-bundled-runtime-'))
+    const installedRoot = join(await realpath(profile), 'backend', 'runtimes')
+    const entries = [record(manifest.python), record(manifest.node), record(manifest.git)].map(
+      (entry) => join(installedRoot, String(entry.path)),
+    )
     const workspace = join(profile, 'workspace with spaces')
     await mkdir(workspace)
     await writeFile(join(workspace, 'marker.txt'), 'directory fixture')
@@ -257,7 +258,7 @@ test(
         assert.ok(description.includes('确需管道、重定向、条件控制等 Shell 语法'))
         assert.ok(description.includes('Shell 字符串里的程序不会经过裸命令固定映射'))
       }
-      assert.match(results[0] ?? '', /3\.14\.10/)
+      assert.match(results[0] ?? '', /3\.12\.14/)
       assert.match(results[1] ?? '', /v26\.13\.0/)
       assert.match(results[2] ?? '', /git version 2\.56\.1/)
       const directory = record(record(JSON.parse(results[3] ?? '{}')).result)
@@ -294,7 +295,7 @@ test('运行时缺失、清单损坏均阻止服务就绪，修复后可重试',
     const runtimeRoot = await createRuntimeFixture(resources)
     await writeFile(join(runtimeRoot, 'node', 'extra-file'), 'unlisted')
     assert.equal((await service.retryStart()).status, 'startup-failed')
-    assert.match(String(Reflect.get(service, 'error')), /内置 Python\/Node\/Git 资源校验失败/)
+    assert.match(String(Reflect.get(service, 'error')), /无法安装内置运行时/)
     await rm(join(runtimeRoot, 'node', 'extra-file'))
     assert.equal((await service.retryStart()).status, 'ready')
     assert.deepEqual(await service.catalog.list(), { providers: [], models: [] })

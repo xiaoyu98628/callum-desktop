@@ -19,7 +19,7 @@
 
 - 开发与本地构建预览从应用构建位置解析仓库 `resources/`，发布程序以 `process.resourcesPath` 为资源根目录。
 - macOS x64/ARM64 分别选择 `backend/darwin-x64/callum`、`backend/darwin-arm64/callum`；Windows x64/ARM64 分别选择 `backend/win32-x64/callum.exe`、`backend/win32-arm64/callum.exe`。服务与客户端架构一致。程序位于 ASAR 外，macOS 保留执行权限，其他目标明确拒绝。
-- 四个平台的 Python/Node/Git 资源选择 `runtimes/unpacked/<平台>/`，开发构建前从仓库 `runtimes/archives/` 离线生成。主进程以独立的 `--runtime-dir` 启动参数传入绝对目录，Go 读取清单并校验全部文件；版本固定为 Python 3.14.10、Node 26.13.0、Git 2.56.1（Windows 为 2.56.1.windows.1）。运行时资源及私有数据目录互不包含，程序执行由 Go 命令工具持有。准备流程见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
+- 四个平台的基础资源离线准备；主进程持有 `resource-lock` 后安装到 `DataDir/runtimes/`，再以该绝对路径启动服务。Python 统一 3.12.14，Node 26.13.0，Git 2.56.1。Go 仅允许数据目录下精确的 `runtimes/` 及 `skills/` 作为只读例外，数据库和其他私有数据继续隔离。准备与安装见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
 - 安装包资源映射尚未配置；后续配置须按上述目录复制目标资源，约定见 [资源约定](../resources/backend/README.md)。Windows 原生联调仍待 Windows 环境验证。
 - `backend/data-directory.ts` 统一计算 Go 数据目录：默认由系统家目录得到 `~/.callum` 的绝对路径，开发、预览和发布一致。显式设置 `CALLUM_USER_DATA_DIR` 时优先使用 `<隔离用户数据目录>/backend`，测试不会访问真实家目录。`ChatService` 接收已确定的绝对数据路径，不再自行附加 `backend`，通过 `--data-dir` 传给服务。
 - 新服务数据目录权限为 `0700`，不擅自改变已有权限。数据库、配置、模型凭据及实例锁均由 Go 管理，Electron 不直接读取或修改 SQLite。Electron 缓存和外观偏好仍使用原系统应用数据目录。
@@ -58,6 +58,12 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 - 客户端不使用模型 SDK、厂商预设或自动模型发现。实际模型网络请求由 Go 执行。
 
 ## 项目目录与业务存储边界
+
+客户端持有 `resources/skills/.system/` 及运行时资源。资源锁期间安装到 `DataDir/skills/.system/` 和 `DataDir/runtimes/`；随后释放锁并启动正式服务，完成校验才进入界面就绪。用户技能平铺在 `DataDir/skills/<技能名>/`，同名用户技能优先，修改过的旧技能保留。默认数据根目录为 `~/.callum`，隔离配置跟随 `backend/`。Go 不内嵌技能、不解析 Office 格式，也不负责客户端资源复制。
+
+普通附件 IPC 除字节外携带名称与 `kind:file`，主进程暂存后转换为 `file` 内容块，保留后端返回的名称、MIME、大小和引用。文字模型只对实际图片做能力校验；文件不会被转成图片或预先提取全文。编辑重发使用相同执行快照及保留附件索引，历史读取不依赖原路径。
+
+`publish_artifact` 的交付副本进入助手 `file` 内容块。固定 `saveAttachment` IPC 只接收会话、消息和块索引，主进程通过 `conversation.attachment_read` 以不超过 1 MiB 的片段读取，核对偏移、名称、总量及结束标志；原始字节不传给渲染进程。用户在系统保存对话框选择目标后才写入，使用同目录暂存和替换避免半个文件覆盖旧文件。取消不写目标，失败返回安全提示。
 
 项目目录选择由主进程的系统选择器记录实际路径和目录身份，新增目录在提交前再次复核。固定的 `updateWorkspace` IPC 将名称、完整目录列表及原目录快照交给服务端；Go 在写事务中检查快照、活动执行和路径冲突，原子保存结果。仅改名不提交目录字段。目录解除关联不移动或删除磁盘文件，无目录项目不提供隐含相对路径基准。
 

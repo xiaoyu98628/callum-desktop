@@ -9,3 +9,4 @@ playwright-report
 package-lock.json
 resources/runtimes/archives
 resources/runtimes/unpacked
+resources/skills

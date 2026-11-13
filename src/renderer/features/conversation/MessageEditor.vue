@@ -4,7 +4,7 @@ import { ArrowUpIcon, LoaderCircleIcon } from '@lucide/vue'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
 import AttachmentPicker from './AttachmentPicker.vue'
 import AttachmentList from './AttachmentList.vue'
-import { dragFiles, dropFiles, pasteFiles } from './attachment-files'
+import { dragFiles, dropFiles, pasteFiles, isImageAttachment } from './attachment-files'
 import type { AttachmentItem } from './attachment-files'
 import { Button } from '@/components/ui/button'
 
@@ -29,7 +29,8 @@ const canSubmit = computed(
   () =>
     !props.busy &&
     !props.disabled &&
-    (props.attachments.length ? props.imageInput : !!props.modelValue.trim()),
+    (!!props.attachments.length || !!props.modelValue.trim()) &&
+    (!props.attachments.some(isImageAttachment) || props.imageInput),
 )
 function receiveFiles(files: File[]): void {
   if (!props.busy && !props.disabled) emit('files', files)
@@ -82,15 +83,14 @@ onMounted(() => {
     />
     <span id="edit-message-hint" class="sr-only">{{ resendHint }}</span>
     <p v-if="error" role="alert" class="mt-2 break-words text-xs text-destructive">{{ error }}</p>
-    <p v-if="attachments.length && !imageInput" class="mt-2 text-xs text-muted-foreground">
+    <p
+      v-if="attachments.some(isImageAttachment) && !imageInput"
+      class="mt-2 text-xs text-muted-foreground"
+    >
       当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
     </p>
     <div class="mt-2 flex items-center justify-end gap-1.5">
-      <AttachmentPicker
-        class="mr-auto"
-        :disabled="busy || disabled || !imageInput"
-        @files="receiveFiles"
-      />
+      <AttachmentPicker class="mr-auto" :disabled="busy || disabled" @files="receiveFiles" />
       <Button
         type="button"
         variant="ghost"

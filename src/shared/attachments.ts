@@ -8,6 +8,8 @@ const types = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
 
 export interface AttachmentInput {
   bytes: Uint8Array
+  name?: string
+  kind?: 'image' | 'file'
 }
 export interface AttachmentPreviewInput {
   conversationId: string
@@ -20,19 +22,37 @@ export interface AttachmentPreview {
 }
 
 export function parseAttachments(value: unknown): AttachmentInput[] {
-  const attachments = array(value, (item) => {
+  const attachments = array(value, (item): AttachmentInput => {
     const input = record(item)
-    if (Object.keys(input).length !== 1 || !(input.bytes instanceof Uint8Array))
+    if (
+      Object.keys(input).some((key) => !['bytes', 'name', 'kind'].includes(key)) ||
+      !(input.bytes instanceof Uint8Array)
+    )
       throw new Error('附件数据无效')
-    if (input.bytes.byteLength === 0 || input.bytes.byteLength > MAX_ATTACHMENT_BYTES)
-      throw new Error('图片为空或超过 16 MiB')
-    return { bytes: input.bytes }
+    if (input.kind !== undefined && input.kind !== 'image' && input.kind !== 'file')
+      throw new Error('附件类型无效')
+    const name = input.name === undefined ? undefined : string(input.name)
+    if (
+      name !== undefined &&
+      (!name || name.length > 1024 || /[\p{Cc}/\\]/u.test(name) || name === '.' || name === '..')
+    )
+      throw new Error('附件名称无效')
+    if (
+      (input.bytes.byteLength === 0 && input.kind !== 'file') ||
+      input.bytes.byteLength > MAX_ATTACHMENT_BYTES
+    )
+      throw new Error('图片不能为空；单个附件不能超过 16 MiB')
+    return {
+      bytes: input.bytes,
+      ...(name === undefined ? {} : { name }),
+      ...(input.kind === undefined ? {} : { kind: input.kind }),
+    }
   })
   if (
     attachments.length > MAX_ATTACHMENTS ||
     attachments.reduce((sum, item) => sum + item.bytes.byteLength, 0) > MAX_ATTACHMENT_BATCH_BYTES
   )
-    throw new Error('一条消息最多添加 8 张图片，原图合计最多 32 MiB')
+    throw new Error('一条消息最多添加 8 个附件，合计最多 32 MiB')
   return attachments
 }
 

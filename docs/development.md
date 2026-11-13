@@ -102,13 +102,15 @@ Windows 开发环境使用 Node.js 26.13.0 x64，在 PowerShell 中执行本页�
 
 Electron 测试直接使用项目中的 Electron，不需要另外下载 Playwright 浏览器。测试会创建独立临时用户目录，并在退出后清理；截图和失败产物保存在忽略的 `.artifacts/` 下。
 
+`npm test` 按测试文件依次执行。多个集成测试会启动真实 Go 服务并完整校验随附依赖，避免并发启动争抢磁盘与 CPU 而触发生产启动时限；每个文件内部的并发、隔离与生命周期断言继续执行。
+
 Electron 端到端测试默认设置 `CALLUM_TEST_BACKGROUND=1`，在隔离数据目录中保持窗口隐藏，不主动聚焦；macOS 同时隐藏测试应用的 Dock 图标。该开关只在非打包应用且显式提供 `CALLUM_USER_DATA_DIR` 时生效。后台测试禁用渲染进程后台节流以验证流式更新，不更改正常启动行为。
 
 ## 内置 Python/Node/Git 资源
 
-四个平台 `darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64` 均固定 Python 3.14.10、Node 26.13.0 与 Git 2.56.1（Windows 为 2.56.1.windows.1）。Python 使用 Astral `python-build-standalone` 的 `20261110 install_only_stripped`，Node 使用官方完整发行包，Git 使用 [GitHub Desktop Dugite Native v2.56.1](https://github.com/desktop/dugite-native/releases/tag/v2.56.1) 的完整发行归档；标准库、配套文件、许可证均保留。
+四个平台 `darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64` 均固定 Python 3.12.14、Node 26.13.0 与 Git 2.56.1（Windows 为 2.56.1.windows.1）。macOS ARM64 Python 来自用户指定技能运行时，含已验证的第三方依赖；其他三个平台使用 Astral `python-build-standalone` 的 `20260929 install_only_stripped`，配套固定 cp312 wheel。Node 和 Git 的完整发行内容保留。裸命令与技能查询共用同一套解释器，不再维护独立 Office Python。
 
-`resources/runtimes/archives/` 中的十二份完整归档直接纳入普通 Git，单个归档小于 100 MiB；不使用 Git LFS。`sources.json` 记录版本、架构、上游来源、归档文件名、SHA-256 和入口。归档不会因克隆时的换行转换而改变。只有可重新生成的 `unpacked/` 被 Git 忽略；格式检查与 ESLint 忽略归档和上游解压内容。
+`resources/runtimes/archives/` 持有十二份基础完整归档、固定 wheel 和技能依赖分片，单个归档小于 100 MiB；不使用 Git LFS。`sources.json` 记录版本、架构、来源、归档文件名、SHA-256 和入口。归档不会因换行转换而改变。只有可重新生成的 `unpacked/` 被 Git 忽略；格式检查与 ESLint 忽略归档、解压内容和保留来源风格的技能资源。
 
 正常开发无需 Go 源码或本机 Go。以下命令通过当前平台随附 `callum prepare-runtimes` 校验本地归档并解压：
 
@@ -119,7 +121,7 @@ npm run prepare:runtimes -- --all
 
 第一条只准备当前平台，第二条准备全部四个平台。`npm run dev`、`npm run build`、`npm test` 均自动执行当前平台准备。归档缺失或校验失败直接报错，不访问 GitHub 或 Node 下载地址。随附服务的准备子命令只允许离线操作，不打开数据库或启动 stdio 服务。该离线约定针对内置运行时；`npm ci` 和首次获取 Electron 仍需各自的下载服务。
 
-来源与生成清单格式为 `2`，该编号只用于格式校验，不加入目录。资源固定放在 `unpacked/<平台>/`。已有旧格式缓存时准备命令会拒绝覆盖，应先在新输出目录校验资源，再关闭服务、备份并替换原缓存。
+来源与生成清单格式为 `3`，该编号只用于格式校验，不加入目录。资源固定放在 `unpacked/<平台>/`。已有旧格式缓存时准备命令会拒绝覆盖，应先在新输出目录校验资源，再关闭服务、备份并替换原缓存。
 
 准备结果位于 `resources/runtimes/unpacked/<平台>/`，包含 Python、Node、Git 及完整性清单 `manifest.json`。解压在隔离暂存目录进行，拒绝越界路径、硬链接和特殊文件，校验全部成功后才激活平台目录。每次准备都会验证归档及已有解压内容；重复执行不替换有效目录，损坏或版本不符拒绝覆盖。更新资源时应在新输出目录完成核验，并在服务关闭后替换生成目录，不能修改共享运行时安装第三方依赖。
 
@@ -139,11 +141,31 @@ go run -mod=readonly ./cmd/prepare-runtimes \
 
 只有此独立维护命令显式传入 `--download` 才允许获取缺失归档；正常开发命令和应用启动不使用该选项。新归档及来源清单应一同评审入库，已有归档校验失败不会被自动覆盖。
 
-主进程将 `runtimes/unpacked/<平台>/` 的绝对路径经 `--runtime-dir` 传入同架构 Go 服务。启动及执行时继续校验资源，执行、审批、沙箱、输出、取消和进程回收由 Go 持有。终端用户使用已随附的 Python、Node 和 Git，服务运行期不下载、不解压、不升级资源；设置中不提供多版本切换。
+主进程先启动 `callum resource-lock --data-dir <数据根目录>` 取得与正式服务相同的实例锁；此模式只提供就绪与关闭，不打开业务数据库。客户端把选中平台的准备资源校验复制到 `<数据根目录>/runtimes/`，释放资源锁后，再以该路径作为 `--runtime-dir` 启动正式服务。安装目录仅包含 `git/`、`python/`、`node/`、`native/` 和 `manifest.json`；版本及平台信息留在清单内。服务运行期不下载、解压或升级资源，设置不提供多版本切换。
 
 `npm run build` 不生成安装包。后续打包必须将目标 `backend/<平台>/` 与已经解压的 `runtimes/unpacked/<平台>/` 完整放入 ASAR 外同名目录；同时将 `resources/runtimes/licenses/` 复制到资源目录 `runtimes/licenses/`，保留公共许可证及第三方声明。归档入库不等于已验证安装包复制。
 
 macOS ARM64 的真实解释器及完整客户端调用链已验证；macOS Intel、Windows x64/ARM64 的资源校验与 Go 交叉构建不能替代对应设备的原生运行验收。
+
+运行时安装使用私有暂存目录、逐文件哈希校验和安装恢复记录 `.runtimes-install.json`。旧目录在激活前保留；中断恢复只处理已登记的自有目录。取消等待复制工作者与清理完成后才释放实例锁。重复启动复用同一清单，Go 仍校验全部实际内容。
+
+## 技能资源与安装
+
+默认技能位于客户端 `resources/skills/.system/{documents,spreadsheets,presentations,pdf}`。技能脚本、参考资料和质量流程保留，副本中的 `callum.md` 说明本地宿主约定；用户指定的原始技能目录不修改。Go 只保留通用发现、读取与调用。
+
+客户端在资源锁覆盖下把自带技能安装到 `<数据根目录>/skills/.system/`；用户技能平铺在 `skills/<技能名>/`，不覆盖或合并用户文件。系统技能更新前将旧目录移到 `skills/.system-backups/`；旧平铺技能只有完整匹配 `legacy-manifest.json` 的文件集合及哈希时才备份迁移到 `skills/.legacy-backups/`，有用户修改的目录原位保留。Go 特别扫描根目录的 `.system`，其余隐藏目录不扫描；用户技能按 YAML `name` 覆盖同名系统技能，删除覆盖后下一轮恢复系统技能。
+
+四个平台的 `native/` 都提供 LibreOffice、Poppler、HEIF 和 JPEG XR 转换工具。macOS Intel 与两个 Windows 平台的依赖版本为 `26.1111.10934-native`，在原有解释器中增加 `pdf2image`、`pypdf`、`reportlab`、`charset-normalizer` 和 `numpy`。macOS ARM64 的 `26.1111.10934-flat` 还包括 Artifact Tool 2.8.148 和 `pdfplumber`。另外三个平台的 Excel、PowerPoint 可使用已有的 `openpyxl`、`python-pptx` 和随附 LibreOffice，依赖 Artifact Tool 的原有脚本仅在提供该库的运行时可用。上游归档及许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md#随附原生技能工具)。
+
+`load_workspace_dependencies` 返回与 `python3` 相同的解释器及实际 `bin_directory`。macOS 从 `native/` 下的入口执行。Windows 从 `native/native-executables.json` 查找 `.exe` 或 `.com` 的相对路径，并将 LibreOffice 用户配置显式放在本轮私有目录。Windows LibreOffice 随附 26.8.3 的程序、运行时库及配套资源，省去安装器的帮助、扩展和可选界面翻译。四个平台的离线资源均已校验，macOS Intel、Windows x64 和 ARM64 的原生转换及沙箱行为仍需在对应环境验收。
+
+真实格式、原技能脚本、图片输入及交付副本检查：
+
+```sh
+node --test tests/unit/office-runtime.test.ts tests/unit/skill-assets.test.ts
+```
+
+这些测试使用临时数据和受控模型端点，不等于真实厂商模型自主选用技能的验收。普通文件卡片、编辑重发、历史重载、交付另存和跨轮读取由 Electron E2E 覆盖。安装包复制仍未配置；客户端资源是安装来源，实际命令从数据目录运行。
 
 ## 数据目录与通信边界
 

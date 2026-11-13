@@ -109,6 +109,7 @@ export interface DesktopApi {
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
   previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
+  saveAttachment(input: AttachmentPreviewInput): Promise<ChatResult<boolean>>
   previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
