@@ -4344,6 +4344,89 @@ test.describe('输入框技能', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的原生服务')
 
+  test('技能消息在附件下方同行展示，长正文换行且历史重载保留样式', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(860)
+
+    const file = join(profile, '技能样本.txt')
+    await writeFile(file, '技能消息的受控样本。')
+    await input.fill('/pdf')
+    await page.getByRole('option', { name: /^pdf\b/ }).click()
+    await page
+      .locator('form')
+      .filter({ has: input })
+      .locator('input[type=file]')
+      .setInputFiles(file)
+    await input.fill('解析一下')
+    await input.press('Enter')
+
+    const messages = page.getByRole('article', { name: '你的消息', exact: true })
+    const first = messages.first()
+    const bubble = first.locator('[data-user-message-text]')
+    const marker = bubble.locator('[data-user-message-skill]')
+    const body = bubble.locator('[data-user-message-skill-body]')
+    const attachment = first.getByRole('group', { name: '技能样本.txt', exact: true })
+    await expect(marker).toHaveText('pdf')
+    await expect(body).toHaveText('解析一下')
+    await expect(bubble).not.toContainText('完成以下任务')
+    await expect(attachment).toBeVisible()
+    const [bubbleBox, markerBox, bodyBox, attachmentBox] = await Promise.all([
+      bubble.boundingBox(),
+      marker.boundingBox(),
+      body.boundingBox(),
+      attachment.boundingBox(),
+    ])
+    if (!bubbleBox || !markerBox || !bodyBox || !attachmentBox) throw new Error('技能消息布局缺失')
+    expect(markerBox.x + markerBox.width).toBeLessThan(bodyBox.x)
+    expect(
+      Math.abs(markerBox.y + markerBox.height / 2 - (bodyBox.y + bodyBox.height / 2)),
+    ).toBeLessThan(4)
+    expect(attachmentBox.y + attachmentBox.height).toBeLessThan(bubbleBox.y)
+    expect(attachmentBox.x + attachmentBox.width).toBeCloseTo(bubbleBox.x + bubbleBox.width, 0)
+    await page.screenshot({ path: '.artifacts/screenshots/history-skill-message.png' })
+
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const longBody = '这是一段需要在窄窗口自然换行的历史正文。'.repeat(10) + '\n保留第二段。'
+    const storedText = `请使用技能 "Presentations" 完成以下任务：\n${longBody}`
+    await input.fill(storedText)
+    await input.press('Enter')
+    await expect(messages).toHaveCount(2)
+    const last = messages.last()
+    const longMarker = last.locator('[data-user-message-skill]')
+    const longText = last.locator('[data-user-message-skill-body]')
+    await expect(longMarker).toHaveText('Presentations')
+    await expect(longText).toHaveJSProperty('textContent', longBody)
+    expect(await longText.evaluate((element) => element.getClientRects().length)).toBeGreaterThan(2)
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+
+    const renamed = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      return window.callum.renameConversation(conversation.id, '技能消息历史')
+    })
+    expect(renamed.ok).toBe(true)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '技能消息历史', exact: true })
+      .click()
+    await expect(marker).toHaveText('pdf')
+    await expect(attachment).toBeVisible()
+    await expect(longMarker).toHaveText('Presentations')
+    await expect(longText).toHaveJSProperty('textContent', longBody)
+
+    await last.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    await expect(last.getByRole('textbox', { name: '编辑提问', exact: true })).toHaveValue(
+      storedText,
+    )
+  })
+
   test('按实际安装目录刷新技能，筛选后可用键盘添加引用并发送', async ({
     desktop,
     profile,

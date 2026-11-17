@@ -7,6 +7,7 @@ import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
 import { messageText } from '@shared/message-actions'
+import { formatSkillPrefix } from '@shared/skills'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
 import type {
   ChatEvent,
@@ -84,12 +85,9 @@ function createConversations() {
   })
   const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
   const draftSkill = computed(() => state.draftSkills[draftKey()] ?? null)
-  const draftSkillPrefix = computed(() => {
-    const skill = draftSkill.value
-    if (!skill) return ''
-    const location = skill.path ? `（入口 ${JSON.stringify(skill.path)}）` : ''
-    return `请使用技能 ${JSON.stringify(skill.name)}${location} 完成以下任务：\n`
-  })
+  const draftSkillPrefix = computed(() =>
+    draftSkill.value ? formatSkillPrefix(draftSkill.value) : '',
+  )
   const draftMessageText = computed(() => draftSkillPrefix.value + draft.value)
   const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
   function selectDraftSkill(skill: DraftSkill): void {

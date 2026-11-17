@@ -13,6 +13,7 @@ import {
 import { isActiveRun } from '@shared/chat'
 import { isCompactCommand, messageCompactions } from '@shared/manual-compaction'
 import type { ApprovalScope, ChatMessage, ChatRun } from '@shared/chat'
+import { parseSkillMessage } from '@shared/skills'
 import { Button } from '@/components/ui/button'
 import { getDesktopApi } from '@/lib/desktop'
 import { useConversations } from './useConversations'
@@ -158,11 +159,21 @@ const editItems = computed<AttachmentItem[]>(() => {
 const messageTimeline = computed(() => {
   const runs = state.detail?.runs ?? []
   const ids = runs.map((run) => run.id).toSorted()
-  return messageCompactions(
+  const timeline = messageCompactions(
     messages.value,
     runs,
     ids.length ? { oldestRunId: ids[0]!, newestRunId: ids.at(-1)! } : undefined,
   )
+  return {
+    before: timeline.before,
+    rows: timeline.rows.map((row) => {
+      const skillBlock =
+        row.message.role === 'user'
+          ? row.message.content.find((block) => block.type === 'text')
+          : undefined
+      return { ...row, skillBlock, skill: skillBlock ? parseSkillMessage(skillBlock.text) : null }
+    }),
+  }
 })
 const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
@@ -744,7 +755,10 @@ onScopeDispose(() => {
             :connected="!state.serviceError"
             @changed="followRunLayout(run.id)"
           />
-          <template v-for="{ message: item, compactions } in messageTimeline.rows" :key="item.id">
+          <template
+            v-for="{ message: item, compactions, skill, skillBlock } in messageTimeline.rows"
+            :key="item.id"
+          >
             <article
               class="group/message"
               :data-message-id="item.id"
@@ -811,7 +825,12 @@ onScopeDispose(() => {
                     item.content.some((block) => block.type !== 'image' && block.type !== 'file')
                   "
                   data-user-message-text
-                  class="w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2"
+                  class="w-fit max-w-full rounded-2xl border px-3 py-2"
+                  :class="
+                    skill
+                      ? 'border-blue-100/70 bg-blue-100/60 dark:border-blue-900/50 dark:bg-blue-950/45'
+                      : 'bg-muted/60'
+                  "
                 >
                   <div
                     v-for="(block, index) in item.content.filter(
@@ -820,7 +839,18 @@ onScopeDispose(() => {
                     :key="index"
                     class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
                   >
-                    <template v-if="block.type === 'text'">{{ block.text }}</template>
+                    <template v-if="skill && skillBlock === block">
+                      <span
+                        data-user-message-skill
+                        class="inline-flex max-w-full items-center gap-1 align-middle text-blue-600 dark:text-blue-400"
+                        :class="{ 'mr-1.5': skill.body }"
+                        :title="skill.path ?? skill.name"
+                      >
+                        <BoxIcon class="size-3.5 shrink-0" aria-hidden="true" />
+                        <span class="min-w-0 truncate">{{ skill.name }}</span> </span
+                      ><span v-if="skill.body" data-user-message-skill-body>{{ skill.body }}</span>
+                    </template>
+                    <template v-else-if="block.type === 'text'">{{ block.text }}</template>
                     <p v-else class="text-muted-foreground">暂不支持展示的内容</p>
                   </div>
                 </div>
