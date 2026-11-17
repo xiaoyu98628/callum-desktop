@@ -1,5 +1,6 @@
 import { computed, inject, onMounted, onScopeDispose, provide, watch } from 'vue'
 import { createConversationState } from './state'
+import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
 import { unwrap, upsert, boundMessages } from './state-utils'
 import type { InjectionKey } from 'vue'
@@ -54,6 +55,16 @@ function createConversations() {
   const hiddenWorkspaces = new Set<string>()
   const draftWorkspaces = new Map<string, string | null>()
   const draftKey = () => state.selectedId ?? `new:${state.workspaceId ?? 'unbound'}`
+  function releaseEmptyDraft(key: string): void {
+    if (!state.drafts[key] && !state.draftAttachments[key]?.length && !state.draftSkills[key])
+      draftWorkspaces.delete(key)
+  }
+  function clearDraft(key: string): void {
+    delete state.drafts[key]
+    delete state.draftAttachments[key]
+    delete state.draftSkills[key]
+    draftWorkspaces.delete(key)
+  }
   const draft = computed({
     get: () => state.drafts[draftKey()] ?? '',
     set: (value: string) => {
@@ -67,11 +78,37 @@ function createConversations() {
         draftWorkspaces.set(key, state.workspaceId)
       } else {
         delete state.drafts[key]
-        if (!state.draftAttachments[key]?.length) draftWorkspaces.delete(key)
+        releaseEmptyDraft(key)
       }
     },
   })
   const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
+  const draftSkill = computed(() => state.draftSkills[draftKey()] ?? null)
+  const draftSkillPrefix = computed(() => {
+    const skill = draftSkill.value
+    if (!skill) return ''
+    const location = skill.path ? `（入口 ${JSON.stringify(skill.path)}）` : ''
+    return `请使用技能 ${JSON.stringify(skill.name)}${location} 完成以下任务：\n`
+  })
+  const draftMessageText = computed(() => draftSkillPrefix.value + draft.value)
+  const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
+  function selectDraftSkill(skill: DraftSkill): void {
+    const key = draftKey()
+    if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
+      state.error = '草稿数量已达上限，请发送或清空已有草稿。'
+      return
+    }
+    state.draftSkills[key] = skill
+    draftWorkspaces.set(key, state.workspaceId)
+    // 技能候选只在整个草稿是斜杠查询时打开，查询由所选标记取代。
+    delete state.drafts[key]
+  }
+  function removeDraftSkill(): void {
+    if (state.sending || state.resending || state.compacting) return
+    const key = draftKey()
+    delete state.draftSkills[key]
+    releaseEmptyDraft(key)
+  }
   const imageInput = computed(
     () => state.models.find((model) => model.id === state.modelId)?.imageInput === true,
   )
@@ -226,11 +263,7 @@ function createConversations() {
   }
   function removeConversation(conversationId: string, deleted = true): void {
     rememberHidden(hiddenConversations, conversationId)
-    if (deleted) {
-      delete state.drafts[conversationId]
-      delete state.draftAttachments[conversationId]
-      draftWorkspaces.delete(conversationId)
-    }
+    if (deleted) clearDraft(conversationId)
     state.conversations = state.conversations.filter((item) => item.id !== conversationId)
     for (const group of Object.values(state.workspaceGroups))
       group.items = group.items.filter((item) => item.id !== conversationId)
@@ -240,11 +273,7 @@ function createConversations() {
     rememberHidden(hiddenWorkspaces, workspaceId)
     if (deleted)
       for (const [key, owner] of draftWorkspaces) {
-        if (owner === workspaceId) {
-          delete state.drafts[key]
-          delete state.draftAttachments[key]
-          draftWorkspaces.delete(key)
-        }
+        if (owner === workspaceId) clearDraft(key)
       }
     delete state.workspaceGroups[workspaceId]
     if (deleted)
@@ -921,7 +950,7 @@ function createConversations() {
       state.draftAttachments[key]?.splice(index, 1)
       if (!state.draftAttachments[key]?.length) {
         delete state.draftAttachments[key]
-        if (!state.drafts[key]) draftWorkspaces.delete(key)
+        releaseEmptyDraft(key)
       }
     }
   }
@@ -949,7 +978,9 @@ function createConversations() {
     state.sending = true
     state.error = ''
     const conversationId = state.selectedId,
-      text = draft.value,
+      body = draft.value,
+      skill = draftSkill.value,
+      text = draftMessageText.value,
       files = draftAttachments.value.slice(),
       token = selection
     const key = draftKey()
@@ -964,11 +995,8 @@ function createConversations() {
           ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
         }),
       )
-      if ((state.drafts[key] ?? '') === text) {
-        delete state.drafts[key]
-        delete state.draftAttachments[key]
-        draftWorkspaces.delete(key)
-      }
+      if ((state.drafts[key] ?? '') === body && (state.draftSkills[key] ?? null) === skill)
+        clearDraft(key)
       if (token === selection && !disposed) await openConversation(result.conversationId, true)
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
@@ -992,7 +1020,7 @@ function createConversations() {
       // 受理后仅消耗原命令；切换会话或期间输入的新草稿不能被清除。
       if (consumeCommand && state.drafts[key] === command && matchesCompactCommand(command)) {
         delete state.drafts[key]
-        draftWorkspaces.delete(key)
+        releaseEmptyDraft(key)
       }
       if (!disposed && token === selection) {
         const reload = openConversation(conversationId)
@@ -1146,6 +1174,11 @@ function createConversations() {
     state,
     draft,
     draftAttachments,
+    draftSkill,
+    draftMessageText,
+    draftTextLimit,
+    selectDraftSkill,
+    removeDraftSkill,
     imageInput,
     addAttachments,
     removeAttachment,

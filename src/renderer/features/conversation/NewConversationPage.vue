@@ -3,12 +3,14 @@ import { computed, nextTick, onMounted, onScopeDispose, provide, ref, watch } fr
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BoxIcon,
   LaptopIcon,
   LoaderCircleIcon,
   SparklesIcon,
   SquareIcon,
+  XIcon,
 } from '@lucide/vue'
-import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
+import { isActiveRun } from '@shared/chat'
 import { isCompactCommand, messageCompactions } from '@shared/manual-compaction'
 import type { ApprovalScope, ChatMessage, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
@@ -46,6 +48,11 @@ const {
   state,
   draft,
   draftAttachments,
+  draftSkill,
+  draftMessageText,
+  draftTextLimit,
+  selectDraftSkill,
+  removeDraftSkill,
   imageInput,
   addAttachments,
   removeAttachment,
@@ -221,6 +228,7 @@ const composerForm = ref<HTMLFormElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
 const messageInput = ref<HTMLTextAreaElement | null>(null)
+const hasDraftAttachments = computed(() => draftItems.value.length > 0)
 const {
   focused: commandInputFocused,
   open: commandsOpen,
@@ -233,10 +241,10 @@ const {
   focus: focusCommands,
   dismiss: dismissCommands,
   move: moveCommand,
-  skillReference,
+  skillForOption,
 } = useComposerCommands(
   draft,
-  computed(() => draftItems.value.length > 0),
+  hasDraftAttachments,
   computed(() => !state.serviceError),
 )
 const usageInput = computed<ContextUsageInput | null>(() =>
@@ -248,7 +256,7 @@ const usageInput = computed<ContextUsageInput | null>(() =>
         modelId: state.modelId,
         draft: requestingCompact.value
           ? ''
-          : draft.value +
+          : draftMessageText.value +
             draftAttachments.value
               .filter((file) => !isImageFile(file))
               .map(
@@ -376,6 +384,20 @@ watch(
 )
 function keydown(event: KeyboardEvent): void {
   if (event.isComposing) return
+  const input = messageInput.value
+  if (
+    event.key === 'Backspace' &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    draftSkill.value &&
+    input?.selectionStart === 0 &&
+    input.selectionEnd === 0
+  ) {
+    event.preventDefault()
+    removeComposerSkill()
+    return
+  }
   // 悬停提示打开时先由 Tooltip 处理 Esc，保留输入框中的命令候选。
   if (event.key === 'Escape' && usageHintOpen.value) return
   if (commandsOpen.value) {
@@ -413,16 +435,14 @@ function selectComposerOption(id: string): void {
     if (showCompact.value && !compactUnavailable.value) void compact(true)
     return
   }
-  const reference = skillReference(id)
-  if (!reference) return
-  draft.value = reference
-  const input = messageInput.value
-  if (!input) return
-  input.focus({ preventScroll: true })
-  void nextTick(() => {
-    if (document.activeElement === input && input.value === reference)
-      input.setSelectionRange(reference.length, reference.length)
-  })
+  const skill = skillForOption(id)
+  if (!skill || attachmentBusy.value) return
+  selectDraftSkill(skill)
+  messageInput.value?.focus({ preventScroll: true })
+}
+function removeComposerSkill(): void {
+  removeDraftSkill()
+  messageInput.value?.focus({ preventScroll: true })
 }
 function submitMessage(): void {
   if (!canSend.value) return
@@ -557,7 +577,7 @@ function resizeMessageInput(): void {
   input.style.overflowY = ''
   syncComposerLayout()
 }
-watch([draft, () => draftItems.value.length > 0], resizeMessageInput, { flush: 'post' })
+watch([draft, hasDraftAttachments, draftSkill], resizeMessageInput, { flush: 'post' })
 watch(
   () => currentInteraction.value,
   async (id, previous) => {
@@ -1007,37 +1027,70 @@ onScopeDispose(() => {
         >
           当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
         </p>
-        <label for="new-message" class="sr-only">消息</label>
-        <textarea
-          id="new-message"
-          ref="messageInput"
-          v-model="draft"
-          :rows="draftItems.length ? 1 : 2"
-          :maxlength="MAX_MESSAGE_LENGTH"
-          :disabled="
-            !!currentInteraction ||
-            state.loading ||
-            state.sending ||
-            state.resending ||
-            !!state.compacting ||
-            !!state.editing ||
-            state.modelsLoading ||
-            !!state.modelError ||
-            !!state.serviceError ||
-            !availableModel
-          "
-          placeholder="你想聊些什么？"
-          aria-describedby="conversation-hint"
-          aria-autocomplete="list"
-          :aria-controls="commandsOpen ? 'composer-commands' : undefined"
-          :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
-          class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
-          :class="draftItems.length ? 'min-h-6' : 'min-h-12'"
-          @input="resizeMessageInput"
-          @focus="focusCommands"
-          @blur="commandInputFocused = false"
-          @keydown="keydown"
-        ></textarea>
+        <div class="flex min-w-0 items-start gap-1.5">
+          <div
+            v-if="draftSkill"
+            data-draft-skill
+            class="group flex h-6 max-w-[40%] shrink-0 items-center gap-1 text-blue-600 dark:text-blue-400"
+          >
+            <button
+              type="button"
+              class="inline-grid size-4 shrink-0 place-items-center rounded-sm text-current outline-none enabled:hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+              :disabled="attachmentBusy"
+              :aria-label="`移除技能 ${draftSkill.name}`"
+              title="移除技能"
+              @click="removeComposerSkill"
+            >
+              <BoxIcon
+                class="col-start-1 row-start-1 size-3.5"
+                :class="{ 'group-hover:opacity-0 group-focus-within:opacity-0': !attachmentBusy }"
+                aria-hidden="true"
+              />
+              <XIcon
+                v-if="!attachmentBusy"
+                class="col-start-1 row-start-1 size-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                aria-hidden="true"
+              />
+            </button>
+            <span
+              class="min-w-0 truncate text-[13px] leading-5"
+              :title="draftSkill.path ?? draftSkill.name"
+            >
+              {{ draftSkill.name }}
+            </span>
+          </div>
+          <label for="new-message" class="sr-only">消息</label>
+          <textarea
+            id="new-message"
+            ref="messageInput"
+            v-model="draft"
+            :rows="hasDraftAttachments ? 1 : 2"
+            :maxlength="draftTextLimit"
+            :disabled="
+              !!currentInteraction ||
+              state.loading ||
+              state.sending ||
+              state.resending ||
+              !!state.compacting ||
+              !!state.editing ||
+              state.modelsLoading ||
+              !!state.modelError ||
+              !!state.serviceError ||
+              !availableModel
+            "
+            :placeholder="draftSkill ? undefined : '你想聊些什么？'"
+            aria-describedby="conversation-hint"
+            aria-autocomplete="list"
+            :aria-controls="commandsOpen ? 'composer-commands' : undefined"
+            :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
+            class="block max-h-48 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+            :class="hasDraftAttachments ? 'min-h-6' : 'min-h-12'"
+            @input="resizeMessageInput"
+            @focus="focusCommands"
+            @blur="commandInputFocused = false"
+            @keydown="keydown"
+          ></textarea>
+        </div>
         <div class="mt-2 flex items-center gap-2">
           <AttachmentPicker
             :menu-anchor="composerForm"

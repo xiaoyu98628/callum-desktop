@@ -3,6 +3,7 @@ import type { Ref } from 'vue'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
 import type { Skill } from '@shared/skills'
 import { getDesktopApi } from '@/lib/desktop'
+import type { DraftSkill } from './state'
 
 export const compactCommandId = 'composer-compact-command'
 
@@ -70,13 +71,11 @@ export function useComposerCommands(
     const index = activeId.value ? ids.indexOf(activeId.value) : 0
     selectedId.value = ids[(index + direction + ids.length) % ids.length] ?? null
   }
-  function skillReference(id: string): string | null {
+  function skillForOption(id: string): DraftSkill | null {
     if (!open.value) return null
     const skill = matchingSkills.value.find((item) => item.id === id)
     if (!skill) return null
-    const name = JSON.stringify(skill.name)
-    const path = skill.sharedName ? `（入口 ${JSON.stringify(skill.path)}）` : ''
-    return `请使用技能 ${name}${path} 完成以下任务：\n`
+    return { name: skill.name, ...(skill.sharedName ? { path: skill.path } : {}) }
   }
   async function readSkills(): Promise<void> {
     if (loading.value) return
@@ -131,6 +130,6 @@ export function useComposerCommands(
     focus,
     dismiss,
     move,
-    skillReference,
+    skillForOption,
   }
 }

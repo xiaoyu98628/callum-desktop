@@ -10,6 +10,12 @@ import type {
 } from '../../../shared/chat.ts'
 import type { ExecutionSettings } from '../../../shared/execution.ts'
 import type { ContextUsage } from '../../../shared/context-usage.ts'
+
+export interface DraftSkill {
+  name: string
+  path?: string
+}
+
 export interface ConversationGroup {
   items: Conversation[]
   loading: boolean
@@ -81,6 +87,7 @@ export function createConversationState() {
     historical: false,
     drafts: {} as Record<string, string>,
     draftAttachments: {} as Record<string, File[]>,
+    draftSkills: {} as Record<string, DraftSkill>,
   })
   return state
 }

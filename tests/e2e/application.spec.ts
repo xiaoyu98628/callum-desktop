@@ -4354,6 +4354,8 @@ test.describe('输入框技能', () => {
     const menu = page.getByRole('listbox', { name: '命令和技能' })
     const group = menu.getByRole('group', { name: '技能', exact: true })
     const bundledDocuments = group.getByRole('option', { name: /^documents\b/ })
+    const pdf = group.getByRole('option', { name: /^pdf\b/ })
+    const selectedSkill = page.locator('[data-draft-skill]')
     await expect(input).toBeEnabled({ timeout: 30_000 })
     await input.fill('/')
     await expect(menu.getByRole('option').first()).toContainText('压缩')
@@ -4369,6 +4371,43 @@ test.describe('输入框技能', () => {
     await page.screenshot({ path: '.artifacts/screenshots/composer-skills.png' })
     await input.press('Escape')
     await expect(menu).toBeHidden()
+
+    await input.fill('/pdf')
+    await pdf.click()
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('')
+    await expect(input).toHaveJSProperty('placeholder', '')
+    await expect(input).toBeFocused()
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    await page.mouse.move(1, 1)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-selected-skill-empty.png' })
+    await page.keyboard.insertText('总结这份文件')
+    await expect(input).toHaveValue('总结这份文件')
+    const markerBounds = await selectedSkill.boundingBox()
+    const inputBounds = await input.boundingBox()
+    if (!markerBounds || !inputBounds) throw new Error('技能标记或输入框布局缺失')
+    expect(markerBounds.y).toBeCloseTo(inputBounds.y, 0)
+    const gap = inputBounds.x - (markerBounds.x + markerBounds.width)
+    expect(gap).toBeGreaterThan(0)
+    expect(gap).toBeLessThanOrEqual(8)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-selected-skill.png' })
+
+    await input.fill('/documents')
+    await bundledDocuments.click()
+    await expect(selectedSkill).toHaveText('documents')
+    await input.fill('移除技能后保留正文X')
+    await input.evaluate((element: HTMLTextAreaElement) => {
+      element.setSelectionRange(element.value.length, element.value.length)
+    })
+    await input.press('Backspace')
+    await expect(input).toHaveValue('移除技能后保留正文')
+    await expect(selectedSkill).toHaveText('documents')
+    await input.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 0))
+    await input.press('Backspace')
+    await expect(selectedSkill).toHaveCount(0)
+    await expect(input).toHaveJSProperty('placeholder', '你想聊些什么？')
+    await expect(input).toHaveValue('移除技能后保留正文')
+    await expect(input).toBeFocused()
 
     const root = join(profile, 'backend', 'skills')
     for (const name of ['documents', 'local-review']) {
@@ -4387,9 +4426,11 @@ test.describe('输入框技能', () => {
     await expect(local).toHaveAttribute('aria-selected', 'true')
     await input.press('Enter')
     await expect(menu).toBeHidden()
-    const request = '请使用技能 "local-review" 完成以下任务：\n检查这段受控文字。'
-    await page.keyboard.insertText('检查这段受控文字。')
-    await expect(input).toHaveValue(request)
+    await expect(selectedSkill).toHaveText('local-review')
+    const body = '检查这段受控文字。'
+    const request = `请使用技能 "local-review" 完成以下任务：\n${body}`
+    await page.keyboard.insertText(body)
+    await expect(input).toHaveValue(body)
     await input.press('Enter')
     await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
       '这是受控回答。',
@@ -4397,12 +4438,45 @@ test.describe('输入框技能', () => {
     expect(
       modelEndpoint?.requests.some((entry) => entry.lastRole === 'user' && entry.text === request),
     ).toBe(true)
+    await expect(selectedSkill).toHaveCount(0)
 
     await rm(join(root, 'documents', 'SKILL.md'))
     await rm(join(root, 'local-review', 'SKILL.md'))
     await input.fill('/')
     await expect(bundledDocuments).toContainText('Create, edit, redline')
     await expect(local).toHaveCount(0)
+
+    const renamed = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      return window.callum.renameConversation(conversation.id, '技能草稿隔离')
+    })
+    expect(renamed.ok).toBe(true)
+    await input.fill('/pdf')
+    await pdf.click()
+    await input.fill('留在原对话里的正文')
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(selectedSkill).toHaveCount(0)
+    await input.fill('另一条对话草稿')
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '技能草稿隔离', exact: true })
+      .click()
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('留在原对话里的正文')
+
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => ({ ok: false, error: '受控发送受理失败' }))
+    }, IPC_CHANNELS.sendMessage)
+    await input.press('Enter')
+    await expect(page.getByRole('alert')).toContainText('受控发送受理失败')
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('留在原对话里的正文')
+    await selectedSkill.getByRole('button', { name: '移除技能 pdf', exact: true }).press('Enter')
+    await expect(selectedSkill).toHaveCount(0)
+    await expect(input).toHaveValue('留在原对话里的正文')
   })
 })
 
