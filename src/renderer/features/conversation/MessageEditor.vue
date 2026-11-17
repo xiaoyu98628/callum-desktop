@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowUpIcon, LoaderCircleIcon } from '@lucide/vue'
+import { ArrowUpIcon, BoxIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
+import type { SkillReference } from '@shared/skills'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
 import AttachmentPicker from './AttachmentPicker.vue'
 import AttachmentList from './AttachmentList.vue'
@@ -15,6 +16,7 @@ const props = defineProps<{
   error: string
   attachments: AttachmentItem[]
   imageInput: boolean
+  skill: SkillReference | null
 }>()
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -22,6 +24,7 @@ const emit = defineEmits<{
   cancel: []
   files: [files: File[]]
   remove: [index: number]
+  removeSkill: []
 }>()
 const input = ref<HTMLTextAreaElement | null>(null)
 const resendHint = '重发会替换旧回答，已执行的操作会保留。'
@@ -70,6 +73,22 @@ onMounted(() => {
       @remove="emit('remove', $event)"
     />
     <label class="sr-only" for="edit-message">编辑提问</label>
+    <div
+      v-if="skill"
+      class="mb-1 flex w-fit max-w-full items-center gap-1 text-sm text-blue-600 dark:text-blue-400"
+    >
+      <BoxIcon class="size-3.5 shrink-0" aria-hidden="true" />
+      <span class="truncate" :title="skill.path">{{ skill.name }}</span>
+      <button
+        type="button"
+        :aria-label="`移除技能 ${skill.name}`"
+        :disabled="busy"
+        class="inline-flex size-5 items-center justify-center rounded-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+        @click="$emit('removeSkill')"
+      >
+        <XIcon class="size-3" aria-hidden="true" />
+      </button>
+    </div>
     <textarea
       id="edit-message"
       ref="input"

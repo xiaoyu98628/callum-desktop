@@ -4391,6 +4391,32 @@ test.describe('输入框技能', () => {
     await page.screenshot({ path: '.artifacts/screenshots/history-skill-message.png' })
 
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const saved = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      const detail = await window.callum.getConversation(conversation.id)
+      if (!detail.ok) throw new Error(detail.error)
+      return {
+        title: conversation.title,
+        content: detail.value.messages.find((item) => item.role === 'user')?.content,
+      }
+    })
+    expect(saved.title).not.toContain('请使用技能')
+    expect(saved.content?.find((block) => block.type === 'skill')).toMatchObject({ name: 'pdf' })
+    expect(saved.content?.find((block) => block.type === 'text')?.text).toBe('解析一下')
+    await first.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editForm = first.getByRole('form', { name: '编辑最后一条提问', exact: true })
+    const editInput = editForm.getByRole('textbox', { name: '编辑提问', exact: true })
+    await expect(editInput).toHaveValue('解析一下')
+    await expect(editForm.getByRole('button', { name: '移除技能 pdf', exact: true })).toBeVisible()
+    await editInput.fill('解析这份文件')
+    await editForm.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(body).toHaveText('解析这份文件')
+    await expect(marker).toHaveText('pdf')
+    await expect(attachment).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+
     const longBody = '这是一段需要在窄窗口自然换行的历史正文。'.repeat(10) + '\n保留第二段。'
     const storedText = `请使用技能 "Presentations" 完成以下任务：\n${longBody}`
     await input.fill(storedText)
@@ -4511,7 +4537,7 @@ test.describe('输入框技能', () => {
     await expect(menu).toBeHidden()
     await expect(selectedSkill).toHaveText('local-review')
     const body = '检查这段受控文字。'
-    const request = `请使用技能 "local-review" 完成以下任务：\n${body}`
+    const request = `$local-review ${body}`
     await page.keyboard.insertText(body)
     await expect(input).toHaveValue(body)
     await input.press('Enter')
@@ -4519,7 +4545,12 @@ test.describe('输入框技能', () => {
       '这是受控回答。',
     )
     expect(
-      modelEndpoint?.requests.some((entry) => entry.lastRole === 'user' && entry.text === request),
+      modelEndpoint?.requests.some(
+        (entry) =>
+          entry.lastRole === 'user' &&
+          entry.text.startsWith(request) &&
+          entry.text.includes('SKILL.md'),
+      ),
     ).toBe(true)
     await expect(selectedSkill).toHaveCount(0)
 

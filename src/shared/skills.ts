@@ -8,16 +8,35 @@ export interface Skill {
 
 export interface SkillReference {
   name: string
-  path?: string
+  path: string
 }
 
-interface SkillMessage extends SkillReference {
+interface SkillMessage {
+  name: string
+  path?: string
   body: string
 }
 
+/** 草稿统计使用与 Go 模型上下文相同的技能名称和定位元数据。 */
 export function formatSkillPrefix(skill: SkillReference): string {
-  const location = skill.path ? `（入口 ${JSON.stringify(skill.path)}）` : ''
-  return `请使用技能 ${JSON.stringify(skill.name)}${location} 完成以下任务：\n`
+  return `$${skill.name} `
+}
+
+export function parseSkillReference(value: unknown): SkillReference {
+  const row = record(value)
+  const name = string(row.name)
+  const path = string(row.path)
+  if (
+    Object.keys(row).some((key) => !['name', 'path'].includes(key)) ||
+    !name.trim() ||
+    new TextEncoder().encode(name).length > 128 ||
+    /\p{Cc}/u.test(name) ||
+    !path ||
+    path.length > 32768 ||
+    path.includes('\0')
+  )
+    throw new Error('技能引用无效')
+  return { name, path }
 }
 
 const skillPrefix =
@@ -36,11 +55,7 @@ export function parseSkillMessage(text: string): SkillMessage | null {
       (path !== undefined && typeof path !== 'string')
     )
       return null
-    const reference = { name, ...(path === undefined ? {} : { path }) }
-    const prefix = formatSkillPrefix(reference)
-    // 只有附件时，消息受理会去掉引用末尾的换行。
-    if (match[0] !== prefix && match[0] !== prefix.trimEnd()) return null
-    return { ...reference, body: text.slice(match[0].length) }
+    return { name, ...(path === undefined ? {} : { path }), body: text.slice(match[0].length) }
   } catch {
     return null
   }

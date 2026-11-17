@@ -75,7 +75,7 @@ export function useComposerCommands(
     if (!open.value) return null
     const skill = matchingSkills.value.find((item) => item.id === id)
     if (!skill) return null
-    return { name: skill.name, ...(skill.sharedName ? { path: skill.path } : {}) }
+    return { name: skill.name, path: skill.path }
   }
   async function readSkills(): Promise<void> {
     if (loading.value) return

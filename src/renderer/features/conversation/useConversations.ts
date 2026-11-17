@@ -6,7 +6,7 @@ import { unwrap, upsert, boundMessages } from './state-utils'
 import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
-import { messageText } from '@shared/message-actions'
+import { messageBody, messageText } from '@shared/message-actions'
 import { formatSkillPrefix } from '@shared/skills'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
 import type {
@@ -88,7 +88,13 @@ function createConversations() {
   const draftSkillPrefix = computed(() =>
     draftSkill.value ? formatSkillPrefix(draftSkill.value) : '',
   )
-  const draftMessageText = computed(() => draftSkillPrefix.value + draft.value)
+  const draftMessageText = computed(() => {
+    const skill = draftSkill.value
+    const metadata = skill
+      ? `\n\n${JSON.stringify({ skills: [{ type: 'skill', name: skill.name, path: skill.path }] })}`
+      : ''
+    return draftSkillPrefix.value + draft.value + metadata
+  })
   const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
   function selectDraftSkill(skill: DraftSkill): void {
     const key = draftKey()
@@ -978,7 +984,6 @@ function createConversations() {
     const conversationId = state.selectedId,
       body = draft.value,
       skill = draftSkill.value,
-      text = draftMessageText.value,
       files = draftAttachments.value.slice(),
       token = selection
     const key = draftKey()
@@ -988,7 +993,8 @@ function createConversations() {
         await getDesktopApi().sendMessage({
           conversationId,
           workspaceId,
-          text,
+          text: body,
+          ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
           modelId: state.modelId,
           ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
         }),
@@ -1038,14 +1044,16 @@ function createConversations() {
       editUnavailable.value ||
       !target ||
       target.id !== messageId ||
-      target.content.some((block) => !['text', 'image', 'file'].includes(block.type))
+      target.content.some((block) => !['text', 'image', 'file', 'skill'].includes(block.type))
     )
       return
     const text = messageText(target.content)
+    const reference = target.content.find((block) => block.type === 'skill')
     state.editing = {
       messageId,
       originalText: text,
-      text,
+      text: messageBody(target.content),
+      skill: reference?.name ? { name: reference.name, path: reference.path } : null,
       error: '',
       runId: target.runId,
       files: [],
@@ -1100,11 +1108,13 @@ function createConversations() {
         await getDesktopApi().resendMessage({
           conversationId,
           messageId: edit.messageId,
+          expectedRunId: edit.runId,
           modelId: state.modelId,
           text: edit.text,
+          ...(edit.skill ? { skill: { name: edit.skill.name, path: edit.skill.path } } : {}),
           ...(target.content.some((block) => block.type === 'image' || block.type === 'file') ||
           edit.files.length
-            ? { expectedRunId: edit.runId, retainedAttachments: edit.retainedAttachments.slice() }
+            ? { retainedAttachments: edit.retainedAttachments.slice() }
             : {}),
           ...(edit.files.length ? { attachments: await attachmentInputs(edit.files.slice()) } : {}),
         }),

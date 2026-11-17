@@ -858,6 +858,7 @@ export class ChatService {
   ): Promise<T> {
     return this.withStagedAttachments(input.attachments, (paths) =>
       action([
+        ...(input.skill ? [{ type: 'skill', name: input.skill.name, path: input.skill.path }] : []),
         ...(input.text.trim() ? [{ type: 'text', text: input.text }] : []),
         ...paths.map((path, index) => ({
           type: input.attachments?.[index]?.kind ?? 'image',

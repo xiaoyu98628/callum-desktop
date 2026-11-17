@@ -167,11 +167,21 @@ const messageTimeline = computed(() => {
   return {
     before: timeline.before,
     rows: timeline.rows.map((row) => {
-      const skillBlock =
-        row.message.role === 'user'
-          ? row.message.content.find((block) => block.type === 'text')
-          : undefined
-      return { ...row, skillBlock, skill: skillBlock ? parseSkillMessage(skillBlock.text) : null }
+      const content = row.message.content
+      const reference =
+        row.message.role === 'user' ? content.find((block) => block.type === 'skill') : undefined
+      const firstText =
+        row.message.role === 'user' ? content.find((block) => block.type === 'text') : undefined
+      const skillBlock = firstText ?? reference
+      const skill = reference
+        ? { name: reference.name ?? '', path: reference.path, body: firstText?.text ?? '' }
+        : firstText
+          ? parseSkillMessage(firstText.text)
+          : null
+      const displayContent = content.filter(
+        (block) => block.type !== 'skill' || block === skillBlock,
+      )
+      return { ...row, skillBlock, skill, displayContent }
     }),
   }
 })
@@ -756,7 +766,13 @@ onScopeDispose(() => {
             @changed="followRunLayout(run.id)"
           />
           <template
-            v-for="{ message: item, compactions, skill, skillBlock } in messageTimeline.rows"
+            v-for="{
+              message: item,
+              compactions,
+              skill,
+              skillBlock,
+              displayContent,
+            } in messageTimeline.rows"
             :key="item.id"
           >
             <article
@@ -806,6 +822,8 @@ onScopeDispose(() => {
                 :error="state.editing.error"
                 :attachments="editItems"
                 :image-input="imageInput"
+                :skill="state.editing.skill"
+                @remove-skill="state.editing.skill = null"
                 @files="addAttachments($event, true)"
                 @remove="removeAttachment($event, true)"
                 @cancel="cancelMessageEdit"
@@ -833,7 +851,7 @@ onScopeDispose(() => {
                   "
                 >
                   <div
-                    v-for="(block, index) in item.content.filter(
+                    v-for="(block, index) in displayContent.filter(
                       (block) => block.type !== 'image' && block.type !== 'file',
                     )"
                     :key="index"
@@ -871,7 +889,9 @@ onScopeDispose(() => {
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&
-                  item.content.every((block) => ['text', 'image', 'file'].includes(block.type))
+                  item.content.every((block) =>
+                    ['text', 'image', 'file', 'skill'].includes(block.type),
+                  )
                 "
                 :edit-disabled="editUnavailable"
                 :class="item.role === 'user' ? 'justify-end' : ''"

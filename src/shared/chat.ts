@@ -2,6 +2,8 @@ import { parseAttachments, MAX_ATTACHMENTS } from './attachments.ts'
 import type { AttachmentInput } from './attachments.ts'
 import { parseContextUsage } from './context-usage.ts'
 import type { ContextUsage } from './context-usage.ts'
+import { parseSkillReference } from './skills.ts'
+import type { SkillReference } from './skills.ts'
 import { array, id, integer, record, string } from './validation.ts'
 export { array, id, integer, record, string } from './validation.ts'
 
@@ -253,6 +255,7 @@ export interface SendMessageInput {
   workspaceId?: string | null
   modelId: string
   text: string
+  skill?: SkillReference
   attachments?: AttachmentInput[]
 }
 export interface SendMessageResult {
@@ -268,6 +271,7 @@ export interface ResendMessageInput {
   messageId: string
   modelId: string
   text: string
+  skill?: SkillReference
   attachments?: AttachmentInput[]
   retainedAttachments?: number[]
   expectedRunId?: string
@@ -784,7 +788,8 @@ export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)
   if (
     Object.keys(v).some(
-      (key) => !['conversationId', 'workspaceId', 'modelId', 'text', 'attachments'].includes(key),
+      (key) =>
+        !['conversationId', 'workspaceId', 'modelId', 'text', 'attachments', 'skill'].includes(key),
     )
   )
     throw new Error('消息参数无效')
@@ -799,6 +804,7 @@ export function parseSendInput(value: unknown): SendMessageInput {
     workspaceId,
     modelId: id(v.modelId),
     text,
+    ...(v.skill === undefined ? {} : { skill: parseSkillReference(v.skill) }),
     ...(attachments ? { attachments } : {}),
   }
 }
@@ -816,6 +822,7 @@ export function parseResendInput(value: unknown): ResendMessageInput {
           'messageId',
           'modelId',
           'text',
+          'skill',
           'attachments',
           'retainedAttachments',
           'expectedRunId',
@@ -845,6 +852,7 @@ export function parseResendInput(value: unknown): ResendMessageInput {
     messageId: id(v.messageId),
     modelId: id(v.modelId),
     text,
+    ...(v.skill === undefined ? {} : { skill: parseSkillReference(v.skill) }),
     ...(attachments ? { attachments } : {}),
     ...(retained ? { retainedAttachments: retained } : {}),
     ...(expectedRunId ? { expectedRunId } : {}),

@@ -10,11 +10,8 @@ import type {
 } from '../../../shared/chat.ts'
 import type { ExecutionSettings } from '../../../shared/execution.ts'
 import type { ContextUsage } from '../../../shared/context-usage.ts'
-
-export interface DraftSkill {
-  name: string
-  path?: string
-}
+import type { SkillReference } from '../../../shared/skills.ts'
+export type DraftSkill = SkillReference
 
 export interface ConversationGroup {
   items: Conversation[]
@@ -68,6 +65,7 @@ export function createConversationState() {
       retainedAttachments: number[]
       files: File[]
       text: string
+      skill: SkillReference | null
       error: string
     } | null,
     cancelling: false,

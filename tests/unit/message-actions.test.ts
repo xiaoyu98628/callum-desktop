@@ -26,3 +26,13 @@ test('消息复制拒绝非文本、空值、NUL 及超长内容，不截断正�
   const long = '中'.repeat(100_001)
   assert.equal(parseMessageText(long), long)
 })
+
+test('复制结构化技能消息使用技能原名和任务正文', () => {
+  assert.equal(
+    messageText([
+      { type: 'skill', name: 'Review', path: '/skills/review/SKILL.md', text: '' },
+      { type: 'text', text: '核对正文', path: '' },
+    ]),
+    '$Review 核对正文',
+  )
+})
