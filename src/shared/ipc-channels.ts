@@ -32,6 +32,7 @@ export const IPC_CHANNELS = {
   listArchivedConversations: 'callum:chat:archived',
   getConversation: 'callum:chat:conversation',
   getContextUsage: 'callum:chat:context-usage',
+  listSkills: 'callum:skills:list',
   getConversationHistory: 'callum:chat:history',
   listRunSteps: 'callum:chat:steps',
   getStepDetails: 'callum:chat:step-details',

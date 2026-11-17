@@ -327,6 +327,7 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.getContextUsage, 1, (input) =>
     service.contextUsage(parseContextUsageInput(input)),
   )
+  handle(IPC_CHANNELS.listSkills, 0, () => service.listSkills())
   handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.compactConversation, 1, (input) => service.compact(parseCompactInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))

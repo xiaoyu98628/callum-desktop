@@ -34,6 +34,7 @@ import type {
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
 import type { ContextUsage, ContextUsageInput } from './context-usage'
+import type { Skill } from './skills'
 
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
@@ -99,6 +100,7 @@ export interface DesktopApi {
   listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
   getContextUsage(input: ContextUsageInput): Promise<ChatResult<ContextUsage>>
+  listSkills(): Promise<ChatResult<Skill[]>>
   getConversationHistory(
     conversationId: string,
     beforeRunId: string,

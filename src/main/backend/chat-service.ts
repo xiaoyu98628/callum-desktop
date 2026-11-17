@@ -88,6 +88,8 @@ export { resolveWorkspaceDirectory } from './workspace-catalog.ts'
 import { parseContextUsageInput } from '../../shared/context-usage.ts'
 import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage.ts'
 import type { ServiceState } from '../../shared/desktop-api.ts'
+import { parseSkills } from '../../shared/skills.ts'
+import type { Skill } from '../../shared/skills.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -146,6 +148,7 @@ export class ChatService {
     (runId) => [...this.steps.values()].find((step) => step.runId === runId && step.sequence === 1),
   )
   private readonly contextReads = new Map<string, Promise<ContextUsage>>()
+  private skillRead: Promise<Skill[]> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly history: { event: ChatEvent; bytes: number }[] = []
   private historyBytes = 0
@@ -516,6 +519,16 @@ export class ChatService {
       revision: this.revision,
     }
   }
+  async listSkills(): Promise<Skill[]> {
+    if (this.skillRead) return this.skillRead
+    this.skillRead = this.request('skills.list', {}).then(parseSkills)
+    try {
+      return await this.skillRead
+    } finally {
+      this.skillRead = null
+    }
+  }
+
   async contextUsage(input: ContextUsageInput): Promise<ContextUsage> {
     const parsed = parseContextUsageInput(input)
     const key = JSON.stringify(parsed)

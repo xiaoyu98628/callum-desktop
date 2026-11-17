@@ -28,6 +28,7 @@ import { parseAttachmentPreview } from '../shared/attachments'
 import { parseCatalog } from '../shared/models'
 import { parseExecutionSettings } from '../shared/execution'
 import { parseContextUsage } from '../shared/context-usage'
+import { parseSkills } from '../shared/skills'
 
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('无效的操作结果')
@@ -107,6 +108,9 @@ const desktopApi: DesktopApi = {
       await ipcRenderer.invoke(IPC_CHANNELS.getContextUsage, input),
       parseContextUsage,
     )
+  },
+  async listSkills() {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.listSkills), parseSkills)
   },
   async getConversation(conversationId) {
     return parseResult(

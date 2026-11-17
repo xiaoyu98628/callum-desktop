@@ -14,20 +14,22 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `a50580fd8b39d8a44b81279e637ec1fbf023be53117d02cb92e76065868956dd`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `84dbbfb6d0b2f1a049687800cd81908bc0f3fc1f753c7b47d97e8d8c0ac04921`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `03af747f68ea7073b827df97a288058627336171814701cb0b60033bbb9a5eaf` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `844974802744d059f3e3577d5bcac514f2e9408c6982336b25a5e7b6cb049a16` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `565ac6fa93f7efdcb63c5bb9ae25d1eba8e0508a660d41493f2e9f36b70e27ff` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `311de178ce508a6098329dd22826fcdbec70376d4be30d5aeee868a94987eed1` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `a3187f9a11d6560575f1891850e7d165bf7119acdf2e48a2a38d3bb0096bf2f9` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `1e38cb18a483faf69955f0db8f1dfd197d7492b14a5053d7f254c6bea7f9c2f0` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `18d3595eb2f66929e0f505ccb9955a2c576c0872323ec3cb2af0a3708ddd8d4d` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `3e39209c6d0a5a8894f8c00cc75a2d08d5666abad37239e966d0841f815c73c1` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
 ## 随附程序兼容说明
 
 技能资源位于客户端 `resources/skills/.system/`，安装到 `DataDir/skills/.system/`。用户技能平铺且优先；旧随附内容完整匹配才备份迁移，用户改动保留。运行时从实际数据目录的 `runtimes/{python,node,git,native}` 执行，版本及平台仅在清单中。`resource-lock` 与服务共用实例锁，不打开业务数据库，并提供只读的 `runtime.validate` 完整校验。附件另存按消息版本读取不超过 1 MiB 的分片，每片返回原件 SHA-256。
+
+这组随附服务提供 `skills.list`，供客户端 `/` 菜单使用与 Agent 相同的技能目录。
 
 四个平台均随附 LibreOffice、Poppler 和图像转换工具，位于 `native/`。macOS ARM64 的 `26.1111.10934-flat` 还提供 Artifact Tool 2.8.148。Intel Mac 和两个 Windows 平台的 `26.1111.10934-native` 提供 Word、PDF 脚本所需的 Python 库，原生转换仍需目标环境验收。详见 [技能资源与安装](../../docs/development.md#技能资源与安装)。
 

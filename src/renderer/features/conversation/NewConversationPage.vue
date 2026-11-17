@@ -9,11 +9,7 @@ import {
   SquareIcon,
 } from '@lucide/vue'
 import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
-import {
-  isCompactCommand,
-  matchesCompactCommand,
-  messageCompactions,
-} from '@shared/manual-compaction'
+import { isCompactCommand, messageCompactions } from '@shared/manual-compaction'
 import type { ApprovalScope, ChatMessage, ChatRun } from '@shared/chat'
 import { Button } from '@/components/ui/button'
 import { getDesktopApi } from '@/lib/desktop'
@@ -41,6 +37,7 @@ import { AttachmentPreviews, attachmentPreviewsKey } from './attachment-previews
 import ContextUsageControl from './ContextUsageControl.vue'
 import ApprovalModeSelector from './ApprovalModeSelector.vue'
 import ComposerCommands from './ComposerCommands.vue'
+import { compactCommandId, useComposerCommands } from './useComposerCommands'
 import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
 defineEmits<{ configureModels: [] }>()
@@ -224,17 +221,23 @@ const composerForm = ref<HTMLFormElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
 const messageInput = ref<HTMLTextAreaElement | null>(null)
-const commandInputFocused = ref(false)
-const commandsDismissed = ref(false)
-const commandsOpen = computed(
-  () =>
-    commandInputFocused.value &&
-    !commandsDismissed.value &&
-    !draftItems.value.length &&
-    matchesCompactCommand(draft.value),
-)
-const requestingCompact = computed(
-  () => !draftItems.value.length && (isCompactCommand(draft.value) || commandsOpen.value),
+const {
+  focused: commandInputFocused,
+  open: commandsOpen,
+  showCompact,
+  activeId: activeCommandId,
+  requestingCompact,
+  matchingSkills,
+  loading: skillsLoading,
+  failed: skillsFailed,
+  focus: focusCommands,
+  dismiss: dismissCommands,
+  move: moveCommand,
+  skillReference,
+} = useComposerCommands(
+  draft,
+  computed(() => draftItems.value.length > 0),
+  computed(() => !state.serviceError),
 )
 const usageInput = computed<ContextUsageInput | null>(() =>
   state.loading || state.modelsLoading || !state.modelId
@@ -267,7 +270,7 @@ const {
   computed(() => state.contextUsageEvent),
   computed(() => state.usageActivityRevision),
   computed(() => state.serviceError),
-  computed(() => usageHintOpen.value || commandsOpen.value),
+  computed(() => usageHintOpen.value || (commandsOpen.value && showCompact.value)),
 )
 const displayedUsage = computed(() =>
   state.serviceError || contextUsageError.value ? null : contextUsage.value,
@@ -378,16 +381,25 @@ function keydown(event: KeyboardEvent): void {
   if (commandsOpen.value) {
     if (event.key === 'Escape') {
       event.preventDefault()
-      commandsDismissed.value = true
+      dismissCommands()
       return
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
+      moveCommand(event.key === 'ArrowDown' ? 1 : -1)
       return
     }
-    if (event.key === 'Tab' && !event.shiftKey && !isCompactCommand(draft.value)) {
-      event.preventDefault()
-      draft.value = '/compact'
+    const selected = activeCommandId.value
+    if (selected && !event.shiftKey && (event.key === 'Enter' || event.key === 'Tab')) {
+      if (event.key === 'Tab' && selected === compactCommandId) {
+        if (!isCompactCommand(draft.value)) {
+          event.preventDefault()
+          draft.value = '/compact'
+        }
+      } else {
+        event.preventDefault()
+        selectComposerOption(selected)
+      }
       return
     }
   }
@@ -396,6 +408,22 @@ function keydown(event: KeyboardEvent): void {
     submitMessage()
   }
 }
+function selectComposerOption(id: string): void {
+  if (id === compactCommandId) {
+    if (showCompact.value && !compactUnavailable.value) void compact(true)
+    return
+  }
+  const reference = skillReference(id)
+  if (!reference) return
+  draft.value = reference
+  const input = messageInput.value
+  if (!input) return
+  input.focus({ preventScroll: true })
+  void nextTick(() => {
+    if (document.activeElement === input && input.value === reference)
+      input.setSelectionRange(reference.length, reference.length)
+  })
+}
 function submitMessage(): void {
   if (!canSend.value) return
   if (requestingCompact.value) void compact(true)
@@ -403,10 +431,6 @@ function submitMessage(): void {
     if (!awayFromLatest.value) follow.value = true
     void send()
   }
-}
-function focusCommands(): void {
-  commandInputFocused.value = true
-  commandsDismissed.value = false
 }
 function updateDistance(): void {
   const element = scroller.value
@@ -534,9 +558,6 @@ function resizeMessageInput(): void {
   syncComposerLayout()
 }
 watch([draft, () => draftItems.value.length > 0], resizeMessageInput, { flush: 'post' })
-watch(draft, () => {
-  commandsDismissed.value = false
-})
 watch(
   () => currentInteraction.value,
   async (id, previous) => {
@@ -964,10 +985,15 @@ onScopeDispose(() => {
       >
         <ComposerCommands
           v-if="commandsOpen"
+          :active-id="activeCommandId"
+          :show-compact="showCompact"
           :disabled-reason="compactUnavailable"
           :busy="!!state.compacting"
           :usage="displayedUsage"
-          @select="compact(true)"
+          :skills="matchingSkills"
+          :skills-loading="skillsLoading"
+          :skills-failed="skillsFailed"
+          @select="selectComposerOption"
         />
         <AttachmentList
           :items="draftItems"
@@ -1004,7 +1030,7 @@ onScopeDispose(() => {
           aria-describedby="conversation-hint"
           aria-autocomplete="list"
           :aria-controls="commandsOpen ? 'composer-commands' : undefined"
-          :aria-activedescendant="commandsOpen ? 'composer-compact-command' : undefined"
+          :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
           class="block max-h-48 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
           :class="draftItems.length ? 'min-h-6' : 'min-h-12'"
           @input="resizeMessageInput"

@@ -189,6 +189,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'deleteModel',
     'getChatOverview',
     'getContextUsage',
+    'listSkills',
     'getConversation',
     'chooseWorkspaceDirectories',
     'discardWorkspaceDirectories',
@@ -208,6 +209,9 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'getConversationHistory',
     'listRunSteps',
     'getStepDetails',
+    'previewAttachment',
+    'saveAttachment',
+    'previewDraftAttachment',
     'sendMessage',
     'compactConversation',
     'resendMessage',
@@ -4333,6 +4337,72 @@ test.describe('会话与项目管理', () => {
       page: await window.callum.listWorkspaces(-1),
     }))
     expect(Object.values(invalid).every((result) => !result.ok)).toBe(true)
+  })
+})
+
+test.describe('输入框技能', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务')
+
+  test('按实际安装目录刷新技能，筛选后可用键盘添加引用并发送', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const menu = page.getByRole('listbox', { name: '命令和技能' })
+    const group = menu.getByRole('group', { name: '技能', exact: true })
+    const bundledDocuments = group.getByRole('option', { name: /^documents\b/ })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await input.fill('/')
+    await expect(menu.getByRole('option').first()).toContainText('压缩')
+    await expect(group.getByText('技能', { exact: true })).toBeVisible()
+    await expect(bundledDocuments).toContainText('Create, edit, redline')
+    for (const name of ['pdf', 'Presentations', 'Spreadsheets']) {
+      await expect(group.getByRole('option', { name: new RegExp(`^${name}\\b`) })).toBeVisible()
+    }
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(860)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-skills.png' })
+    await input.press('Escape')
+    await expect(menu).toBeHidden()
+
+    const root = join(profile, 'backend', 'skills')
+    for (const name of ['documents', 'local-review']) {
+      const directory = join(root, name)
+      await mkdir(directory, { recursive: true })
+      await writeFile(
+        join(directory, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: 审阅示例 ${name}\n---\n本地测试技能。\n`,
+      )
+    }
+    await input.fill('/审阅')
+    await expect(bundledDocuments).toContainText('审阅示例 documents')
+    await expect(group.getByRole('option')).toHaveCount(2)
+    const local = group.getByRole('option', { name: /^local-review\b/ })
+    await input.press('ArrowDown')
+    await expect(local).toHaveAttribute('aria-selected', 'true')
+    await input.press('Enter')
+    await expect(menu).toBeHidden()
+    const request = '请使用技能 "local-review" 完成以下任务：\n检查这段受控文字。'
+    await page.keyboard.insertText('检查这段受控文字。')
+    await expect(input).toHaveValue(request)
+    await input.press('Enter')
+    await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
+      '这是受控回答。',
+    )
+    expect(
+      modelEndpoint?.requests.some((entry) => entry.lastRole === 'user' && entry.text === request),
+    ).toBe(true)
+
+    await rm(join(root, 'documents', 'SKILL.md'))
+    await rm(join(root, 'local-review', 'SKILL.md'))
+    await input.fill('/')
+    await expect(bundledDocuments).toContainText('Create, edit, redline')
+    await expect(local).toHaveCount(0)
   })
 })
 
