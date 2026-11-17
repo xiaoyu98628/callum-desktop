@@ -596,6 +596,13 @@ test.describe('Office 文件附件', () => {
     await expect(save).toBeVisible()
     await expect(answer).not.toContainText('暂不支持展示的内容')
     const destination = join(profile, 'saved-result.txt')
+    await writeFile(destination, 'existing file')
+    await desktop.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: true, filePath })
+    }, destination)
+    await save.click()
+    await expect(save).toBeEnabled()
+    expect(await readFile(destination, 'utf8')).toBe('existing file')
     await desktop.evaluate(({ dialog }, filePath) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath })
     }, destination)

@@ -10,6 +10,7 @@ export interface AttachmentItem {
   key?: string
   label: string
   source: File | AttachmentPreviewInput
+  runId?: string
   kind?: 'image' | 'file'
   size?: number
 }

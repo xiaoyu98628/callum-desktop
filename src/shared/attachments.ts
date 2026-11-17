@@ -16,6 +16,9 @@ export interface AttachmentPreviewInput {
   messageId: string
   index: number
 }
+export interface AttachmentSaveInput extends AttachmentPreviewInput {
+  runId: string
+}
 export interface AttachmentPreview {
   mime: (typeof types)[number]
   data: string
@@ -61,6 +64,11 @@ export function parseAttachmentPreviewInput(value: unknown): AttachmentPreviewIn
   const index = integer(v.index)
   if (Object.keys(v).length !== 3 || index >= 64) throw new Error('图片位置无效')
   return { conversationId: id(v.conversationId), messageId: id(v.messageId), index }
+}
+
+export function parseAttachmentSaveInput(value: unknown): AttachmentSaveInput {
+  const { runId, ...location } = record(value)
+  return { ...parseAttachmentPreviewInput(location), runId: id(runId) }
 }
 
 export function parseAttachmentPreview(value: unknown): AttachmentPreview {

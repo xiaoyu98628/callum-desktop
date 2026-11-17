@@ -79,11 +79,11 @@ const messages = computed(() => state.detail?.messages ?? [])
 const savingAttachment = ref(false)
 const attachmentSaveError = ref('')
 async function saveAttachment(item: AttachmentItem): Promise<void> {
-  if (item.source instanceof File || savingAttachment.value) return
+  if (item.source instanceof File || !item.runId || savingAttachment.value) return
   savingAttachment.value = true
   attachmentSaveError.value = ''
   try {
-    const result = await getDesktopApi().saveAttachment(item.source)
+    const result = await getDesktopApi().saveAttachment({ ...item.source, runId: item.runId })
     if (!result.ok) throw new Error(result.error)
   } catch (error) {
     if (state.selectedId === item.source.conversationId)
@@ -128,6 +128,7 @@ function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
     kind: block.type === 'file' ? 'file' : 'image',
     ...(block.size === undefined ? {} : { size: block.size }),
     source: { conversationId: item.conversationId, messageId: item.id, index },
+    runId: item.runId,
   }
 }
 const historyImages = computed(

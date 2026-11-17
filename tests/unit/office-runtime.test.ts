@@ -358,6 +358,7 @@ test(
         const saved = await service.readAttachmentFile({
           conversationId: accepted.conversationId,
           messageId: answer.id,
+          runId: answer.runId,
           index: file.index,
         })
         assert.equal(saved.name, file.block.name)

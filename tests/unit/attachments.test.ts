@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { parseAttachments } from '../../src/shared/attachments.ts'
+import { ChatService } from '../../src/main/backend/chat-service.ts'
+import { parseAttachments, parseAttachmentSaveInput } from '../../src/shared/attachments.ts'
 import {
   addAttachmentFiles,
   attachmentInputs,
@@ -58,4 +60,47 @@ test('附件 IPC 拒绝越界名称、未知类型和额外字段，保留原有
       ),
     /8 个附件/,
   )
+})
+
+test('另存附件绑定界面选中的执行版本，拒绝混合分片或错误摘要', async () => {
+  const input = {
+    conversationId: '01964f15-1111-7111-8111-111111111111',
+    messageId: '01964f15-2222-7222-8222-222222222222',
+    runId: '01964f15-3333-7333-8333-333333333333',
+    index: 2,
+  }
+  assert.deepEqual(parseAttachmentSaveInput(input), input)
+  assert.throws(() => parseAttachmentSaveInput({ ...input, runId: undefined }), /无效/)
+  assert.throws(() => parseAttachmentSaveInput({ ...input, path: '/private/data' }), /无效/)
+
+  const chunkSize = 1024 * 1024
+  const payload = Buffer.alloc(2 * chunkSize, 65)
+  const replacement = Buffer.alloc(2 * chunkSize, 66)
+  const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+  const read = (change: 'none' | 'version' | 'digest' | 'bytes') =>
+    ChatService.prototype.readAttachmentFile.call(
+      {
+        async request(method: string, params: { offset: number; expected_run_id: string }) {
+          assert.equal(method, 'conversation.attachment_read')
+          assert.equal(params.expected_run_id, input.runId)
+          const nextOffset = params.offset + chunkSize
+          const changed = params.offset !== 0
+          const bytes = changed && change !== 'none' ? replacement : payload
+          return {
+            run_id: changed && change === 'version' ? 'replaced' : input.runId,
+            sha256: changed && change === 'digest' ? digest(replacement) : digest(payload),
+            name: 'same-name.txt',
+            size: payload.length,
+            offset: params.offset,
+            data: bytes.subarray(params.offset, nextOffset).toString('base64'),
+            next_offset: nextOffset === payload.length ? null : nextOffset,
+          }
+        },
+      },
+      input,
+    )
+  assert.deepEqual(await read('none'), { name: 'same-name.txt', bytes: payload })
+  await assert.rejects(read('version'), /附件在读取期间发生变化/)
+  await assert.rejects(read('digest'), /附件在读取期间发生变化/)
+  await assert.rejects(read('bytes'), /附件完整性校验失败/)
 })

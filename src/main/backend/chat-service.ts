@@ -1,13 +1,19 @@
 import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { installSkillAssets } from './skill-assets.ts'
 import { installRuntimeAssets } from './runtime-installation.ts'
-import { isAbsolute, join } from 'node:path'
-import { parseAttachmentPreview, parseAttachments } from '../../shared/attachments.ts'
+import { basename, isAbsolute, join } from 'node:path'
+import {
+  MAX_ATTACHMENT_BYTES,
+  parseAttachmentPreview,
+  parseAttachments,
+} from '../../shared/attachments.ts'
 import type {
   AttachmentInput,
   AttachmentPreview,
   AttachmentPreviewInput,
+  AttachmentSaveInput,
 } from '../../shared/attachments.ts'
 import {
   array,
@@ -208,6 +214,13 @@ export class ChatService {
           sourceRuntime,
           canonicalData,
           this.startupAbort.signal,
+          async (directory) => {
+            const result = record(
+              await guard.request('runtime.validate', { name: basename(directory) }, 35_000),
+            )
+            if (typeof result.valid !== 'boolean') throw new Error('运行时校验响应无效')
+            return result.valid
+          },
         )
         phase = 'skills'
         await installSkillAssets(resourceRoot, canonicalData, this.startupAbort.signal)
@@ -752,54 +765,67 @@ export class ChatService {
       }),
     )
   }
-  /** 通过当前消息的固定索引分段读取原件，不向渲染进程暴露任意路径。 */
-  async readAttachmentFile(
-    input: AttachmentPreviewInput,
-  ): Promise<{ name: string; bytes: Buffer }> {
+  /** 分片绑定用户所选消息版本，完整性确认后才交给另存流程。 */
+  async readAttachmentFile(input: AttachmentSaveInput): Promise<{ name: string; bytes: Buffer }> {
     const chunks: Buffer[] = []
+    const hash = createHash('sha256')
+    const chunkSize = 1024 * 1024
     let offset = 0
     let name = ''
     let size = -1
+    let digest = ''
     for (;;) {
       const value = record(
         await this.request('conversation.attachment_read', {
           conversation_id: input.conversationId,
           message_id: input.messageId,
+          expected_run_id: input.runId,
           index: input.index,
           offset,
         }),
       )
       const nextName = string(value.name)
       const nextSize = value.size
+      const nextDigest = string(value.sha256)
       const encoded = string(value.data)
       if (
         typeof nextSize !== 'number' ||
         !Number.isSafeInteger(nextSize) ||
         nextSize < 0 ||
-        nextSize > 16 * 1024 * 1024 ||
+        nextSize > MAX_ATTACHMENT_BYTES ||
         !nextName ||
         nextName.length > 1024 ||
         /[\p{Cc}/\\]/u.test(nextName) ||
         value.offset !== offset ||
-        encoded.length > Math.ceil((1024 * 1024) / 3) * 4 ||
+        !/^[a-f0-9]{64}$/.test(nextDigest) ||
+        encoded.length > Math.ceil(chunkSize / 3) * 4 ||
         /[^A-Za-z0-9+/=]/.test(encoded)
       )
         throw new Error('附件读取结果无效')
       if (size < 0) {
         name = nextName
         size = nextSize
+        digest = nextDigest
       }
-      if (name !== nextName || size !== nextSize) throw new Error('附件在读取期间发生变化')
+      if (
+        value.run_id !== input.runId ||
+        name !== nextName ||
+        size !== nextSize ||
+        digest !== nextDigest
+      )
+        throw new Error('附件在读取期间发生变化，请从当前消息重新另存')
       const bytes = Buffer.from(encoded, 'base64')
       if (
         bytes.toString('base64') !== encoded ||
-        bytes.length !== Math.min(1024 * 1024, size - offset)
+        bytes.length !== Math.min(chunkSize, size - offset)
       )
         throw new Error('附件片段无效')
       chunks.push(bytes)
+      hash.update(bytes)
       offset += bytes.length
       if (value.next_offset === null) {
         if (offset !== size) throw new Error('附件读取不完整')
+        if (hash.digest('hex') !== digest) throw new Error('附件完整性校验失败')
         return { name, bytes: Buffer.concat(chunks, size) }
       }
       if (value.next_offset !== offset || bytes.length === 0 || offset >= size)

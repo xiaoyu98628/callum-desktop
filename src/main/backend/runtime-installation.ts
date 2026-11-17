@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   chmod,
   copyFile,
@@ -32,6 +32,8 @@ interface Installation {
   backup: string
   digest: string
 }
+
+type ValidateRuntime = (directory: string) => Promise<boolean>
 
 export function installedRuntimeDirectory(dataDirectory: string): string {
   if (!isAbsolute(dataDirectory)) throw new Error('运行时安装根目录必须是绝对路径')
@@ -161,7 +163,18 @@ async function readJournal(dataDirectory: string): Promise<Installation | null> 
   const info = await lstat(path)
   if (!info.isFile() || info.isSymbolicLink() || info.size > 4096)
     throw new Error('运行时安装恢复记录无效')
-  const value = record(JSON.parse(await readFile(path, 'utf8')))
+  const bytes = await readFile(path, 'utf8')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bytes)
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error
+    // 旧版本可能在写入过程中退出。保留原始记录，且不使用其中的路径。
+    await rename(path, join(dataDirectory, `.runtimes-install-invalid-${randomUUID()}.json`))
+    await syncDirectory(dataDirectory)
+    return null
+  }
+  const value = record(parsed)
   const stage = string(value.stage),
     backup = string(value.backup),
     digest = string(value.digest)
@@ -174,55 +187,30 @@ async function readJournal(dataDirectory: string): Promise<Installation | null> 
   return { stage, backup, digest }
 }
 
-async function verifyInstalled(directory: string, files: FileEntry[]): Promise<boolean> {
-  let next = 0
-  const results = await Promise.allSettled(
-    Array.from({ length: Math.min(4, files.length) }, async () => {
-      for (;;) {
-        const entry = files[next++]
-        if (!entry) return
-        const path = join(directory, entry.path)
-        const info = await lstat(path)
-        if (entry.link) {
-          if (!info.isSymbolicLink() || (await readlink(path)) !== entry.link)
-            throw new Error('运行时链接不完整')
-        } else {
-          if (!info.isFile() || info.isSymbolicLink() || info.size !== entry.size)
-            throw new Error('运行时文件不完整')
-          const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-          await withCleanup(
-            async () => {
-              const hash = createHash('sha256')
-              for await (const chunk of file.createReadStream({ autoClose: false }))
-                hash.update(chunk)
-              if (hash.digest('hex') !== entry.sha256) throw new Error('运行时文件校验失败')
-            },
-            () => file.close(),
-          )
-        }
-      }
-    }),
-  )
-  return results.every((result) => result.status === 'fulfilled')
-}
-
 /** 调用方必须持有 Go resource-lock；恢复仅处理本安装器持久化登记的固定子目录。 */
-async function recover(dataDirectory: string): Promise<void> {
+async function recover(dataDirectory: string, validate: ValidateRuntime): Promise<void> {
   const state = await readJournal(dataDirectory)
   if (!state) return
   const target = installedRuntimeDirectory(dataDirectory)
   const backup = join(dataDirectory, state.backup)
-  if (!(await exists(target)) && (await exists(backup))) {
-    await rename(backup, target)
-    await syncDirectory(dataDirectory)
-  } else if (await exists(backup)) {
-    await privateRoot(target)
-    const bytes = await manifestBytes(target)
-    const digest = createHash('sha256').update(bytes).digest('hex')
-    if (digest !== state.digest) throw new Error('运行时安装状态不一致，保留原目录供核对')
-    if (await verifyInstalled(target, inventory(bytes))) await removeTree(backup)
+  if (await exists(backup)) {
+    await privateRoot(backup)
+    let accepted = false
+    if (await exists(target)) {
+      await privateRoot(target)
+      const bytes = (await exists(join(target, 'manifest.json')))
+        ? await manifestBytes(target)
+        : null
+      const matches =
+        bytes !== null && createHash('sha256').update(bytes).digest('hex') === state.digest
+      accepted = matches && (await validate(target))
+      if (!accepted) {
+        if (matches) await removeTree(target)
+        else await rename(target, join(dataDirectory, `${state.stage}-unverified-${randomUUID()}`))
+      }
+    }
+    if (accepted) await removeTree(backup)
     else {
-      await removeTree(target)
       await rename(backup, target)
       await syncDirectory(dataDirectory)
     }
@@ -237,11 +225,12 @@ export async function installRuntimeAssets(
   source: string,
   dataDirectory: string,
   signal: AbortSignal,
+  validate: ValidateRuntime,
 ): Promise<string> {
   if (!isAbsolute(source) || !isAbsolute(dataDirectory))
     throw new Error('运行时资源路径必须是绝对路径')
   await privateRoot(dataDirectory)
-  await recover(dataDirectory)
+  await recover(dataDirectory, validate)
   signal.throwIfAborted()
   const sourceInfo = await lstat(source)
   if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink())
@@ -272,13 +261,10 @@ export async function installRuntimeAssets(
   const destination = installedRuntimeDirectory(dataDirectory)
   if (await exists(destination)) {
     await privateRoot(destination)
-    if (
-      bytes.equals(await manifestBytes(destination)) &&
-      (await verifyInstalled(destination, files))
-    )
-      return destination
+    const installed = await manifestBytes(destination)
+    if (bytes.equals(installed) && (await validate(destination))) return destination
     // 无清单或非普通目录不会被当作可替换的客户端资源。
-    inventory(await manifestBytes(destination))
+    inventory(installed)
   }
   const stage = await mkdtemp(join(dataDirectory, '.runtimes-install-'))
   const state = {
@@ -286,18 +272,12 @@ export async function installRuntimeAssets(
     backup: `${relative(dataDirectory, stage)}-previous`,
     digest: createHash('sha256').update(bytes).digest('hex'),
   }
+  const journal = join(dataDirectory, journalName)
   try {
-    await durableFile(join(dataDirectory, journalName), Buffer.from(JSON.stringify(state)))
+    const pendingJournal = join(stage, '.install-journal')
+    await durableFile(pendingJournal, Buffer.from(JSON.stringify(state)))
+    await rename(pendingJournal, journal)
     await syncDirectory(dataDirectory)
-  } catch (error) {
-    await withCleanup(
-      async () => {
-        throw error
-      },
-      () => removeTree(stage),
-    )
-  }
-  try {
     for (const directory of directories) {
       signal.throwIfAborted()
       if (directory) await mkdir(join(stage, directory), { recursive: true, mode: 0o700 })
@@ -363,12 +343,13 @@ export async function installRuntimeAssets(
       signal.throwIfAborted()
       await syncDirectory(join(stage, directory))
     }
+    if (!(await validate(stage))) throw new Error('待安装运行时资源完整校验失败')
     signal.throwIfAborted()
     if (await exists(destination)) await rename(destination, join(dataDirectory, state.backup))
     await rename(stage, destination)
     await syncDirectory(dataDirectory)
     await removeTree(join(dataDirectory, state.backup))
-    await rm(join(dataDirectory, journalName))
+    await rm(journal)
     await syncDirectory(dataDirectory)
     return destination
   } catch (error) {
@@ -376,7 +357,10 @@ export async function installRuntimeAssets(
       async () => {
         throw error
       },
-      () => recover(dataDirectory),
+      async () => {
+        if (await exists(journal)) await recover(dataDirectory, validate)
+        else await removeTree(stage)
+      },
     )
     throw error
   }

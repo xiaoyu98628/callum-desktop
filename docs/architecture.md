@@ -8,7 +8,7 @@
 
 ## 进程与依赖方向
 
-Python/Node/Git 作为客户端资源随附，主进程仅根据资源根目录定位并向 Go 传入 `--runtime-dir`。完整性检查、裸命令解析、子进程专用 PATH、审批、沙箱、输出及回收由 Go 持有。窗口与渲染进程不直接启动这些程序；运行期不下载或更新运行时资源，资源及私有数据目录分离。平台和准备方式见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
+Python/Node/Git 作为客户端资源随附，主进程负责离线资源安装和恢复，使用 Go 提供的完整性校验，向正式服务传入 `--runtime-dir`。裸命令解析、子进程专用 PATH、审批、沙箱、输出及回收由 Go 持有。窗口与渲染进程不直接启动这些程序；运行期不下载或更新运行时资源，资源及私有数据目录分离。平台和准备方式见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
 
 ```mermaid
 flowchart LR
@@ -202,10 +202,10 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 
 ## 运行时归档与开发准备
 
-客户端拥有 `resources/skills/.system/` 中的自带技能及运行资源。初始化先用 Go `resource-lock` 模式独占数据目录；客户端完成运行时事务安装和系统技能安装后，释放锁并启动正式服务。`runtime-installation.ts` 负责固定 `DataDir/runtimes/` 的复制、哈希、激活和中断恢复，`skill-assets.ts` 负责 `.system` 更新与旧副本备份。安装失败不进入可发送状态；取消等待安装清理后释放锁。Go 保留通用发现、只读校验、权限及执行，不包含 Office 解析器。
+客户端拥有 `resources/skills/.system/` 中的自带技能及运行资源。初始化先用 Go `resource-lock` 模式独占数据目录；客户端完成运行时事务安装和系统技能安装后，释放锁并启动正式服务。`runtime-installation.ts` 负责 `DataDir/runtimes/` 的复制、激活、安装日志和中断恢复。复用与切换前通过资源锁调用 Go 的完整校验。`skill-assets.ts` 负责 `.system` 更新与旧副本备份。安装失败不进入可发送状态；取消等待安装清理后释放锁。Go 保留通用发现、只读校验、权限及执行，不包含 Office 解析器。
 
 系统技能位于 `DataDir/skills/.system/<技能名>/`，用户技能位于 `DataDir/skills/<技能名>/`；默认根目录为 `~/.callum`。Go 在下一轮重新扫描，用户按元数据 name 覆盖同名系统技能，删除后恢复系统技能。备份隐藏目录不进入技能上下文。
 
-普通附件通过主进程暂存并交给 Go 保存。`open_attachment` 为本轮工具提供只读副本和私有可写工作目录，结束后回收；`publish_artifact` 保留交付副本到会话。另存只通过固定的 `saveAttachment` IPC 入口：主进程按会话、消息、索引读取原始附件，校验分段进度及总量，显示系统保存对话框，再以同目录临时文件完成写入和替换；渲染进程不能传入任意来源或目标路径，不持有原件字节。
+普通附件通过主进程暂存并交给 Go 保存。`open_attachment` 为本轮工具提供只读副本和私有可写工作目录，结束后回收。`publish_artifact` 保留交付副本到会话，Go 恢复执行时补齐成功步骤的附件引用。主进程通过固定的 `saveAttachment` IPC 入口按会话、消息版本及索引读取附件。分片一致且完整摘要校验通过后显示系统保存对话框，再以同目录临时文件完成写入和替换。
 
 四平台资源由客户端固定归档及校验值描述；开发准备生成 `resources/runtimes/unpacked/<平台>/`，它仅作为安装来源。实际运行固定在 `DataDir/runtimes/{python,node,git,native}`，Node 依赖位于 `node/node_modules/`，清单保存平台、版本和哈希。裸命令和技能查询共用 Python 3.12.14，审批及沙箱保持有效。

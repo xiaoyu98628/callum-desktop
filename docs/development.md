@@ -141,7 +141,7 @@ go run -mod=readonly ./cmd/prepare-runtimes \
 
 只有此独立维护命令显式传入 `--download` 才允许获取缺失归档；正常开发命令和应用启动不使用该选项。新归档及来源清单应一同评审入库，已有归档校验失败不会被自动覆盖。
 
-主进程先启动 `callum resource-lock --data-dir <数据根目录>` 取得与正式服务相同的实例锁；此模式只提供就绪与关闭，不打开业务数据库。客户端把选中平台的准备资源校验复制到 `<数据根目录>/runtimes/`，释放资源锁后，再以该路径作为 `--runtime-dir` 启动正式服务。安装目录仅包含 `git/`、`python/`、`node/`、`native/` 和 `manifest.json`；版本及平台信息留在清单内。服务运行期不下载、解压或升级资源，设置不提供多版本切换。
+主进程先启动 `callum resource-lock --data-dir <数据根目录>` 取得与正式服务相同的实例锁；此模式提供就绪、关闭和只读完整性校验，不打开业务数据库。客户端在资源锁内通过 `runtime.validate` 验证复用目录或待激活的暂存目录，校验与正式服务一致。切换前原子写入安装记录并保留旧目录，激活完成才回收备份。截断的旧安装记录保存在数据目录便于核对。释放锁后，再以 `<数据根目录>/runtimes/` 作为 `--runtime-dir` 启动正式服务。安装目录仅包含 `git/`、`python/`、`node/`、`native/` 和 `manifest.json`；版本及平台信息留在清单内。服务运行期不下载、解压或升级资源，设置不提供多版本切换。
 
 `npm run build` 不生成安装包。后续打包必须将目标 `backend/<平台>/` 与已经解压的 `runtimes/unpacked/<平台>/` 完整放入 ASAR 外同名目录；同时将 `resources/runtimes/licenses/` 复制到资源目录 `runtimes/licenses/`，保留公共许可证及第三方声明。归档入库不等于已验证安装包复制。
 

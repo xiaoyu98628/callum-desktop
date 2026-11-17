@@ -16,7 +16,11 @@ import {
   parseWorkspaceChange,
   parseUserInputAnswer,
 } from '../../shared/chat'
-import { parseAttachmentPreviewInput, parseAttachments } from '../../shared/attachments'
+import {
+  parseAttachmentPreviewInput,
+  parseAttachmentSaveInput,
+  parseAttachments,
+} from '../../shared/attachments'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
@@ -263,7 +267,7 @@ export function registerChatHandlers(
     service.previewAttachment(parseAttachmentPreviewInput(input)),
   )
   handle(IPC_CHANNELS.saveAttachment, 1, async (input) => {
-    const parsed = parseAttachmentPreviewInput(input)
+    const parsed = parseAttachmentSaveInput(input)
     const window = getWindow()
     if (!window || window.isDestroyed() || savingAttachment)
       throw new Error('附件另存为当前不可用。')
