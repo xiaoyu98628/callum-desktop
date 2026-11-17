@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `d3f38488da8581ca532332841fa825afa7c472f07855c12924eb555903984e5c`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `a50580fd8b39d8a44b81279e637ec1fbf023be53117d02cb92e76065868956dd`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `f5ea41241657a814e917bfc3ba8f0d61b8a86435becb2ab6334c7c9603bfed2d` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `99270802cc40f5e04758fd6d1a2bd21dfb3ffa32bbbce06c9a15327d93c2598d` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `0cd426d21c2bdcd9b2ad5ba06079d88f138ea65f77de39ab36a3e136b553c54f` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `22b651f7548cc361684f0eaaf73042ab7b5cbfd8e20f823fc432de2c2cee87d9` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `03af747f68ea7073b827df97a288058627336171814701cb0b60033bbb9a5eaf` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `844974802744d059f3e3577d5bcac514f2e9408c6982336b25a5e7b6cb049a16` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `565ac6fa93f7efdcb63c5bb9ae25d1eba8e0508a660d41493f2e9f36b70e27ff` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `311de178ce508a6098329dd22826fcdbec70376d4be30d5aeee868a94987eed1` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -41,7 +41,7 @@ resources/backend/
 | 执行权限     | 支持用户审核、AI 审核和显式完全访问；macOS 使用 Seatbelt，Windows 已接入 AppContainer，但 Windows 原生启动、隔离强度与外部工具兼容性尚未验收；四平台程序使用本次相同源码 |
 | 历史与凭据   | `conversation.history` 同页返回完整执行及消息，包含独立手动压缩；API Key 使用 AES-GCM，系统凭据库持有主密钥，无明文回退                                                  |
 | 独立推理     | `reasoning.delta` 与统一 `output.reasoning` 和回答正文分开；旧记录缺失时保持缺失，不改写实际 usage                                                                       |
-| 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复；保留原始轨迹，恢复不重放工具操作                                                                                         |
+| 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复。保留原始轨迹，恢复不重放工具操作。摘要与正文按各自模型请求期限等待响应，摘要超时提示保留历史。                           |
 | 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                       |
 | 协议接口     | 消息历史统一使用 `conversation.history`；`conversation.messages` 已移除并返回 `-32601`，现有事件字段及步骤的 `context_message`、`reasoning`、`operation` 保持原有格式    |
 
