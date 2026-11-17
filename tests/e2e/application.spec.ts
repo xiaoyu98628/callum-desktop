@@ -634,15 +634,62 @@ test.describe('Office 文件附件', () => {
     const files = await createOfficeFixtures(profile)
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const picker = page.getByRole('button', { name: '添加', exact: true })
+    const composer = page.locator('form').filter({ has: picker })
+    const menu = page.getByRole('menu', { name: '添加', exact: true })
+    const addAttachment = menu.getByRole('menuitem', { name: '添加附件', exact: true })
     await expect(input).toBeEnabled({ timeout: 30_000 })
-    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
-    await page.locator('input[type=file]').setInputFiles(files)
-    const composer = page.locator('form').last()
+    await input.fill('分析这些 Office 文件')
+    await picker.press('Enter')
+    await expect(menu.getByText('添加', { exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem')).toHaveCount(1)
+    await expect(addAttachment).toBeFocused()
+    for (const [width, height] of [
+      [1240, 820],
+      [860, 620],
+    ] as const) {
+      await desktop.evaluate(
+        ({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]?.setSize(...size),
+        [width, height] as const,
+      )
+      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width)
+      await expect
+        .poll(async () => {
+          const [popup, form] = await Promise.all([menu.boundingBox(), composer.boundingBox()])
+          if (!popup || !form) return null
+          return {
+            above: popup.y >= 0 && popup.y + popup.height < form.y,
+            leftOffset: Math.round(popup.x - form.x),
+            rightOffset: Math.round(popup.x + popup.width - (form.x + form.width)),
+          }
+        })
+        .toEqual({ above: true, leftOffset: 0, rightOffset: 0 })
+    }
+    await page.screenshot({ path: '.artifacts/screenshots/attachment-menu-compact.png' })
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(picker).toBeFocused()
+
+    await picker.click()
+    const choosing = page.waitForEvent('filechooser')
+    await addAttachment.click()
+    const chooser = await choosing
+    expect(chooser.isMultiple()).toBe(true)
+    await chooser.setFiles(files)
+    await expect(menu).toBeHidden()
+
+    await picker.press('ArrowDown')
+    await expect(addAttachment).toBeFocused()
+    const cancelling = page.waitForEvent('filechooser')
+    await page.keyboard.press('Enter')
+    await (await cancelling).setFiles([])
+    await expect(menu).toBeHidden()
+    await expect(picker).toBeFocused()
+    await expect(input).toHaveValue('分析这些 Office 文件')
     for (const name of ['plan.docx', 'income.xlsx', 'review.pptx']) {
       await expect(composer.getByRole('group', { name, exact: true })).toBeVisible()
     }
     await expect(composer.getByRole('img')).toHaveCount(0)
-    await input.fill('分析这些 Office 文件')
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: '发送消息', exact: true }).click()
     await expect(
@@ -654,6 +701,8 @@ test.describe('Office 文件附件', () => {
     }
     await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
     const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await expect(picker).toBeDisabled()
+    await expect(editor.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
     await editor.getByRole('button', { name: '移除income.xlsx', exact: true }).click()
     await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeEnabled()
     await editor.getByRole('button', { name: '重新发送', exact: true }).click()
@@ -903,7 +952,7 @@ test.describe('图片附件', () => {
       page.getByRole('button', { name: '编辑模型 仅文字模型', exact: true }),
     ).toBeVisible()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
-    const picker = page.getByRole('button', { name: '添加附件', exact: true })
+    const picker = page.getByRole('button', { name: '添加', exact: true })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const selectModel = async (name: string): Promise<void> => {
       await page.getByRole('combobox', { name: '模型', exact: true }).click()
@@ -931,8 +980,9 @@ test.describe('图片附件', () => {
     await expect(picker).toBeEnabled()
     const path = join(profile, 'selected.png')
     await writeFile(path, Buffer.from(base64, 'base64'))
-    const chooser = page.waitForEvent('filechooser')
     await picker.click()
+    const chooser = page.waitForEvent('filechooser')
+    await page.getByRole('menuitem', { name: '添加附件', exact: true }).click()
     await (await chooser).setFiles(path)
     await expect(page.getByRole('button', { name: 'selected.png', exact: true })).toBeVisible()
     await selectModel('仅文字模型')
@@ -996,7 +1046,7 @@ test.describe('图片附件', () => {
         enabled ? ['text', 'image'] : ['text'],
       )
       await page.getByRole('button', { name: '新对话', exact: true }).click()
-      await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
+      await expect(page.getByRole('button', { name: '添加', exact: true })).toBeEnabled()
       const overview = await page.evaluate(() => window.callum.getChatOverview(0))
       expect(overview.ok && overview.value.models[0]?.imageInput === true).toBe(enabled)
     }

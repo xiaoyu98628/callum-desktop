@@ -220,6 +220,7 @@ const scroller = ref<HTMLElement | null>(null)
 const messageTimeNow = ref(Date.now())
 let messageTimeTimer: number | undefined
 const composer = ref<HTMLElement | null>(null)
+const composerForm = ref<HTMLFormElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
 const messageInput = ref<HTMLTextAreaElement | null>(null)
@@ -954,6 +955,7 @@ onScopeDispose(() => {
         </span>
       </div>
       <form
+        ref="composerForm"
         class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="submitMessage"
         @dragover="dragFiles"
@@ -1011,7 +1013,11 @@ onScopeDispose(() => {
           @keydown="keydown"
         ></textarea>
         <div class="mt-2 flex items-center gap-2">
-          <AttachmentPicker :disabled="attachmentBusy" @files="receiveFiles" />
+          <AttachmentPicker
+            :menu-anchor="composerForm"
+            :disabled="attachmentBusy"
+            @files="receiveFiles"
+          />
           <ApprovalModeSelector class="mr-auto" />
           <div class="flex min-w-0 items-center gap-2">
             <ContextUsageControl
