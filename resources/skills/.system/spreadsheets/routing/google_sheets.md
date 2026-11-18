@@ -1,13 +1,5 @@
-## Google Sheets-targeted output
-### New Creations
+# XLSX handoff for Google Sheets
 
-For a net-new Google Sheets request, create and verify a local `.xlsx` with this skill first. The native Google Sheets deliverable must then be produced by the Google Drive plugin's spreadsheet import action, `mcp__codex_apps__google_drive_import_spreadsheet`, with `upload_mode: "native_google_sheets"`.
+For a new workbook intended for Google Sheets, create a local XLSX, check formulas and formatting, and publish the final file with `publish_artifact`. Tell the user it is ready for import. Identify material compatibility concerns if the workbook uses Excel-specific features.
 
-Do not use Computer Use, Browser Use, blank-Google-Sheets creation plus Google Sheets write APIs, or another direct-to-Sheets construction path for net-new Google Sheets unless the user explicitly asks for that alternate workflow. If they do, mention first that output quality is expected to be best when a local `.xlsx` is imported through the Google Drive plugin.
-
-
-After successful native import, the user-facing deliverable is the Google Sheets link. Refer to the final response format and treat the local `.xlsx` as a build artifact unless the user explicitly asks to keep or receive it.
-
-### Edits
-
-Use the Google Drive plugin's Google Sheets skill for edits to existing Google Sheets. The local `.xlsx` creation and native import workflow above applies only to net-new Google Sheets deliverables.
+To edit an existing Google Sheets workbook, work from a user-supplied XLSX export and publish the edited XLSX. Describe the local deliverable and any remaining import step.

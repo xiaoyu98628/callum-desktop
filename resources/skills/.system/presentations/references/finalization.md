@@ -6,7 +6,7 @@ Set runtime paths and fonts as described in `references/implementation.md`. The 
 
 ### Declare file-validation requirements
 
-For the local file finalizer, build `requirements` from the actual request and source deck. Live-session checks do not require this options object or a `fontPolicy` configuration. Omit options that do not apply:
+For the local file finalizer, build `requirements` from the actual request and source deck. Omit options that do not apply:
 
 - `explicitTotalSlideCount`: an ordinary N-slide request means N total. Use `requestedContentSlideCount` only when the user explicitly requests N content slides **plus** one cover. Keep the template's slide count when the user requires it.
 - `requiredNativeTableOwnerSlides` and `requiredNativeChartOwnerSlides`: slide numbers that must contain editable tables or charts. Use empty arrays when none are required; slide numbers start at 1. The finalizer still checks every chart in the deck.
@@ -29,7 +29,7 @@ import { pathToFileURL } from "node:url";
 const { finalizePresentation } = await import(pathToFileURL(
   path.join(SKILL_DIR, "container_tools/artifact_tool_utils.mjs"),
 ).href);
-const stagingDir = path.join(workspaceDir, ".codex-finalizer");
+const stagingDir = path.join(workspaceDir, ".presentation-finalizer");
 await fs.mkdir(stagingDir, { recursive: true });
 await fs.mkdir(path.dirname(FINAL_PPTX), { recursive: true });
 const candidatePath = path.join(stagingDir, "candidate.pptx");

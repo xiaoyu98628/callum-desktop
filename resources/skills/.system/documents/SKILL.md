@@ -1,11 +1,11 @@
 ---
 name: documents
-description: Create, edit, redline, and comment on `.docx`, Word, and Google Docs-targeted document artifacts inside the container, with a strict render-and-verify workflow. Use `render_docx.py` to generate page PNGs (and optional PDF) for visual QA, then iterate until layout is flawless before delivering the final document.
+description: Create, edit, redline, and comment on `.docx`, Word, and DOCX files prepared for Google Docs import, with a strict render-and-verify workflow. Use `render_docx.py` to generate page PNGs (and optional PDF) for visual QA, then iterate until layout is flawless before delivering the final document.
 ---
 
 ## Callum 宿主适配
 
-在 Callum 中使用时，先阅读同目录的 [callum.md](callum.md)。其中的本地运行路径、工具名与输出目的地覆盖下文 Codex 专用服务约定；其余工作流和质量要求保留。
+先阅读同目录的 [callum.md](callum.md)，按其中的本地运行和交付约定操作。
 
 
 # DOCX Skill (Read • Create • Edit • Redline • Comment)
@@ -29,11 +29,11 @@ Before formatting, read the title and section headings as an outline. Write conn
 For the review steps, examples, and more context, read [writing_quality.md](writing_quality.md#editorial-review-for-documents).
 
 
-Use this skill when you need to create or modify `.docx`, Word, or Google Docs-targeted document artifacts **in this container environment** and verify them visually.
+Use this skill when you need to create or modify `.docx`, Word, or DOCX files prepared for Google Docs import and verify them visually.
 
 ## Tools + Contract Requirements
 
-- Use Codex workspace dependencies for docx artifact work: resolve them through the workspace dependency loader or runtime skill, then treat the returned Node/Python runtimes and package directory as authoritative. Do not use system `node`, system `python`, global npm packages, or repo-local installs.
+- Use `load_workspace_dependencies` and the returned Node/Python executables and package directory for DOCX work.
 - For document creation and deterministic OOXML edits, it is still acceptable to use the bundled Python/OOXML helper scripts in this skill package when the JS surface is incomplete.
 - Run any builder or helper file from a writable workspace or temp directory, not from the managed dependency directory itself.
 
@@ -46,23 +46,18 @@ node container_tools/mark_artifact_operation_started.mjs --operation-kind create
 
 ## Artifact Template Selection
 
-When creating new documents without a template, reference, or visual direction, or when the user asks to browse or upload templates, read [template selection](references/template-elicitation.md) before choosing a design or starting creation.
+Use the local template or reference supplied by the user. If no template is supplied, choose a design suited to the document and audience. Ask for a local copy when matching an existing cloud template depends on the file.
 
-## Google Docs-targeted output
+## DOCX prepared for Google Docs import
 
-For a net-new Google Docs request, create and visually verify a local `.docx` with this skill first. The native Google Docs deliverable must then be produced by the Google Drive plugin's document import action, `mcp__codex_apps__google_drive_import_document`, with `upload_mode: "native_google_docs"`.
-
-Before rendering or importing any Google Docs-targeted DOCX, run the deterministic title sanitizer:
+Create a local DOCX and use the bundled title sanitizer to remove Word title-border residue before render QA:
 
 ```bash
 python scripts/google_docs_title_sanitize.py input.docx --out sanitized.docx
 python scripts/google_docs_title_sanitize.py sanitized.docx --check
 ```
 
-Use the sanitized DOCX for render QA and native Google Docs import. This is not a style preference or prose reminder: the sanitizer removes Word `Title` paragraph-style border residue, direct title-paragraph borders, and leading title-block paragraph borders from the OOXML so Word's built-in blue title rule cannot survive into the imported Google Doc.
-
-Do not use Computer Use, Browser Use, blank-Google-Doc creation plus Google Docs write APIs, or another direct-to-Docs construction path for net-new Google Docs unless the user explicitly asks for that alternate workflow. If they do, mention first that output quality is expected to be best when a local `.docx` is imported through the Google Drive plugin.
-
+Visually verify and publish the sanitized DOCX as an attachment the user can import into Google Docs. For edits to an existing Google Doc, work from a DOCX export supplied by the user.
 
 ## Template Following
 
@@ -71,7 +66,7 @@ When an attached or retained DOCX is meant to control a new document, read
 the task-local `$TMP_DIR/artifact.md` together throughout authoring. In this
 mode, the retained reference is the design authority: do not apply a generic
 design preset, page baseline, or header pattern unless the user explicitly asks
-to depart from the template. The render gate and Google Docs import contract
+to depart from the template. The render gate and the requirements for import-ready DOCX
 still apply. For a Google Docs-targeted result, record any change made by the
 required title sanitizer as an intentional fidelity deviation.
 
@@ -528,31 +523,7 @@ If you need to use LibreOffice, use the absolute path to bundled LibreOffice res
 
 - Final user-facing responses should focus on the requested document result and may include useful next steps. Do not link QA intermediates unless the user explicitly asks for them.
 
-### Final Response Citations
+### Local delivery and sources
 
-- **Create/edit:** for created or edited documents, cite each final deliverable exactly once with `purpose="output"`, in its own paragraph. Briefly describe the result without repeating its filename, path, or link. Never put output directives inside prose or list items.
-- **Q&A and summaries:** Every file whose contents you summarize or use to support an answer MUST receive a `:codex-file-citation{...}` with `purpose="source"` in the final response. Use the source citation in place of the filename, wherever the filename would appear. Do not write the filename separately and append its citation at the end. Files merely inspected but not used in the answer need no citation. Do not emit output citations for unchanged files or read-only answers.
-
-- Emit `:codex-file-citation{...}` directly, without backticks, code fences, or a Markdown-link wrapper. Use verified targets only. No need to cite or reference intermediate work.
-
-For file citations, set `path` to the verified absolute file path on the task host. Omit `mode`.
-
-Some illustrative examples, real responses use verified targets outside code fences.
-
-```text
-:codex-file-citation{path="/absolute/path/review.docx" purpose="output"}
-```
-
-```text
-The review of :codex-file-citation{path="/absolute/path/review.docx" purpose="source"} is due Friday.
-```
-
-### Document source locations
-
-For Q&A, inspect complete relevant pages and preserve material headings, question/table labels, footnotes, sources, and sample sizes. For page-specific evidence, use a page number verified against the latest render or inspection, inside a substantive sentence:
-
-```text
-The rollout depends on security approval, as described in :codex-file-citation{path="/absolute/path/review.docx" purpose="source" artifact_kind="document" page_number="4"}.
-```
-
-Document locators support only `page_number`; otherwise use a plain source citation. Do not guess or add object, label, paragraph, table, or cell IDs.
+- When creating or editing a file, publish each final DOCX with `publish_artifact` and use the returned attachment in the response. Mention material limitations and keep drafts or QA intermediates private unless requested.
+- For questions and summaries, refer to the verified source filename and page number when verified against the latest render or inspection. Inspect complete relevant pages and preserve material labels, footnotes, and source details in ordinary prose. Include only sources that support the answer.

@@ -332,12 +332,24 @@ test(
       )
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const installedSkills = await service.listSkills()
+      const installedRoot = join(profile, 'backend/skills/.system')
       for (const directory of ['documents', 'spreadsheets', 'presentations', 'pdf']) {
-        const path = await realpath(join(profile, 'backend/skills/.system', directory, 'SKILL.md'))
+        const path = await realpath(join(installedRoot, directory, 'SKILL.md'))
         const skill = installedSkills.find((entry) => entry.path === path)
         assert.ok(skill, `实际技能目录缺少入口：${path}`)
         assert.ok((await stat(path)).isFile())
+        for (const name of ['SKILL.md', 'callum.md']) {
+          const instruction = await readFile(join(installedRoot, directory, name), 'utf8')
+          assert.doesNotMatch(instruction, /codex|mcp__|:.*-file-citation\{/i)
+          assert.match(instruction, /publish_artifact/)
+        }
         expectedSkills.push(skill)
+      }
+      for (const reference of [
+        'spreadsheets/routing/google_sheets.md',
+        'presentations/references/finalization.md',
+      ]) {
+        assert.doesNotMatch(await readFile(join(installedRoot, reference), 'utf8'), /codex|mcp__/i)
       }
       const events: ChatEvent[] = []
       service.subscribe((event) => events.push(event))

@@ -14,22 +14,22 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `20cba69d9b6be5aa011dcfb870b7b8dc4845ed29faf49ca2ba4c55ebd8b4c3dd`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `1eeefb4045939aa021f94b237313f39dea9b3cbb7a9c27240de1e839cd318eac`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `3aa82a6dc47f86b9fad2488c3bb36d118500a7079c12cde9d82acbcf232c5121` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `ec82d9bdc3980b5950761a065e0939c8c4f6b3773039b2b15d1bb94f63434047` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `1319dc4f2f939cde8b708db7adaf5af065c8706989cbcd888b07d000d4cd0ca7` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `e62cf51d19ef2e8c990eae5aff9a52f94f1e515369490fd91dab2734dbaa6b04` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `d0f9cdb89d8791e7e7e85bf79b3fefc63adcef8a2e65597a31e1c2b1e00aab35` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `f1b1a884ad354d8ea2788213a665ebb80f00b76b7fb8297baf4363c148f5bf3a` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `86330d0f453e20a1bb943ed900ff189f95a126e37585d0230925a67581a73f22` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `b0f646a73224ea3be969592e13668120901c8c373a5042f197e33a07015306a4` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
 ## 随附程序兼容说明
 
-主对话提示以 Callum 为身份，补充持续推进、响应用户中途修正、确认前的准备及交付前核验。技能目录提示以 `SKILL.md` 描述入口。主对话模型请求携带该次执行的审批与沙箱设置快照和工作区路径信息，Token 预览使用同一套组装逻辑。手动压缩、自动压缩和运行内检查点生成 UTF-8 纯文本交接摘要。摘要提示主体取自 [OpenAI 上游交接提示](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/prompts/templates/compact/prompt.md)，Copyright 2025 OpenAI，采用 Apache-2.0 许可。
+主对话、技能目录和补充提问选用 [OpenAI 上游模型指引](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/models-manager/models.json#L76) 的对应段落。主对话使用 Callum 身份，操作前说明在助理正文中发送，审批由服务端校验。技能经 `read_file` 读取 `SKILL.md`，补充提问沿用单问题与字符串选项。主对话模型请求携带该次执行的审批与沙箱设置快照和工作区路径信息，Token 预览使用同一套组装逻辑。手动压缩、自动压缩和运行内检查点要求模型输出简体中文的 UTF-8 纯文本交接摘要。摘要提示主体取自 [OpenAI 上游交接提示](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/prompts/templates/compact/prompt.md)，Copyright 2025 OpenAI，采用 Apache-2.0 许可。
 
-技能资源位于客户端 `resources/skills/.system/`，安装到 `DataDir/skills/.system/`。用户技能平铺且优先；旧随附内容完整匹配才备份迁移，用户改动保留。运行时从实际数据目录的 `runtimes/{python,node,git,native}` 执行，版本及平台仅在清单中。`resource-lock` 与服务共用实例锁，不打开业务数据库，并提供只读的 `runtime.validate` 完整校验。附件另存按消息版本读取不超过 1 MiB 的分片，每片返回原件 SHA-256。
+技能资源位于客户端 `resources/skills/.system/`，安装到 `DataDir/skills/.system/`。用户技能平铺且优先；旧随附内容完整匹配才备份迁移，用户改动保留。文档、表格、演示文稿及 PDF 指引通过 `publish_artifact` 交付本地会话附件。需要云端导入时交付可供用户导入的本地文件。运行时从实际数据目录的 `runtimes/{python,node,git,native}` 执行，版本及平台仅在清单中。`resource-lock` 与服务共用实例锁，不打开业务数据库，并提供只读的 `runtime.validate` 完整校验。附件另存按消息版本读取不超过 1 MiB 的分片，每片返回原件 SHA-256。
 
 这组随附服务提供 `skills.list`，供客户端 `/` 菜单使用与 Agent 相同的技能目录。发送和重发支持独立的 `skill` 内容块，校验当前已安装的名称和入口；正文独立保存，模型上下文通过 `$技能名` 及定位元数据恢复引用。
 

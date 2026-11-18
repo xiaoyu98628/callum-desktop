@@ -5,7 +5,7 @@ description: "Read, create, inspect, render, and verify PDF files where visual l
 
 ## Callum 宿主适配
 
-在 Callum 中使用时，先阅读同目录的 [callum.md](callum.md)。其中的本地运行路径、工具名与输出目的地覆盖下文 Codex 专用服务约定；其余工作流和质量要求保留。
+先阅读同目录的 [callum.md](callum.md)，按其中的本地运行和交付约定操作。
 
 
 # PDF Skill
@@ -30,8 +30,7 @@ node container_tools/mark_artifact_operation_started.mjs --operation-kind create
 ## Workflow
 
 1. Prefer visual review: render PDF pages to PNGs and inspect them.
-   - Use `pdftoppm` from the bundled runtime or system Poppler when available.
-   - If unavailable, install Poppler or ask the user to review the output locally.
+   - Use the `pdftoppm` executable from the bundled runtime. If rendering is unavailable, report the verification gap.
 2. Use `reportlab` to generate PDFs when creating new documents.
 3. Use `pdfplumber` or `pypdf` for text extraction and quick checks; do not rely on text extraction for layout fidelity.
 4. After each meaningful update, re-render pages and verify alignment, spacing, and legibility.
@@ -92,7 +91,7 @@ with open(output_pdf, "wb") as stream:
 
 ## Dependencies
 
-Prefer the Codex bundled workspace/runtime dependencies when available. The primary runtime is expected to include:
+Resolve available workspace dependencies with `load_workspace_dependencies`. The bundled runtime can provide:
 
 - Python packages: `reportlab`, `pdfplumber`, `pypdf`
 - Rendering tools: `pdftoppm` and `pdfinfo` from Poppler
@@ -149,26 +148,7 @@ pdftoppm -png "$INPUT_PDF" "$OUTPUT_PREFIX"
 
 ## Final response
 
-### Final Response Citations
+### Local delivery and sources
 
-- **Create/edit:** for created or edited PDFs, cite each final deliverable exactly once with `purpose="output"`, in its own paragraph. Briefly describe the result without repeating its filename, path, or link. Never put output directives inside prose or list items.
-- **Q&A and summaries:** Every file whose contents you summarize or use to support an answer MUST receive a `:codex-file-citation{...}` with `purpose="source"` in the final response. Use the source citation in place of the filename, wherever the filename would appear. Do not write the filename separately and append its citation at the end. Files merely inspected but not used in the answer need no citation. Do not emit output citations for unchanged files or read-only answers.
-
-- Emit `:codex-file-citation{...}` directly, without backticks, code fences, or a Markdown-link wrapper. Use verified targets only. No need to cite or reference intermediate work.
-
-For file citations, set `path` to the verified absolute file path on the task host. Omit `mode`.
-
-Some illustrative examples, real responses use verified targets outside code fences.
-
-```text
-:codex-file-citation{path="/absolute/path/review.pdf" purpose="output"}
-```
-
-```text
-The review of :codex-file-citation{path="/absolute/path/review.pdf" purpose="source"} is due Friday.
-```
-
-
-### Additional Citation Guidance
-
-For PDF Q&A, inspect complete relevant pages and preserve material headings, table/figure labels, footnotes, sources, and sample sizes. PDF citations support only plain file citations; do not add `artifact_kind`, `page_number`, or other locators.
+- When creating or editing a file, publish each final PDF with `publish_artifact` and use the returned attachment in the response. Mention material limitations and keep drafts or QA intermediates private unless requested.
+- For questions and summaries, refer to the verified source filename and page or section when verified by inspection. Preserve material labels, footnotes, and source details in ordinary prose. Include only sources that support the answer.

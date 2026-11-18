@@ -1,49 +1,26 @@
 ---
 name: Presentations
-description: Read, create or edit presentations. Default to Spaces; follow the routing rules for PowerPoint/PPT/PPTX, Google Slides, templates and existing decks.
+description: Read, create and edit local PowerPoint presentations, including PPTX templates, existing decks and files prepared for Google Slides import.
 ---
 
 ## Callum 宿主适配
 
-在 Callum 中使用时，先阅读同目录的 [callum.md](callum.md)。其中的本地运行路径、工具名与输出目的地覆盖下文 Codex 专用服务约定；其余工作流和质量要求保留。
+先阅读同目录的 [callum.md](callum.md)，按其中的本地运行和交付约定操作。
 
 
 # Presentations
 
-Read the guidance relevant to each part of the request; a user may ask you to explain, edit and create in the same task. If they only ask questions about a deck, inspect it without making changes. Before editing an existing deck or following a template, read [template following](references/template_following.md). When creating or changing slide layouts, read [visual design guidance](style_guidelines.md). Choose the output destination below before loading destination-specific instructions. Read [Google Slides routing](routing/google_slides.md) only when Google Slides is the chosen final deliverable.
+Read the guidance relevant to each part of the request; a user may ask you to explain, edit and create in the same task. If they only ask questions about a deck, inspect it without making changes. Before editing an existing deck or following a template, read [template following](references/template_following.md). When creating or changing slide layouts, read [visual design guidance](style_guidelines.md).
 
 Proceed when the request is clear. Ask only when missing information would change what you make or how you make it.
 
-## Choose the output destination
+## Local PowerPoint workflow
 
-Choose the output destination first, including for unchanged file copies. Apply the first matching rule in any language:
+Use a local PPTX for new decks and edits. Retrieve conversation attachments with `open_attachment`. For legacy PPT input, follow the conversion guidance in [callum.md](callum.md). When the user supplies a template, follow the template's design and preserve its relevant slides.
 
-1. **SharePoint destination:** create a PPTX with Artifact Tool.
-2. **Spaces, PPT, PPTX or PowerPoint output:** use Spaces, including explicit file, download, export and offline-editing requests. This includes “PPT, not PPTX,” “Return a copy as PPTX,” and “Export this Space as PPTX.” PPT/PPTX export requests take precedence over Google Slides. Users can download or export a Spaces presentation as a .pptx through the UI.
-3. **Google Slides destination or native source:** use Google Slides for a Google Slides/gslides/Google Drive destination, or a native Google Slides reference, template, edit or copy. A Drive-hosted PPTX is not a native Google Slides source.
-4. **Otherwise:** use Spaces, including new decks made from PPTX templates or references and copies of PPTX decks. Edit existing Spaces presentations in place; import existing PPTX decks for edits, subject to the fallback below.
+Read [local implementation](references/implementation.md) when authoring with the bundled `@oai/artifact-tool`. On platforms without the library, use the local PPTX workflow in [callum.md](callum.md). For Google Slides or SharePoint requests, use a user-supplied PPTX export for existing decks and deliver a verified local PPTX for the user to import or upload.
 
-Before editing a referenced PPTX, import the file from the path the user supplied. If the importer requires a file ID, use the matching attachment ID or upload the file from that path first. For Spaces, make the edits in the imported Spaces deck.
-
-Outside the SharePoint and Google Slides routes, return the saved Spaces deck. Even if the user asks for a PPT, PPTX, or PowerPoint file for offline use, link the deck and tell them they can download the .pptx from the viewer. Retry transient Spaces errors.
-
-## Artifact Template Selection
-
-When creating new presentations without a template, reference, or visual direction, or when the user asks to browse or upload templates, read [template selection](references/template-elicitation.md) before choosing a design or starting creation.
-
-## Live session workflow
-
-For Google Slides, follow the skill’s Google Slides routing; do not use `artifact_session.js`.
-
-Set up the selected destination before authoring. For a new Spaces presentation, call `create_spaces_artifact`, then pass its returned `page_id` to `connect_spaces_artifact`. Creation does not establish a session. For an existing Spaces presentation, reuse its connected session or call `connect_spaces_artifact` with its Page ID. Continue using the returned `artifactRef`.
-
-Use `artifact_session.js` when available, following [Artifact Sessions](references/artifact_sessions.md). Reuse the same `artifactRef` for edits. For SharePoint delivery or a permitted PPTX fallback, use `@oai/artifact-tool` via [local implementation](references/implementation.md) to create or edit, validate, and deliver a PPTX instead of stopping at the session error.
-
-Use the session’s prebound `presentation` and [validation adaptation](references/artifact_sessions.md#validate-and-deliver); the local setup and draft-export steps below apply only to standalone authoring.
-
-For a new multi-slide deck, complete the cover in the first tool call and let it finish so the live panel can open; preserve the requested template, order and total slide count. Build the remaining slides in small batches, each in a separate `artifact_session.js` call that finishes before the next starts; do not add a cover to an existing deck or a single-slide request.
-
-For Artifact Tool connectors in sessions or standalone authoring, `head` decorates the source (`from`) end and `tail` decorates the target (`to`) end. Use `tail` for a source-to-target arrow.
+For Artifact Tool connectors, `head` decorates the source (`from`) end and `tail` decorates the target (`to`) end. Use `tail` for a source-to-target arrow.
 
 ## Writing Quality Instructions
 
@@ -242,10 +219,10 @@ Apply the writing quality instructions above and the punctuation rules below to 
 
 ## Create or edit the deck
 
-1. For live authoring, follow [Artifact Sessions](references/artifact_sessions.md) and use the `presentation` object provided by the session. Read `references/implementation.md` only for local authoring or the runtime paths needed by a bundled helper. Read the [API quick start](artifact_tool_docs/API_QUICK_START.md) for object APIs, adapting its local examples to the selected workflow. Use JavaScript with `@oai/artifact-tool`; do not use `python-pptx` or the obsolete Python API.
+1. For local authoring with `@oai/artifact-tool`, read the [API quick start](artifact_tool_docs/API_QUICK_START.md). When the bundled runtime lacks the library, use the available local PPTX tools and inspect their output.
 2. Follow the user’s requested order; otherwise, choose an order that covers the request without repetition. Give each slide a clear purpose. A factual summary, comparison or explanation is enough when the evidence does not support a recommendation.
 3. Read additional guidance only when needed: [cover design](references/cover_art_direction.md) for a new cover; [editable tables and charts](references/native_evidence.md); [bullet formatting](references/native_bullets.md) for new lists; [finance](domain_guidance/finance.md) for financial presentations. Use the [API reference map](artifact_tool_docs/api/API_DOCS.md#reference-map) for other objects.
-4. Follow [validation and delivery](references/finalization.md). For local PPTX delivery, export a draft PPTX in the private build directory. For session authoring, render and inspect in the session. Fix problems without changing the user's design just to satisfy an automated style suggestion.
+4. Follow [validation and delivery](references/finalization.md). Export a draft PPTX in the private build directory, then render and inspect the final file. Fix problems without changing the user's design just to satisfy an automated style suggestion.
 
 ## Review and handoff
 
@@ -255,27 +232,9 @@ Check content coverage, slide count, factual accuracy, template match, text fit 
 
 Return the deck and any explanation the user requested. Do not add a recap of your edits or successful validation checks unless asked. Mention problems or limitations that affect use of the deck. Do not rate your own work or list every instruction you followed. Do not deliver temporary files unless requested. For read-only questions, answer directly and cite inspected contents when they support a substantive claim.
 
-### Final Response Citations
+### Local delivery and sources
 
-- **Create/edit:** for created or edited presentations, cite each final deliverable exactly once with `purpose="output"`, in its own paragraph. Briefly describe the result without repeating its filename, path, or link. Never put output directives inside prose or list items.
-- **Q&A and summaries:** Every file whose contents you summarize or use to support an answer MUST receive a `:codex-file-citation{...}` with `purpose="source"` in the final response. Use the source citation in place of the filename, wherever the filename would appear. Do not write the filename separately and append its citation at the end. Files merely inspected but not used in the answer need no citation. Do not emit output citations for unchanged files or read-only answers.
+- When creating or editing a file, publish each final PPTX with `publish_artifact` and use the returned attachment in the response. Mention material limitations and keep drafts or QA intermediates private unless requested.
+- For questions and summaries, refer to the verified source filename and slide number or title when verified by inspection in ordinary prose. Include only sources that support the answer.
 
-- Emit `:codex-file-citation{...}` directly, without backticks, code fences, or a Markdown-link wrapper. Use verified targets only. No need to cite or reference intermediate work.
-
-Follow the output destination chosen above. For Spaces, edit and validate the saved presentation in Artifact Session; return only that presentation, without a PPT/PPTX copy. For Google Slides, return the verified Google Slides URL without the intermediate PPTX. For PPTX output, return only the final file. A fallback PPTX replaces the original deliverable.
-
-For a Spaces presentation, set `path` to the exact returned `artifactRef`, add `mode="live"`, `artifact_kind="presentation"`, and `page_id="<returned page_id>"`.
-For exported files or native Google files, cite their verified path or URL without `mode`.
-For file citations, set `path` to the verified absolute file path on the task host. Omit `mode`.
-
-Some illustrative examples, real responses use verified targets outside code fences.
-
-```text
-:codex-file-citation{path="<returned artifactRef>" mode="live" artifact_kind="presentation" purpose="output"}
-```
-
-```text
-The review of :codex-file-citation{path="<returned artifactRef>" mode="live" artifact_kind="presentation" purpose="source"} is due Friday.
-```
-
-Say you checked the deck in PowerPoint only if you opened and inspected it there.
+Report PowerPoint-specific verification only when the deck was opened and inspected there.

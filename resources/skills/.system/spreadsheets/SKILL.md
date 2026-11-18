@@ -5,26 +5,25 @@ description: "Use skill when user requests to create, modify, analyze, visualize
 
 ## Callum 宿主适配
 
-先阅读 [callum.md](callum.md)：其本地路径、工具和交付约定优先；其余工作流与质量要求保留。
+先阅读同目录的 [callum.md](callum.md)，按其中的本地运行和交付约定操作。
 
 # Spreadsheets skill
 Read entirely for spreadsheet creation, editing, analysis, or visualization.
 
 ## Decision Boundary
-- Google Sheets targeted outputs also require `routing/google_sheets.md`. Otherwise, author local files with artifact tool.
+- Author and verify local workbooks. For a file intended for Google Sheets import, follow [the XLSX handoff workflow](routing/google_sheets.md).
 
 ## Important Instructions
 - For new workbooks or authorized redesigns, plan the simplest correct workbook that meets the task, audience, actual data and domain. If formulas become hard to read, first reconsider whether the workbook’s structure, layout, or logic is overcomplicated before simplifying individual formulas. Remove unnecessary or duplicated logic while preserving calculation correctness, required business relationships, and financial reconciliation
 - Instruction precedence for workbook content, layout, and formatting is: user request > reference/template > domain defaults/conventions > general defaults.
 
 ## Tools + Contract Requirements
-- Author the spreadsheet with `@oai/artifact-tool` JS and only `load_workspace_dependencies` executables/dependencies, never repo-local deps. If unavailable, check `~/.cache/codex-runtimes/codex-primary-runtime/dependencies/`. Never modify dependency directories.
+- Resolve the bundled executables and dependencies with `load_workspace_dependencies`. Use `@oai/artifact-tool` when available. Otherwise use the local workflow in [callum.md](callum.md).
 - In a writable, conversation-specific or tmp directory, create a `node_modules` symlink or Windows junction to the loader `node_modules`.
 - Prefer to patch/rerun one `.mjs` builder. No heredocs or duplicate builders.
 - Use the provided API reference for supported syntax. Its examples do not set workbook structure, formatting or formula defaults. Do not inspect package internals or prototypes. If blocked, run at most one targeted `workbook.help("<api_or_feature>")` query.
 - No `openpyxl`, `xlsxwriter`, or `pandas.ExcelWriter` authoring unless asked, or  `@oai/artifact-tool` is unavailable.
 - Analyze with JS/formulas, else bundled Python (libraries) and JSON/CSV intermediates; other libraries only for missing capabilities.
-- Use `update_plan` for complex work.
 - In your final response, omit builders, previews, or other support files unless requested.
 - Immediately before the first create/edit authoring command, run `mark_artifact_operation_started.mjs` successfully exactly once using the command below. Do not run it for read-only work. For edits, replace `create` with `edit`; adjust the expected count and output format to match the requested outputs.
   ```bash
@@ -295,7 +294,7 @@ Required:
 - `style_guidelines.md` for formatting.
 
 As applicable:
-- `references/template-elicitation.md`: if user has not provided a template, reference, or visual direction.
+- Use a local template when supplied. Otherwise choose a workbook layout based on the task and audience.
 - `references/image-references.md`: if a reference image or screenshot is provided.
 - `references/read_only_qna.md`: for Q&/audits
 - `features/charts.md`: for creating or editing charts.
@@ -430,37 +429,12 @@ Do not loop indefinitely on similar failures.
 
 ## Final response
 
-### Final Response Citations
+### Local delivery and sources
 
-- **Create/edit:** for created or edited spreadsheets, cite each final deliverable exactly once with `purpose="output"`, in its own paragraph. Briefly describe the result without repeating its filename, path, or link. Never put output directives inside prose or list items.
-- **Q&A and summaries:** Every file whose contents you summarize or use to support an answer MUST receive a `:codex-file-citation{...}` with `purpose="source"` in the final response. Use the source citation in place of the filename, wherever the filename would appear. Do not write the filename separately and append its citation at the end. Files merely inspected but not used in the answer need no citation. Do not emit output citations for unchanged files or read-only answers.
+- When creating or editing a file, publish each final workbook with `publish_artifact` and use the returned attachment in the response. Mention material limitations and keep drafts or QA intermediates private unless requested.
+- For questions and summaries, refer to the verified source filename and the narrowest verified sheet and cell range or chart label in ordinary prose. Include only sources that support the answer.
 
-- Emit `:codex-file-citation{...}` directly, without backticks, code fences, or a Markdown-link wrapper. Use verified targets only. No need to cite or reference intermediate work.
-
-For file citations, set `path` to the verified absolute file path on the task host. Omit `mode`.
-
-Some illustrative examples, real responses use verified targets outside code fences.
-
-```text
-:codex-file-citation{path="/abs/path/book.xlsx" artifact_kind="workbook" purpose="output"}
-```
-
-```text
-The review of :codex-file-citation{path="/abs/path/book.xlsx" artifact_kind="workbook" purpose="source"} is due Friday.
-```
-
-### Additional citation guidance
-
-
-For substantive whole-workbook claims, use a plain source citation. Otherwise use the narrowest reliable `sheet` + `range`, including the exact cell for a discrete value. Cite discontiguous cells separately where they support the answer. For objects, use `sheet` + exact inspected `object_id`; add `object_kind`/`label` only when useful. Never cite a sheet alone or guess locators. Cite only distinct inputs, drivers, formulas, or results the answer needs.
-
-```text
-Revenue falls because the growth assumption is negative in :codex-file-citation{path="/abs/path/book.xlsx" purpose="source" artifact_kind="workbook" sheet="Revenue Model" range="C27"}.
-```
-
-- Calculations: cite only distinct inputs, drivers, formulas, or results the answer needs.
-
-
+For workbook-wide findings, cite the workbook as a whole. For calculations, include the source inputs and formula locations needed to verify the result.
 
 ## Comment Author
 - If the authenticated/user profile or env context provides a user display name, use it as the threaded comment display name unless the user requests another name. Default to `User`.
