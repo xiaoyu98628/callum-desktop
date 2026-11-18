@@ -1,11 +1,13 @@
-import { computed, inject, onMounted, onScopeDispose, provide } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide, watch } from 'vue'
 import { createConversationState } from './state'
+import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
 import { unwrap, upsert, boundMessages } from './state-utils'
 import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
-import { messageText } from '@shared/message-actions'
+import { messageBody, messageText } from '@shared/message-actions'
+import { formatSkillPrefix } from '@shared/skills'
 import { isCompactCommand, matchesCompactCommand } from '@shared/manual-compaction'
 import type {
   ChatEvent,
@@ -20,8 +22,12 @@ import type {
   WorkspaceChange,
   WorkspaceUpdate,
 } from '@shared/chat'
+import { MAX_ATTACHMENT_BATCH_BYTES } from '@shared/attachments'
+import { addAttachmentFiles, attachmentInputs, isImageFile } from './attachment-files'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
+
+const IMAGE_INPUT_REQUIRED = '当前模型未启用图片输入，请在模型设置中启用或切换模型。'
 
 function createConversations() {
   const state = createConversationState()
@@ -50,11 +56,21 @@ function createConversations() {
   const hiddenWorkspaces = new Set<string>()
   const draftWorkspaces = new Map<string, string | null>()
   const draftKey = () => state.selectedId ?? `new:${state.workspaceId ?? 'unbound'}`
+  function releaseEmptyDraft(key: string): void {
+    if (!state.drafts[key] && !state.draftAttachments[key]?.length && !state.draftSkills[key])
+      draftWorkspaces.delete(key)
+  }
+  function clearDraft(key: string): void {
+    delete state.drafts[key]
+    delete state.draftAttachments[key]
+    delete state.draftSkills[key]
+    draftWorkspaces.delete(key)
+  }
   const draft = computed({
     get: () => state.drafts[draftKey()] ?? '',
     set: (value: string) => {
       const key = draftKey()
-      if (!(key in state.drafts) && Object.keys(state.drafts).length >= 100) {
+      if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
         state.error = '草稿数量已达上限，请发送或清空已有草稿。'
         return
       }
@@ -63,9 +79,48 @@ function createConversations() {
         draftWorkspaces.set(key, state.workspaceId)
       } else {
         delete state.drafts[key]
-        draftWorkspaces.delete(key)
+        releaseEmptyDraft(key)
       }
     },
+  })
+  const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
+  const draftSkill = computed(() => state.draftSkills[draftKey()] ?? null)
+  const draftSkillPrefix = computed(() =>
+    draftSkill.value ? formatSkillPrefix(draftSkill.value) : '',
+  )
+  const draftMessageText = computed(() => {
+    const skill = draftSkill.value
+    const metadata = skill
+      ? `\n\n${JSON.stringify({ skills: [{ type: 'skill', name: skill.name, path: skill.path }] })}`
+      : ''
+    return draftSkillPrefix.value + draft.value + metadata
+  })
+  const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
+  function selectDraftSkill(skill: DraftSkill): void {
+    const key = draftKey()
+    if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
+      state.error = '草稿数量已达上限，请发送或清空已有草稿。'
+      return
+    }
+    state.draftSkills[key] = skill
+    draftWorkspaces.set(key, state.workspaceId)
+    // 技能候选只在整个草稿是斜杠查询时打开，查询由所选标记取代。
+    delete state.drafts[key]
+  }
+  function removeDraftSkill(): void {
+    if (state.sending || state.resending || state.compacting) return
+    const key = draftKey()
+    delete state.draftSkills[key]
+    releaseEmptyDraft(key)
+  }
+  const imageInput = computed(
+    () => state.models.find((model) => model.id === state.modelId)?.imageInput === true,
+  )
+  watch(imageInput, (enabled) => {
+    if (!enabled) return
+    // 只清除已失效的图片启用提示，保留其他发送失败及服务错误。
+    if (state.error === IMAGE_INPUT_REQUIRED) state.error = ''
+    if (state.editing?.error === IMAGE_INPUT_REQUIRED) state.editing.error = ''
   })
   const activeRun = computed(
     () =>
@@ -212,10 +267,7 @@ function createConversations() {
   }
   function removeConversation(conversationId: string, deleted = true): void {
     rememberHidden(hiddenConversations, conversationId)
-    if (deleted) {
-      delete state.drafts[conversationId]
-      draftWorkspaces.delete(conversationId)
-    }
+    if (deleted) clearDraft(conversationId)
     state.conversations = state.conversations.filter((item) => item.id !== conversationId)
     for (const group of Object.values(state.workspaceGroups))
       group.items = group.items.filter((item) => item.id !== conversationId)
@@ -225,10 +277,7 @@ function createConversations() {
     rememberHidden(hiddenWorkspaces, workspaceId)
     if (deleted)
       for (const [key, owner] of draftWorkspaces) {
-        if (owner === workspaceId) {
-          delete state.drafts[key]
-          draftWorkspaces.delete(key)
-        }
+        if (owner === workspaceId) clearDraft(key)
       }
     delete state.workspaceGroups[workspaceId]
     if (deleted)
@@ -807,13 +856,13 @@ function createConversations() {
     if (workspaceId) expandWorkspace(workspaceId)
     return true
   }
-  async function openConversation(conversationId: string): Promise<void> {
+  async function openConversation(conversationId: string, keepMessages = false): Promise<void> {
     if (state.selectedId !== conversationId) state.editing = null
+    const retainDetail = keepMessages && state.detail?.conversation.id === conversationId
     const token = ++selection
     state.directoriesLoading = false
     state.directoriesOffset = 0
     state.directoriesError = ''
-    detailRevision = 0
     state.selectedId = conversationId
     const known =
       state.conversations.find((item) => item.id === conversationId) ??
@@ -821,10 +870,13 @@ function createConversations() {
         .flatMap((group) => group.items)
         .find((item) => item.id === conversationId)
     if (known) state.workspaceId = known.workspaceId
-    state.detail = null
+    if (!retainDetail) {
+      detailRevision = 0
+      state.detail = null
+      state.historical = false
+    }
     state.loading = true
     state.error = ''
-    state.historical = false
     state.cancelling = false
     pendingEvents.clear()
     try {
@@ -837,6 +889,7 @@ function createConversations() {
         return
       }
       state.detail = result
+      state.historical = false
       delete state.activeRuns[conversationId]
       for (const run of result.runs) rememberRun(run)
       state.workspaceId = result.conversation.workspaceId
@@ -844,20 +897,70 @@ function createConversations() {
       state.error = result.warning ?? ''
       detailRevision = result.revision
       state.modelId = result.conversation.modelId
-      for (const event of [...pendingEvents.values()].sort((a, b) => a.revision - b.revision))
-        if (event.revision > result.revision) apply(event)
     } catch (error) {
       if (token === selection) state.error = message(error)
     } finally {
       if (token === selection) {
+        // 同步失败时仍可把缓冲通知应用到保留的消息，避免丢失已受理执行的状态。
+        if (state.detail)
+          for (const event of [...pendingEvents.values()].sort((a, b) => a.revision - b.revision))
+            if (event.revision > detailRevision) apply(event)
         state.loading = false
         pendingEvents.clear()
       }
     }
   }
+  function addAttachments(files: File[], editing = false): void {
+    if (!files.length || state.sending || state.resending) return
+    const edit = editing ? state.editing : null
+    const errorTarget = edit ?? state
+    errorTarget.error = ''
+    if (files.some(isImageFile) && !imageInput.value) {
+      errorTarget.error = IMAGE_INPUT_REQUIRED
+      return
+    }
+    try {
+      const held = [
+        ...Object.values(state.draftAttachments).flat(),
+        ...(state.editing?.files ?? []),
+      ]
+      if (
+        [...held, ...files].reduce((sum, file) => sum + file.size, 0) >
+        2 * MAX_ATTACHMENT_BATCH_BYTES
+      )
+        throw new Error('所有草稿合计最多暂存 64 MiB，请清空不再使用的附件。')
+      if (edit) {
+        edit.files = addAttachmentFiles(edit.files, files, edit.retainedAttachments.length)
+      } else {
+        const key = draftKey()
+        if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100)
+          throw new Error('草稿数量已达上限，请发送或清空已有草稿。')
+        state.draftAttachments[key] = addAttachmentFiles(draftAttachments.value, files)
+        draftWorkspaces.set(key, state.workspaceId)
+      }
+    } catch (error) {
+      errorTarget.error = message(error)
+    }
+  }
+  function removeAttachment(index: number, editing = false): void {
+    if (state.sending || state.resending) return
+    if (editing) {
+      const edit = state.editing
+      if (!edit) return
+      if (index < edit.retainedAttachments.length) edit.retainedAttachments.splice(index, 1)
+      else edit.files.splice(index - edit.retainedAttachments.length, 1)
+    } else {
+      const key = draftKey()
+      state.draftAttachments[key]?.splice(index, 1)
+      if (!state.draftAttachments[key]?.length) {
+        delete state.draftAttachments[key]
+        releaseEmptyDraft(key)
+      }
+    }
+  }
   async function send(): Promise<void> {
     if (state.executionSettingsSaving) return
-    if (isCompactCommand(draft.value)) {
+    if (!draftAttachments.value.length && isCompactCommand(draft.value)) {
       await compact(true)
       return
     }
@@ -871,14 +974,17 @@ function createConversations() {
       state.serviceError ||
       state.modelsLoading ||
       state.modelError ||
-      !draft.value.trim() ||
+      (!draft.value.trim() && !draftAttachments.value.length) ||
+      (draftAttachments.value.some(isImageFile) && !imageInput.value) ||
       !state.modelId
     )
       return
     state.sending = true
     state.error = ''
     const conversationId = state.selectedId,
-      text = draft.value,
+      body = draft.value,
+      skill = draftSkill.value,
+      files = draftAttachments.value.slice(),
       token = selection
     const key = draftKey()
     const workspaceId = conversationId ? null : state.workspaceId
@@ -887,15 +993,15 @@ function createConversations() {
         await getDesktopApi().sendMessage({
           conversationId,
           workspaceId,
-          text,
+          text: body,
+          ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
           modelId: state.modelId,
+          ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
         }),
       )
-      if (state.drafts[key] === text) {
-        delete state.drafts[key]
-        draftWorkspaces.delete(key)
-      }
-      if (token === selection && !disposed) await openConversation(result.conversationId)
+      if ((state.drafts[key] ?? '') === body && (state.draftSkills[key] ?? null) === skill)
+        clearDraft(key)
+      if (token === selection && !disposed) await openConversation(result.conversationId, true)
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
       if (token === selection) state.error = message(error)
@@ -918,7 +1024,7 @@ function createConversations() {
       // 受理后仅消耗原命令；切换会话或期间输入的新草稿不能被清除。
       if (consumeCommand && state.drafts[key] === command && matchesCompactCommand(command)) {
         delete state.drafts[key]
-        draftWorkspaces.delete(key)
+        releaseEmptyDraft(key)
       }
       if (!disposed && token === selection) {
         const reload = openConversation(conversationId)
@@ -938,11 +1044,23 @@ function createConversations() {
       editUnavailable.value ||
       !target ||
       target.id !== messageId ||
-      target.content.some((block) => block.type !== 'text')
+      target.content.some((block) => !['text', 'image', 'file', 'skill'].includes(block.type))
     )
       return
     const text = messageText(target.content)
-    state.editing = { messageId, originalText: text, text, error: '' }
+    const reference = target.content.find((block) => block.type === 'skill')
+    state.editing = {
+      messageId,
+      originalText: text,
+      text: messageBody(target.content),
+      skill: reference?.name ? { name: reference.name, path: reference.path } : null,
+      error: '',
+      runId: target.runId,
+      files: [],
+      retainedAttachments: target.content.flatMap((block, index) =>
+        block.type === 'image' || block.type === 'file' ? [index] : [],
+      ),
+    }
   }
   function cancelEditing(): void {
     if (!state.resending) state.editing = null
@@ -955,12 +1073,14 @@ function createConversations() {
     if (
       !target ||
       edit.messageId !== target.id ||
+      edit.runId !== target.runId ||
       edit.originalText !== messageText(target.content)
     ) {
       edit.error = '原提问已变化，请取消编辑并重新加载对话后核对。'
       return
     }
-    if (!edit.text.trim() || edit.text.trim().length > MAX_MESSAGE_LENGTH) {
+    const attachmentCount = edit.retainedAttachments.length + edit.files.length
+    if ((!edit.text.trim() && !attachmentCount) || edit.text.trim().length > MAX_MESSAGE_LENGTH) {
       edit.error = '消息不能为空，且不能超过 100000 个字符。'
       return
     }
@@ -972,6 +1092,14 @@ function createConversations() {
       edit.error = '请选择可用模型后重新发送。'
       return
     }
+    if (
+      (edit.files.some(isImageFile) ||
+        edit.retainedAttachments.some((index) => target.content[index]?.type === 'image')) &&
+      !imageInput.value
+    ) {
+      edit.error = IMAGE_INPUT_REQUIRED
+      return
+    }
     const token = selection
     state.resending = true
     edit.error = ''
@@ -980,8 +1108,15 @@ function createConversations() {
         await getDesktopApi().resendMessage({
           conversationId,
           messageId: edit.messageId,
+          expectedRunId: edit.runId,
           modelId: state.modelId,
           text: edit.text,
+          ...(edit.skill ? { skill: { name: edit.skill.name, path: edit.skill.path } } : {}),
+          ...(target.content.some((block) => block.type === 'image' || block.type === 'file') ||
+          edit.files.length
+            ? { retainedAttachments: edit.retainedAttachments.slice() }
+            : {}),
+          ...(edit.files.length ? { attachments: await attachmentInputs(edit.files.slice()) } : {}),
         }),
       )
       if (!disposed && selection === token && state.selectedId === conversationId) {
@@ -1046,6 +1181,15 @@ function createConversations() {
     initialize,
     state,
     draft,
+    draftAttachments,
+    draftSkill,
+    draftMessageText,
+    draftTextLimit,
+    selectDraftSkill,
+    removeDraftSkill,
+    imageInput,
+    addAttachments,
+    removeAttachment,
     activeRun,
     compactUnavailable,
     compact,

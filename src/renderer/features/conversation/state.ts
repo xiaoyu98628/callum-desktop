@@ -10,6 +10,9 @@ import type {
 } from '../../../shared/chat.ts'
 import type { ExecutionSettings } from '../../../shared/execution.ts'
 import type { ContextUsage } from '../../../shared/context-usage.ts'
+import type { SkillReference } from '../../../shared/skills.ts'
+export type DraftSkill = SkillReference
+
 export interface ConversationGroup {
   items: Conversation[]
   loading: boolean
@@ -58,7 +61,11 @@ export function createConversationState() {
     editing: null as {
       messageId: string
       originalText: string
+      runId: string
+      retainedAttachments: number[]
+      files: File[]
       text: string
+      skill: SkillReference | null
       error: string
     } | null,
     cancelling: false,
@@ -77,6 +84,8 @@ export function createConversationState() {
     hasMore: false,
     historical: false,
     drafts: {} as Record<string, string>,
+    draftAttachments: {} as Record<string, File[]>,
+    draftSkills: {} as Record<string, DraftSkill>,
   })
   return state
 }

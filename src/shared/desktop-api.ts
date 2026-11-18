@@ -25,9 +25,16 @@ import type {
   ResendMessageResult,
   CompactConversationInput,
 } from './chat'
+import type {
+  AttachmentInput,
+  AttachmentPreview,
+  AttachmentPreviewInput,
+  AttachmentSaveInput,
+} from './attachments'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
 import type { ContextUsage, ContextUsageInput } from './context-usage'
+import type { Skill } from './skills'
 
 /** 只描述界面需要的数据，不依赖 Electron、Node.js 或 Vue。 */
 export interface AppInfo {
@@ -93,6 +100,7 @@ export interface DesktopApi {
   listArchivedConversations(offset: number): Promise<ChatResult<ConversationPage>>
   getConversation(conversationId: string): Promise<ChatResult<ConversationDetail>>
   getContextUsage(input: ContextUsageInput): Promise<ChatResult<ContextUsage>>
+  listSkills(): Promise<ChatResult<Skill[]>>
   getConversationHistory(
     conversationId: string,
     beforeRunId: string,
@@ -107,6 +115,9 @@ export interface DesktopApi {
     runId: string,
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
+  previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
+  saveAttachment(input: AttachmentSaveInput): Promise<ChatResult<boolean>>
+  previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
   compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>

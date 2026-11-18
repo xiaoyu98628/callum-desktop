@@ -9,9 +9,10 @@ Callum 的 Electron 桌面客户端，使用 TypeScript、Vue 3 和 shadcn-vue�
 - 项目源目录增删和主要目录切换，供应商与模型配置，API Key 加密存储。
 - 历史消息、流式回答、Markdown、独立推理展示、编辑重发和停止生成。
 - 工具过程、审批、补充输入、上下文用量及手动压缩。
+- 固定版本 Python 3.12.14、Node 26.13.0、Git 2.56.1 资源，由 Go 服务在既有权限与沙箱下执行。
 - 外观设置、键盘操作及受限桌面通信。
 
-附件上传和已有会话移动项目尚未接入。详细行为见 [功能与交互](docs/features.md)。
+对话支持图片及普通文件附件、历史展示、编辑重发和交付文件另存。图片按模型所选输入类型启用；普通文件由 Agent 通过技能与命令按需读取。客户端携带 `resources/skills/.system/`，把自带技能安装到 `~/.callum/skills/.system/`，用户技能平铺在 `~/.callum/skills/<技能名>/`，同名用户技能优先。运行时安装到 `~/.callum/runtimes/{git,python,node,native}`，无版本或平台层级；指定数据根目录时同步改变。Go 不内嵌技能或 Office 解析实现。四个平台随附原生文档工具，技能依赖和原生验收状态见 [桌面端开发](docs/development.md#技能资源与安装)。已有会话移动项目尚未接入。
 
 ## 快速启动
 
@@ -21,12 +22,17 @@ Callum 的 Electron 桌面客户端，使用 TypeScript、Vue 3 和 shadcn-vue�
 ```bash
 nvm use
 npm ci
+```
+
+完整 Python/Node/Git 归档已随仓库保存；`dev`、`build`、`test` 前自动使用随附 Go 程序离线解压当前平台资源，不需要访问上游下载地址或安装 Go。手动准备及维护方式见 [运行时资源准备](docs/development.md#内置-pythonnodegit-资源)。终端用户使用随附的 Python、Node 和 Git，无需另外安装 Python/Node/Git。
+
+```bash
 npm run dev
 ```
 
 开发服务器监听 `127.0.0.1:5173`。安装和首次获取 Electron 需要网络访问。
-随附服务包含 macOS arm64 和 Windows x86 程序；Windows x64 客户端通过 WOW64 使用 x86 服务。
-macOS 桌面对话已有验证，Windows 原生运行与桌面联调尚待验收。
+随附服务及运行时覆盖 macOS Intel x64、Apple Silicon ARM64，以及 Windows x64、ARM64，均使用匹配的原生架构。
+macOS ARM64 桌面已有验证，其他架构原生运行仍需对应环境验收。
 Windows 开发、下载重试及隔离启动方式见 [桌面端开发](docs/development.md)。
 
 ## 文档导航

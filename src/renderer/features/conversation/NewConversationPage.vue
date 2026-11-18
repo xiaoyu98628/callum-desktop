@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onScopeDispose, provide, ref, watch } from 'vue'
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BoxIcon,
   LaptopIcon,
   LoaderCircleIcon,
   SparklesIcon,
   SquareIcon,
+  XIcon,
 } from '@lucide/vue'
-import { isActiveRun, MAX_MESSAGE_LENGTH } from '@shared/chat'
-import {
-  isCompactCommand,
-  matchesCompactCommand,
-  messageCompactions,
-} from '@shared/manual-compaction'
-import type { ApprovalScope, ChatRun } from '@shared/chat'
+import { isActiveRun } from '@shared/chat'
+import { isCompactCommand, messageCompactions } from '@shared/manual-compaction'
+import type { ApprovalScope, ChatMessage, ChatRun } from '@shared/chat'
+import { parseSkillMessage } from '@shared/skills'
 import { Button } from '@/components/ui/button'
+import { getDesktopApi } from '@/lib/desktop'
 import { useConversations } from './useConversations'
 import { useContextUsage } from './useContextUsage'
 import ModelSelector from './ModelSelector.vue'
@@ -26,9 +26,21 @@ import ApprovalComposer from './ApprovalComposer.vue'
 import UserInputCard from './UserInputCard.vue'
 import MessageActions from './MessageActions.vue'
 import MessageEditor from './MessageEditor.vue'
+import AttachmentPicker from './AttachmentPicker.vue'
+import AttachmentList from './AttachmentList.vue'
+import {
+  dragFiles,
+  dropFiles,
+  pasteFiles,
+  isImageAttachment,
+  isImageFile,
+} from './attachment-files'
+import type { AttachmentItem } from './attachment-files'
+import { AttachmentPreviews, attachmentPreviewsKey } from './attachment-previews'
 import ContextUsageControl from './ContextUsageControl.vue'
 import ApprovalModeSelector from './ApprovalModeSelector.vue'
 import ComposerCommands from './ComposerCommands.vue'
+import { compactCommandId, useComposerCommands } from './useComposerCommands'
 import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
 defineEmits<{ configureModels: [] }>()
@@ -36,6 +48,15 @@ defineEmits<{ configureModels: [] }>()
 const {
   state,
   draft,
+  draftAttachments,
+  draftSkill,
+  draftMessageText,
+  draftTextLimit,
+  selectDraftSkill,
+  removeDraftSkill,
+  imageInput,
+  addAttachments,
+  removeAttachment,
   workspace,
   activeRun,
   compactUnavailable,
@@ -60,14 +81,109 @@ const {
   earlier,
 } = useConversations()
 const messages = computed(() => state.detail?.messages ?? [])
+const savingAttachment = ref(false)
+const attachmentSaveError = ref('')
+async function saveAttachment(item: AttachmentItem): Promise<void> {
+  if (item.source instanceof File || !item.runId || savingAttachment.value) return
+  savingAttachment.value = true
+  attachmentSaveError.value = ''
+  try {
+    const result = await getDesktopApi().saveAttachment({ ...item.source, runId: item.runId })
+    if (!result.ok) throw new Error(result.error)
+  } catch (error) {
+    if (state.selectedId === item.source.conversationId)
+      attachmentSaveError.value = error instanceof Error ? error.message : '附件保存失败，请重试。'
+  } finally {
+    savingAttachment.value = false
+  }
+}
+const previews = new AttachmentPreviews(async (item) => {
+  const api = getDesktopApi()
+  const result =
+    item.source instanceof File
+      ? await api.previewDraftAttachment({ bytes: new Uint8Array(await item.source.arrayBuffer()) })
+      : await api.previewAttachment(item.source)
+  if (!result.ok) throw new Error(result.error)
+  return result.value
+})
+provide(attachmentPreviewsKey, previews)
+watch(
+  () => state.selectedId,
+  () => {
+    attachmentSaveError.value = ''
+  },
+)
+watch(
+  () => state.selectedId,
+  () => previews.clear(),
+  { flush: 'sync' },
+)
+onScopeDispose(() => previews.close())
+const draftItems = computed<AttachmentItem[]>(() =>
+  draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
+)
+function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
+  const block = item.content[index]!
+  return {
+    key: `history:${item.conversationId}/${item.id}/${item.runId}/${index}`,
+    label:
+      block.type === 'file'
+        ? block.name || '文件附件'
+        : `图片 ${item.content.slice(0, index + 1).filter((block) => block.type === 'image').length}`,
+    kind: block.type === 'file' ? 'file' : 'image',
+    ...(block.size === undefined ? {} : { size: block.size }),
+    source: { conversationId: item.conversationId, messageId: item.id, index },
+    runId: item.runId,
+  }
+}
+const historyImages = computed(
+  () =>
+    new Map(
+      messages.value.map((item) => [
+        item.id,
+        item.content.flatMap((block, index) =>
+          block.type === 'image' || block.type === 'file' ? [historyAttachment(item, index)] : [],
+        ),
+      ]),
+    ),
+)
+const editItems = computed<AttachmentItem[]>(() => {
+  const edit = state.editing
+  const message = lastUserMessage.value
+  if (!edit || !message || message.id !== edit.messageId) return []
+  return [
+    ...edit.retainedAttachments.map((index) => historyAttachment(message, index)),
+    ...edit.files.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
+  ]
+})
 const messageTimeline = computed(() => {
   const runs = state.detail?.runs ?? []
   const ids = runs.map((run) => run.id).toSorted()
-  return messageCompactions(
+  const timeline = messageCompactions(
     messages.value,
     runs,
     ids.length ? { oldestRunId: ids[0]!, newestRunId: ids.at(-1)! } : undefined,
   )
+  return {
+    before: timeline.before,
+    rows: timeline.rows.map((row) => {
+      const content = row.message.content
+      const reference =
+        row.message.role === 'user' ? content.find((block) => block.type === 'skill') : undefined
+      const firstText =
+        row.message.role === 'user' ? content.find((block) => block.type === 'text') : undefined
+      const skillBlock = firstText ?? reference
+      const skill = reference
+        ? { name: reference.name ?? '', path: reference.path, body: firstText?.text ?? '' }
+        : firstText
+          ? parseSkillMessage(firstText.text)
+          : null
+      const displayContent = content.filter(
+        (block) => block.type !== 'skill' || block === skillBlock,
+      )
+      return { ...row, skillBlock, skill, displayContent }
+    }),
+  }
 })
 const approvals = computed(() =>
   pendingApprovals.value.filter((item) => item.conversationId === state.selectedId),
@@ -129,15 +245,29 @@ const scroller = ref<HTMLElement | null>(null)
 const messageTimeNow = ref(Date.now())
 let messageTimeTimer: number | undefined
 const composer = ref<HTMLElement | null>(null)
+const composerForm = ref<HTMLFormElement | null>(null)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
 const messageInput = ref<HTMLTextAreaElement | null>(null)
-const commandInputFocused = ref(false)
-const commandsDismissed = ref(false)
-const commandsOpen = computed(
-  () => commandInputFocused.value && !commandsDismissed.value && matchesCompactCommand(draft.value),
+const hasDraftAttachments = computed(() => draftItems.value.length > 0)
+const {
+  focused: commandInputFocused,
+  open: commandsOpen,
+  showCompact,
+  activeId: activeCommandId,
+  requestingCompact,
+  matchingSkills,
+  loading: skillsLoading,
+  failed: skillsFailed,
+  focus: focusCommands,
+  dismiss: dismissCommands,
+  move: moveCommand,
+  skillForOption,
+} = useComposerCommands(
+  draft,
+  hasDraftAttachments,
+  computed(() => !state.serviceError),
 )
-const requestingCompact = computed(() => isCompactCommand(draft.value) || commandsOpen.value)
 const usageInput = computed<ContextUsageInput | null>(() =>
   state.loading || state.modelsLoading || !state.modelId
     ? null
@@ -145,7 +275,18 @@ const usageInput = computed<ContextUsageInput | null>(() =>
         conversationId: state.selectedId,
         workspaceId: state.selectedId ? null : state.workspaceId,
         modelId: state.modelId,
-        draft: requestingCompact.value ? '' : draft.value,
+        draft: requestingCompact.value
+          ? ''
+          : draftMessageText.value +
+            draftAttachments.value
+              .filter((file) => !isImageFile(file))
+              .map(
+                (file) => `\n附件：${file.name}，${file.size} 字节，类型 ${file.type || '未知'}。`,
+              )
+              .join(''),
+        ...(draftAttachments.value.some(isImageFile)
+          ? { draftImages: draftAttachments.value.filter(isImageFile).length }
+          : {}),
       },
 )
 const usageHintOpen = ref(false)
@@ -158,7 +299,7 @@ const {
   computed(() => state.contextUsageEvent),
   computed(() => state.usageActivityRevision),
   computed(() => state.serviceError),
-  computed(() => usageHintOpen.value || commandsOpen.value),
+  computed(() => usageHintOpen.value || (commandsOpen.value && showCompact.value)),
 )
 const displayedUsage = computed(() =>
   state.serviceError || contextUsageError.value ? null : contextUsage.value,
@@ -180,6 +321,7 @@ let inputResizeFrame: number | undefined
 let conversationResizeObserver: ResizeObserver | undefined
 const follow = ref(true)
 const awayFromLatest = ref(false)
+const showLoadingMessages = computed(() => state.loading && (!state.detail || !state.sending))
 const canReturnToLatest = computed(
   () =>
     !!state.selectedId &&
@@ -200,6 +342,21 @@ const composerNotice = computed(() =>
       ? '尚未配置可用模型，配置完成后即可开始对话。'
       : '',
 )
+const attachmentBusy = computed(
+  () =>
+    state.loading ||
+    state.sending ||
+    state.resending ||
+    !!state.editing ||
+    !!state.compacting ||
+    !!currentInteraction.value ||
+    !!state.serviceError ||
+    state.modelsLoading ||
+    !!state.modelError,
+)
+function receiveFiles(files: File[]): void {
+  if (!attachmentBusy.value) addAttachments(files)
+}
 const canSend = computed(
   () =>
     !state.loading &&
@@ -216,7 +373,8 @@ const canSend = computed(
     !state.modelError &&
     availableModel.value &&
     (!requestingCompact.value || !compactUnavailable.value) &&
-    !!draft.value.trim(),
+    (!!draftItems.value.length || !!draft.value.trim()) &&
+    (!draftItems.value.some(isImageAttachment) || imageInput.value),
 )
 const runLabels = {
   pending: '正在准备回答…',
@@ -247,21 +405,44 @@ watch(
 )
 function keydown(event: KeyboardEvent): void {
   if (event.isComposing) return
+  const input = messageInput.value
+  if (
+    event.key === 'Backspace' &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    draftSkill.value &&
+    input?.selectionStart === 0 &&
+    input.selectionEnd === 0
+  ) {
+    event.preventDefault()
+    removeComposerSkill()
+    return
+  }
   // 悬停提示打开时先由 Tooltip 处理 Esc，保留输入框中的命令候选。
   if (event.key === 'Escape' && usageHintOpen.value) return
   if (commandsOpen.value) {
     if (event.key === 'Escape') {
       event.preventDefault()
-      commandsDismissed.value = true
+      dismissCommands()
       return
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
+      moveCommand(event.key === 'ArrowDown' ? 1 : -1)
       return
     }
-    if (event.key === 'Tab' && !event.shiftKey && !isCompactCommand(draft.value)) {
-      event.preventDefault()
-      draft.value = '/compact'
+    const selected = activeCommandId.value
+    if (selected && !event.shiftKey && (event.key === 'Enter' || event.key === 'Tab')) {
+      if (event.key === 'Tab' && selected === compactCommandId) {
+        if (!isCompactCommand(draft.value)) {
+          event.preventDefault()
+          draft.value = '/compact'
+        }
+      } else {
+        event.preventDefault()
+        selectComposerOption(selected)
+      }
       return
     }
   }
@@ -270,14 +451,27 @@ function keydown(event: KeyboardEvent): void {
     submitMessage()
   }
 }
+function selectComposerOption(id: string): void {
+  if (id === compactCommandId) {
+    if (showCompact.value && !compactUnavailable.value) void compact(true)
+    return
+  }
+  const skill = skillForOption(id)
+  if (!skill || attachmentBusy.value) return
+  selectDraftSkill(skill)
+  messageInput.value?.focus({ preventScroll: true })
+}
+function removeComposerSkill(): void {
+  removeDraftSkill()
+  messageInput.value?.focus({ preventScroll: true })
+}
 function submitMessage(): void {
   if (!canSend.value) return
   if (requestingCompact.value) void compact(true)
-  else void send()
-}
-function focusCommands(): void {
-  commandInputFocused.value = true
-  commandsDismissed.value = false
+  else {
+    if (!awayFromLatest.value) follow.value = true
+    void send()
+  }
 }
 function updateDistance(): void {
   const element = scroller.value
@@ -293,22 +487,20 @@ function trackScroll(): void {
   scrollbarTimer = window.setTimeout(() => {
     scrollbarVisible.value = false
   }, 700)
-  if (scrollFrame !== undefined) {
-    if (
-      lastScrollTop !== undefined &&
-      element.scrollHeight === lastScrollHeight &&
-      Math.abs(element.scrollTop - lastScrollTop) > 2
-    )
-      pauseFollowing()
-    return
+  if (scrollPositionChanged(element)) {
+    if (scrollFrame !== undefined) pauseFollowing()
+    else follow.value = !awayFromLatest.value
   }
-  follow.value = element.scrollHeight - element.scrollTop - element.clientHeight < 24
+  rememberScrollPosition(element)
 }
 function stopFollowing(event: WheelEvent): void {
   if (event.deltaY < 0) pauseFollowing()
 }
 function pauseFollowing(): void {
   follow.value = false
+  cancelScrollAnimation()
+}
+function cancelScrollAnimation(): void {
   if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
   scrollFrame = undefined
 }
@@ -323,25 +515,60 @@ function showLatest(): void {
 let scrollFrame: number | undefined
 let previousFrame = 0
 let lastScrollTop: number | undefined
-// 排版改变高度或浏览器夹紧滚动位置时不视为用户操作；输入事件可立即停止跟随。
 let lastScrollHeight = 0
+let lastViewportHeight = 0
+function rememberScrollPosition(element: HTMLElement): void {
+  lastScrollTop = element.scrollTop
+  lastScrollHeight = element.scrollHeight
+  lastViewportHeight = element.clientHeight
+}
+function scrollPositionChanged(element: HTMLElement): boolean {
+  // 高度变化可能夹紧滚动位置；只有尺寸相同时才用位移识别滚动条拖动等操作。
+  return (
+    lastScrollTop !== undefined &&
+    element.scrollHeight === lastScrollHeight &&
+    element.clientHeight === lastViewportHeight &&
+    Math.abs(element.scrollTop - lastScrollTop) > 1
+  )
+}
+function pinToBottom(): void {
+  const element = scroller.value
+  if (element && follow.value && !state.historical) {
+    if (scrollPositionChanged(element)) pauseFollowing()
+    else {
+      cancelScrollAnimation()
+      element.scrollTop = element.scrollHeight
+      rememberScrollPosition(element)
+    }
+  }
+  updateDistance()
+}
+function syncComposerLayout(): void {
+  const viewport = scroller.value
+  const footer = composer.value
+  if (!viewport || !footer) return
+  // 轨道贯穿对话区，先同步固定输入区的占位，再定位最后一条消息。
+  viewport.style.setProperty(
+    '--conversation-composer-height',
+    `${footer.getBoundingClientRect().height}px`,
+  )
+  pinToBottom()
+}
+function followRunLayout(runId: string): void {
+  if (activeRun.value?.id === runId) scrollToBottom()
+  else pinToBottom()
+}
 function scrollToBottom(): void {
   updateDistance()
   if (scrollFrame !== undefined || !follow.value || state.historical) return
   previousFrame = 0
-  lastScrollTop = scroller.value?.scrollTop
-  lastScrollHeight = scroller.value?.scrollHeight ?? 0
   const advance = (time: number): void => {
     const element = scroller.value
     if (!element || !follow.value || state.historical) {
       scrollFrame = undefined
       return
     }
-    if (
-      lastScrollTop !== undefined &&
-      element.scrollHeight === lastScrollHeight &&
-      Math.abs(element.scrollTop - lastScrollTop) > 2
-    ) {
+    if (scrollPositionChanged(element)) {
       pauseFollowing()
       return
     }
@@ -355,8 +582,7 @@ function scrollToBottom(): void {
     const finished =
       reduced || element.scrollTop === position || Math.abs(target - element.scrollTop) < 1
     if (finished) element.scrollTop = target
-    lastScrollTop = element.scrollTop
-    lastScrollHeight = element.scrollHeight
+    rememberScrollPosition(element)
     updateDistance()
     scrollFrame = finished ? undefined : requestAnimationFrame(advance)
   }
@@ -365,17 +591,14 @@ function scrollToBottom(): void {
 function resizeMessageInput(): void {
   const input = messageInput.value
   if (!input) return
-  // 恢复 rows 对应的两行高度后测量，删除内容、发送或切换草稿时也能收缩。
+  // 根据附件状态恢复 rows 的一行或两行高度，删除内容或移除附件后重新测量。
   input.style.overflowY = 'hidden'
   input.style.height = 'auto'
   input.style.height = `${input.scrollHeight}px`
   input.style.overflowY = ''
-  void scrollToBottom()
+  syncComposerLayout()
 }
-watch(draft, resizeMessageInput, { flush: 'post' })
-watch(draft, () => {
-  commandsDismissed.value = false
-})
+watch([draft, hasDraftAttachments, draftSkill], resizeMessageInput, { flush: 'post' })
 watch(
   () => currentInteraction.value,
   async (id, previous) => {
@@ -424,12 +647,25 @@ async function cancelMessageEdit(): Promise<void> {
 watch(
   () => messageTimeline.value,
   () => {
-    void scrollToBottom()
+    if (activeRun.value) scrollToBottom()
+    else pinToBottom()
   },
+  { flush: 'post' },
+)
+watch(
+  [() => state.detail, () => state.historical, showRunningIndicator],
+  ([, historical], [, wasHistorical]) => {
+    if (wasHistorical && !historical) follow.value = true
+    // 新消息页和执行指示器的占位在绘制前定位，只有流式增长需要追赶动画。
+    syncComposerLayout()
+  },
+  { flush: 'post' },
 )
 watch(
   () => state.selectedId,
   () => {
+    cancelScrollAnimation()
+    lastScrollTop = undefined
     follow.value = true
     awayFromLatest.value = false
     state.directoriesOffset = 0
@@ -457,23 +693,15 @@ onMounted(() => {
   const viewport = scroller.value
   const footer = composer.value
   if (viewport && footer) {
-    // 滚动轨道贯穿对话区，按固定输入区的高度给最后一条消息留出空间。
-    conversationResizeObserver = new ResizeObserver(() => {
-      viewport.style.setProperty(
-        '--conversation-composer-height',
-        `${footer.getBoundingClientRect().height}px`,
-      )
-      scrollToBottom()
-    })
+    conversationResizeObserver = new ResizeObserver(syncComposerLayout)
     conversationResizeObserver.observe(viewport, { box: 'border-box' })
     conversationResizeObserver.observe(footer, { box: 'border-box' })
   }
-  void scrollToBottom()
 })
 onScopeDispose(() => {
   window.clearInterval(messageTimeTimer)
   window.clearTimeout(scrollbarTimer)
-  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
+  cancelScrollAnimation()
   inputResizeObserver?.disconnect()
   conversationResizeObserver?.disconnect()
   if (inputResizeFrame !== undefined) cancelAnimationFrame(inputResizeFrame)
@@ -511,20 +739,20 @@ onScopeDispose(() => {
         </div>
         <h1 v-else class="sr-only">{{ state.detail?.conversation.title || '对话' }}</h1>
         <div
-          v-if="state.loading"
+          v-if="showLoadingMessages"
           role="status"
           class="flex justify-center gap-2 py-6 text-sm text-muted-foreground"
         >
           <LoaderCircleIcon class="size-4 animate-spin" aria-hidden="true" />正在加载消息…
         </div>
         <div
-          v-if="state.selectedId && !state.loading && state.detail?.history?.hasMore"
+          v-if="state.selectedId && !showLoadingMessages && state.detail?.history?.hasMore"
           class="mb-4 flex justify-center"
         >
           <Button
             variant="ghost"
             size="sm"
-            :disabled="!!state.editing || state.resending"
+            :disabled="state.loading || !!state.editing || state.resending"
             @click="earlier"
             >更早的消息</Button
           >
@@ -535,9 +763,18 @@ onScopeDispose(() => {
             :key="run.id"
             :run="run"
             :connected="!state.serviceError"
-            @changed="scrollToBottom"
+            @changed="followRunLayout(run.id)"
           />
-          <template v-for="{ message: item, compactions } in messageTimeline.rows" :key="item.id">
+          <template
+            v-for="{
+              message: item,
+              compactions,
+              skill,
+              skillBlock,
+              displayContent,
+            } in messageTimeline.rows"
+            :key="item.id"
+          >
             <article
               class="group/message"
               :data-message-id="item.id"
@@ -561,33 +798,79 @@ onScopeDispose(() => {
                 :active="activeRun?.id === item.runId"
                 @expand="expandedRunId = $event ? item.runId : null"
                 @inspect="pauseFollowing"
-                @changed="scrollToBottom"
+                @changed="followRunLayout(item.runId)"
               />
-              <MarkdownMessage
-                v-if="item.role === 'assistant'"
-                :content="item.content"
-                :streaming="activeRun?.id === item.runId"
-                @rendered="scrollToBottom"
-              />
+              <div v-if="item.role === 'assistant'">
+                <MarkdownMessage
+                  :content="item.content.filter((block) => !['image', 'file'].includes(block.type))"
+                  :streaming="activeRun?.id === item.runId"
+                  @rendered="followRunLayout(item.runId)"
+                />
+                <AttachmentList
+                  :items="historyImages.get(item.id) ?? []"
+                  downloadable
+                  :saving="savingAttachment"
+                  @save="saveAttachment"
+                  @changed="nextTick(() => followRunLayout(item.runId))"
+                />
+              </div>
               <MessageEditor
                 v-else-if="state.editing?.messageId === item.id"
                 v-model="state.editing.text"
                 :busy="state.resending"
                 :disabled="editUnavailable || !!state.modelError || state.modelsLoading"
                 :error="state.editing.error"
+                :attachments="editItems"
+                :image-input="imageInput"
+                :skill="state.editing.skill"
+                @remove-skill="state.editing.skill = null"
+                @files="addAttachments($event, true)"
+                @remove="removeAttachment($event, true)"
                 @cancel="cancelMessageEdit"
                 @submit="resend"
               />
-              <div v-else class="ml-auto w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2">
+              <div v-else class="flex max-w-full flex-col items-end gap-1">
+                <AttachmentList
+                  :items="historyImages.get(item.id) ?? []"
+                  class="justify-end"
+                  downloadable
+                  :saving="savingAttachment"
+                  @save="saveAttachment"
+                  @changed="nextTick(() => followRunLayout(item.runId))"
+                />
                 <div
-                  v-for="(block, index) in item.content"
-                  :key="index"
-                  class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                  v-if="
+                    item.content.some((block) => block.type !== 'image' && block.type !== 'file')
+                  "
+                  data-user-message-text
+                  class="w-fit max-w-full rounded-2xl border px-3 py-2"
+                  :class="
+                    skill
+                      ? 'border-blue-100/70 bg-blue-100/60 dark:border-blue-900/50 dark:bg-blue-950/45'
+                      : 'bg-muted/60'
+                  "
                 >
-                  <template v-if="block.type === 'text'">{{ block.text }}</template>
-                  <p v-else class="text-muted-foreground">
-                    [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
-                  </p>
+                  <div
+                    v-for="(block, index) in displayContent.filter(
+                      (block) => block.type !== 'image' && block.type !== 'file',
+                    )"
+                    :key="index"
+                    class="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                  >
+                    <template v-if="skill && skillBlock === block">
+                      <span
+                        data-user-message-skill
+                        class="inline-flex max-w-full items-center gap-1 align-middle text-blue-600 dark:text-blue-400"
+                        :class="{ 'mr-1.5': skill.body }"
+                        :title="skill.path ?? skill.name"
+                      >
+                        <BoxIcon class="size-3.5 shrink-0" aria-hidden="true" />
+                        <span class="min-w-0 truncate">{{ skill.name }}</span> </span
+                      ><span v-if="skill.body" data-user-message-skill-body>{{ skill.body }}</span>
+                    </template>
+                    <template v-else-if="block.type === 'text'">{{ block.text }}</template>
+                    <p v-else class="text-muted-foreground">暂不支持展示的内容</p>
+                  </div>
                 </div>
               </div>
               <MessageActions
@@ -606,7 +889,9 @@ onScopeDispose(() => {
                 :editable="
                   item.role === 'user' &&
                   lastUserMessage?.id === item.id &&
-                  item.content.every((block) => block.type === 'text')
+                  item.content.every((block) =>
+                    ['text', 'image', 'file', 'skill'].includes(block.type),
+                  )
                 "
                 :edit-disabled="editUnavailable"
                 :class="item.role === 'user' ? 'justify-end' : ''"
@@ -643,10 +928,13 @@ onScopeDispose(() => {
               :key="run.id"
               :run="run"
               :connected="!state.serviceError"
-              @changed="scrollToBottom"
+              @changed="followRunLayout(run.id)"
             />
           </template>
         </div>
+        <p v-if="attachmentSaveError" role="alert" class="mt-5 text-sm text-destructive">
+          {{ attachmentSaveError }}
+        </p>
         <p
           v-if="
             latestRun &&
@@ -758,47 +1046,107 @@ onScopeDispose(() => {
         </span>
       </div>
       <form
+        ref="composerForm"
         class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
         @submit.prevent="submitMessage"
+        @dragover="dragFiles"
+        @drop="dropFiles($event, receiveFiles)"
+        @paste="pasteFiles($event, receiveFiles)"
       >
         <ComposerCommands
           v-if="commandsOpen"
+          :active-id="activeCommandId"
+          :show-compact="showCompact"
           :disabled-reason="compactUnavailable"
           :busy="!!state.compacting"
           :usage="displayedUsage"
-          @select="compact(true)"
+          :skills="matchingSkills"
+          :skills-loading="skillsLoading"
+          :skills-failed="skillsFailed"
+          @select="selectComposerOption"
         />
-        <label for="new-message" class="sr-only">消息</label>
-        <textarea
-          id="new-message"
-          ref="messageInput"
-          v-model="draft"
-          rows="2"
-          :maxlength="MAX_MESSAGE_LENGTH"
-          :disabled="
-            !!currentInteraction ||
-            state.loading ||
-            state.sending ||
-            state.resending ||
-            !!state.compacting ||
-            !!state.editing ||
-            state.modelsLoading ||
-            !!state.modelError ||
-            !!state.serviceError ||
-            !availableModel
-          "
-          placeholder="你想聊些什么？"
-          aria-describedby="conversation-hint"
-          aria-autocomplete="list"
-          :aria-controls="commandsOpen ? 'composer-commands' : undefined"
-          :aria-activedescendant="commandsOpen ? 'composer-compact-command' : undefined"
-          class="block max-h-48 min-h-12 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
-          @input="resizeMessageInput"
-          @focus="focusCommands"
-          @blur="commandInputFocused = false"
-          @keydown="keydown"
-        ></textarea>
+        <AttachmentList
+          :items="draftItems"
+          removable
+          :disabled="state.sending"
+          @remove="removeAttachment"
+        />
+        <p
+          v-if="draftItems.some(isImageAttachment) && !imageInput"
+          class="mb-1 text-xs text-muted-foreground"
+        >
+          当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
+        </p>
+        <div class="flex min-w-0 items-start gap-1.5">
+          <div
+            v-if="draftSkill"
+            data-draft-skill
+            class="group flex h-6 max-w-[40%] shrink-0 items-center gap-1 text-blue-600 dark:text-blue-400"
+          >
+            <button
+              type="button"
+              class="inline-grid size-4 shrink-0 place-items-center rounded-sm text-current outline-none enabled:hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+              :disabled="attachmentBusy"
+              :aria-label="`移除技能 ${draftSkill.name}`"
+              title="移除技能"
+              @click="removeComposerSkill"
+            >
+              <BoxIcon
+                class="col-start-1 row-start-1 size-3.5"
+                :class="{ 'group-hover:opacity-0 group-focus-within:opacity-0': !attachmentBusy }"
+                aria-hidden="true"
+              />
+              <XIcon
+                v-if="!attachmentBusy"
+                class="col-start-1 row-start-1 size-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                aria-hidden="true"
+              />
+            </button>
+            <span
+              class="min-w-0 truncate text-[13px] leading-5"
+              :title="draftSkill.path ?? draftSkill.name"
+            >
+              {{ draftSkill.name }}
+            </span>
+          </div>
+          <label for="new-message" class="sr-only">消息</label>
+          <textarea
+            id="new-message"
+            ref="messageInput"
+            v-model="draft"
+            :rows="hasDraftAttachments ? 1 : 2"
+            :maxlength="draftTextLimit"
+            :disabled="
+              !!currentInteraction ||
+              state.loading ||
+              state.sending ||
+              state.resending ||
+              !!state.compacting ||
+              !!state.editing ||
+              state.modelsLoading ||
+              !!state.modelError ||
+              !!state.serviceError ||
+              !availableModel
+            "
+            :placeholder="draftSkill ? undefined : '你想聊些什么？'"
+            aria-describedby="conversation-hint"
+            aria-autocomplete="list"
+            :aria-controls="commandsOpen ? 'composer-commands' : undefined"
+            :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
+            class="block max-h-48 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+            :class="hasDraftAttachments ? 'min-h-6' : 'min-h-12'"
+            @input="resizeMessageInput"
+            @focus="focusCommands"
+            @blur="commandInputFocused = false"
+            @keydown="keydown"
+          ></textarea>
+        </div>
         <div class="mt-2 flex items-center gap-2">
+          <AttachmentPicker
+            :menu-anchor="composerForm"
+            :disabled="attachmentBusy"
+            @files="receiveFiles"
+          />
           <ApprovalModeSelector class="mr-auto" />
           <div class="flex min-w-0 items-center gap-2">
             <ContextUsageControl

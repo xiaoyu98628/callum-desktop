@@ -15,13 +15,16 @@ import {
   boundSteps,
   commandStepInput,
   stepLabel,
+  toolStepSummary,
   stepTarget,
+  stepTargetTitle,
   STEP_OUTPUT_LIMIT,
   stepParameters,
   stepResult,
   truncateStepText,
 } from '../../src/shared/steps.ts'
 import type { ChatStep } from '../../src/shared/chat.ts'
+import { elapsedStepTime } from '../../src/shared/run-time.ts'
 
 const uuid = (n = 1): string => `019a4f39-0000-7000-8000-${String(n).padStart(12, '0')}`
 function step(): ChatStep {
@@ -99,6 +102,61 @@ test('文件步骤识别 Windows 盘符、UNC 和已规范化的相对路径，�
   assert.equal(target('\\\\server\\share\\说明.txt'), '说明.txt')
   assert.equal(target('src\\说明.txt', 'C:\\项目\\src\\说明.txt'), '说明.txt')
   assert.equal(target('/tmp/a\\b.txt'), 'a\\b.txt')
+})
+
+test('单行状态按实际执行起点计时，终态固定，审批等待和中断不推测时长', () => {
+  const command = { ...step(), startedAt: 10_000, finishedAt: null }
+  assert.equal(toolStepSummary(command, 10_500, true).label, '正在运行')
+  assert.equal(toolStepSummary(command, 29_999, true).label, '命令已运行 19s')
+  assert.equal(toolStepSummary(command, 29_999, true).hideTarget, true)
+  const completed = { ...command, status: 'completed' as const, finishedAt: 12_900 }
+  assert.equal(toolStepSummary(completed, 90_000, true).label, '已在 3s 内运行')
+  assert.equal(toolStepSummary({ ...completed, finishedAt: 10_900 }, 90_000, true).label, '已运行')
+  assert.equal(elapsedStepTime(completed, 90_000), 2900)
+  for (const status of [
+    'pending',
+    'awaiting_approval',
+    'cancelled',
+    'failed',
+    'interrupted',
+  ] as const) {
+    const beforeStart = { ...command, status, startedAt: null, finishedAt: 40_000 }
+    assert.equal(elapsedStepTime(beforeStart, 90_000), null)
+    assert.equal(toolStepSummary(beforeStart, 90_000, true).running, false)
+    assert.ok(!toolStepSummary(beforeStart, 90_000, true).label.startsWith('已运行'))
+  }
+  assert.equal(
+    elapsedStepTime({ ...command, status: 'interrupted', finishedAt: 40_000 }, 90_000),
+    null,
+  )
+  assert.equal(elapsedStepTime(command, 9000), null)
+  assert.equal(elapsedStepTime({ ...completed, finishedAt: null }, 90_000), null)
+  assert.equal(toolStepSummary(command, 90_000, false).running, false)
+  assert.equal(toolStepSummary(command, 90_000, false).label, '连接已断开 · 状态待核对')
+})
+
+test('文件摘要保留完整实际路径，搜索摘要包含目录和关键词，参数作为普通文字处理', () => {
+  const file = {
+    ...step(),
+    name: 'read_file',
+    status: 'completed' as const,
+    input: JSON.stringify({
+      arguments: { path: 'stream.go' },
+      request: { target: { path: '/project/internal/stream.go' } },
+    }),
+  }
+  assert.equal(toolStepSummary(file, 0, true).label, '已读取')
+  assert.equal(stepTarget(file), 'stream.go')
+  assert.equal(stepTargetTitle(file), '/project/internal/stream.go')
+  const search = {
+    ...file,
+    name: 'search_text',
+    input: JSON.stringify({ arguments: { path: '/project/lib', query: '<script>value</script>' } }),
+  }
+  assert.equal(stepTarget(search), 'lib 中搜索 "<script>value</script>"')
+  assert.equal(stepTargetTitle(search), '在 /project/lib 中搜索 "<script>value</script>"')
+  assert.equal(toolStepSummary(search, 0, true).label, '已在')
+  assert.equal(toolStepSummary(search, 0, true, false).label, '已搜索内容')
 })
 
 test('工具流按步骤独立解码跨片 UTF-8，保留 stderr 标识，重复通知不重复追加', () => {

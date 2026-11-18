@@ -7,10 +7,12 @@
     "types": ["node"]
   },
   "include": [
+    "scripts/**/*.ts",
     "tests/**/*.ts",
     "src/shared/**/*.ts",
     "src/main/security/renderer-policy.ts",
     "src/main/backend/**/*.ts",
+    "src/main/resource-cleanup.ts",
     "src/main/ipc/chat-event-delivery.ts",
     "src/renderer/features/conversation/markdown/render.ts",
     "src/renderer/features/conversation/markdown/contract.ts",
@@ -18,6 +20,8 @@
     "src/renderer/features/conversation/state.ts",
     "src/renderer/features/conversation/state-utils.ts",
     "src/renderer/features/conversation/execution-interactions.ts",
+    "src/renderer/features/conversation/attachment-previews.ts",
+    "src/renderer/features/conversation/attachment-files.ts",
     "src/renderer/lib/desktop.ts",
     "src/renderer/env.d.ts"
   ]

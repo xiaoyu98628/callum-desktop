@@ -8,6 +8,7 @@ const props = withDefaults(
     label?: string
     ariaLabel?: string
     contentLabel?: string
+    title?: string
     collapsible?: boolean
     showHeader?: boolean
     headerSeparator?: boolean
@@ -19,6 +20,7 @@ const props = withDefaults(
     label: '',
     ariaLabel: '',
     contentLabel: '',
+    title: '',
   },
 )
 const emit = defineEmits<{ toggle: []; changed: []; collapsed: [] }>()
@@ -57,6 +59,7 @@ function collapsed(): void {
         :aria-label="ariaLabel || undefined"
         :aria-expanded="expanded"
         :aria-controls="panelId"
+        :title="title || undefined"
         @click="emit('toggle')"
       >
         <span class="activity-label"

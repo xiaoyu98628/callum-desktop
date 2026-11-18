@@ -18,7 +18,8 @@
 ## 程序与数据路径
 
 - 开发与本地构建预览从应用构建位置解析仓库 `resources/`，发布程序以 `process.resourcesPath` 为资源根目录。
-- macOS arm64 选择 `backend/darwin-arm64/callum`；Windows x64 选择 `backend/win32-ia32/callum.exe`，通过 WOW64 使用随附的 x86 服务。程序位于 ASAR 外，macOS 保留执行权限。其他平台与架构明确返回缺少适用程序。
+- macOS x64/ARM64 分别选择 `backend/darwin-x64/callum`、`backend/darwin-arm64/callum`；Windows x64/ARM64 分别选择 `backend/win32-x64/callum.exe`、`backend/win32-arm64/callum.exe`。服务与客户端架构一致。程序位于 ASAR 外，macOS 保留执行权限，其他目标明确拒绝。
+- 四个平台的基础资源离线准备；主进程持有 `resource-lock` 后安装到 `DataDir/runtimes/`，再以该绝对路径启动服务。Python 统一 3.12.14，Node 26.13.0，Git 2.56.1。Go 仅允许数据目录下精确的 `runtimes/` 及 `skills/` 作为只读例外，数据库和其他私有数据继续隔离。准备与安装见 [桌面端开发](development.md#内置-pythonnodegit-资源)。
 - 安装包资源映射尚未配置；后续配置须按上述目录复制目标资源，约定见 [资源约定](../resources/backend/README.md)。Windows 原生联调仍待 Windows 环境验证。
 - `backend/data-directory.ts` 统一计算 Go 数据目录：默认由系统家目录得到 `~/.callum` 的绝对路径，开发、预览和发布一致。显式设置 `CALLUM_USER_DATA_DIR` 时优先使用 `<隔离用户数据目录>/backend`，测试不会访问真实家目录。`ChatService` 接收已确定的绝对数据路径，不再自行附加 `backend`，通过 `--data-dir` 传给服务。
 - 新服务数据目录权限为 `0700`，不擅自改变已有权限。数据库、配置、模型凭据及实例锁均由 Go 管理，Electron 不直接读取或修改 SQLite。Electron 缓存和外观偏好仍使用原系统应用数据目录。
@@ -29,7 +30,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 ## stdio 传输与连接生命周期
 
-`rpc-client.ts` 无 Shell 启动固定程序，stdout 只作协议通道。持续消费 stderr，握手前最多保留 16 KiB 诊断，仅从结构化启动错误中识别已验证的数据目录占用原因并转换为固定提示；未知诊断只给出就绪前退出信息，不转发原文。握手成功、失败或关闭时清理缓冲，运行后只消费，避免对话与凭据进入界面或客户端日志。客户端仅在应用边界记录脱敏故障，当前不写入客户端文件日志。
+`rpc-client.ts` 无 Shell 启动固定程序，stdout 只作协议通道。持续消费 stderr，握手前最多保留 16 KiB 诊断，从结构化启动错误中识别数据目录占用和内置运行时校验失败并转换为固定提示；未知诊断只给出就绪前退出信息，不转发原文。握手成功、失败或关闭时清理缓冲，运行后只消费，避免对话与凭据进入界面或客户端日志。客户端仅在应用边界记录脱敏故障，当前不写入客户端文件日志。
 
 - 逐行 UTF-8 JSON-RPC 2.0，以字符串请求 ID 关联响应；使用有界字节缓冲处理分片、粘包和 UTF-8 边界，拒绝损坏数据。
 - 就绪通知验证服务名、协议版本 `1` 和当前通信上限；启动等待 15 秒。
@@ -51,12 +52,20 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 - `shared/models.ts` 校验配置字段、UUIDv7、长度、HTTP/HTTPS 根地址和明确的密钥操作；拒绝 URL 内的账号密码、查询参数、片段及未知输入字段。服务类型选项集中定义在 `PROVIDER_SERVICES`，类型由选项推导；当前仅提供 Chat Completions（`chatcompletions`）。供应商新增默认选中，编辑回填已保存的类型；主进程校验后按所选协议提交。未知已有类型不会被静默改为默认值。后续扩展选项时必须同时落实 Go 服务对应的协议支持。
 - 配置写入互斥，拒绝并发重复操作；失败后释放写入状态。API 返回成功并核对记录标识后才显示已保存；列表加载失败与写入失败分开提示，不自动重发写请求。
-- `model.update` 是完整替换。适配层保存基础字段前读取最新模型，保留后端已有的 `max_output_tokens`、`capabilities`、`model_type` 和 `reasoning_levels`，避免未编辑的元数据被清空。`contextWindow` 映射 Go 的 `context_window`，可在模型编辑表单中填写 1 至 1000000000 的整数；新建不预填容量，旧配置缺失时明确补充，界面不猜测厂商容量。未提交该字段的内部调用保留后端原值。
+- `model.update` 是完整替换。适配层保存基础字段前读取最新模型，保留后端已有的 `max_output_tokens`、`capabilities` 和 `reasoning_levels`，避免未编辑的元数据被清空。模型配置的 `inputTypes` 数组回填 `model_type` 中的 `text`、`image`；表单固定选择文本，图片可选。IPC 拒绝缺少文本、重复项和未提供的类型选项；保存时合并最新模型中未展示的其他类型，不改写 `capabilities.image_input`。未提交 `inputTypes` 的内部调用保留原有类型，读取旧配置时不自动改写数据库。对话概览的 `imageInput` 仍从 `model_type` 是否包含 `image` 派生。`contextWindow` 映射 Go 的 `context_window`，可在模型编辑表单中填写 1 至 1000000000 的整数；新建不预填容量，旧配置缺失时明确补充，界面不猜测厂商容量。未提交该字段的内部调用保留后端原值。
 - 供应商编辑留空密钥时不发送 `api_key` 字段；只有明确替换或清除时才传入值。列表只返回 `hasApiKey` 状态，客户端不请求或回显已有密钥。
 - 凭据存储仍由 Go 服务持有。随附服务将 API Key 以 AES-256-GCM 密文保存在本地 SQLite，主密钥由 macOS 钥匙串、Windows Credential Manager 或 Linux Secret Service 持有；客户端不管理或导出主密钥。系统凭据不可用时明确失败，不回退明文。客户端不把密钥写入 localStorage、sessionStorage、查询快照或日志；关闭编辑弹窗时销毁表单的临时凭据状态。
 - 客户端不使用模型 SDK、厂商预设或自动模型发现。实际模型网络请求由 Go 执行。
 
 ## 项目目录与业务存储边界
+
+客户端持有 `resources/skills/.system/` 及运行时资源。资源锁期间安装到 `DataDir/skills/.system/` 和 `DataDir/runtimes/`；随后释放锁并启动正式服务，完成校验才进入界面就绪。用户技能平铺在 `DataDir/skills/<技能名>/`，同名用户技能优先，修改过的旧技能保留。默认数据根目录为 `~/.callum`，隔离配置跟随 `backend/`。Go 不内嵌技能、不解析 Office 格式，也不负责客户端资源复制。
+
+主输入框的 `/` 菜单通过固定的 `listSkills` IPC 查询 Go 的 `skills.list`。查询返回 Agent 使用的同一份有界技能元数据，每次重新发现。发送及重发的固定 IPC 接受独立的 `skill: {name,path}`，主进程将它转换为 Go 的 `skill` 内容块，任务正文单独提交。Go 校验所选名称和路径匹配当前目录后保存。模型历史使用 `$技能名` 加正文，并包含技能定位的 JSON 元数据。草稿估算计入对应文本及元数据。历史中的中文句式由展示层兼容。
+
+普通附件 IPC 除字节外携带名称与 `kind:file`，主进程暂存后转换为 `file` 内容块，保留后端返回的名称、MIME、大小和引用。文字模型只对实际图片做能力校验；文件不会被转成图片或预先提取全文。编辑重发使用相同执行快照及保留附件索引，历史读取不依赖原路径。
+
+`publish_artifact` 的交付副本进入助手 `file` 内容块。执行中断后，Go 根据成功步骤补齐当前分支的交付物引用。固定 `saveAttachment` IPC 接收会话、消息、消息执行 ID 和块索引。主进程通过 `conversation.attachment_read` 以不超过 1 MiB 的分片读取，核对版本、摘要、偏移、名称、总量及结束标志，并校验合并后的 SHA-256。原始字节留在主进程。用户在系统保存对话框选择目标后才写入，使用同目录暂存和替换避免半个文件覆盖旧文件。取消不写目标，失败返回安全提示。
 
 项目目录选择由主进程的系统选择器记录实际路径和目录身份，新增目录在提交前再次复核。固定的 `updateWorkspace` IPC 将名称、完整目录列表及原目录快照交给服务端；Go 在写事务中检查快照、活动执行和路径冲突，原子保存结果。仅改名不提交目录字段。目录解除关联不移动或删除磁盘文件，无目录项目不提供隐含相对路径基准。
 
@@ -119,6 +128,10 @@ Windows 已接通 AppContainer、限制令牌与 Job 的平台边界：受限模
 
 API Key 的旧明文在 Go 启动时迁移，结构版本为 4；失败阻止业务启动并保留可重试状态。密文携带主密钥标识，同一系统用户移动目录仍可读取，跨机器复制数据库不会携带系统主密钥。旧备份和系统快照不由迁移擦除。详细迁移、恢复及平台要求由后端 `docs/storage.md` 维护。配置错误 `1012` / `credentials_unavailable` 通过现有错误通道展示，不自动重试写操作。
 
+## 会话图片附件
+
+Electron 从用户选择、粘贴和拖放的文件取得有界字节，主进程在隔离的附件暂存目录生成临时文件。`conversation.send` 与 `conversation.resend` 通过 stdio 传入临时路径，Go 保存原图到 `<data-dir>/attachments/`。主进程完成请求后清理暂存文件，取得后端实例锁后回收上次异常退出的暂存内容。已受理消息使用 `attachment_ref`。编辑重发提交原执行标识和保留图片索引。历史预览通过消息索引调用 `conversation.attachment_preview`，界面无需读取任意本地路径。草稿图片数量通过 `draft_images` 计入上下文估算。
+
 ## 联调与验证边界
 
 集成测试运行资源目录中的实际 Go 程序，使用独立临时数据目录和本机受控 HTTP 响应，验证模型配置、密钥保留/替换/清除、元数据保留、流式、并行隔离、取消、失败、审批、应用退出和历史恢复。受控响应形状参考后端的 `internal/app/agent_test.go`，这些结果不代表真实模型厂商兼容性。
@@ -126,3 +139,5 @@ API Key 的旧明文在 Go 启动时迁移，结构版本为 4；失败阻止业
 业务集成测试在 macOS arm64 和 Windows x64 上启用。受控命令使用 Node.js 执行，测试通过父进程、可执行文件及隔离数据路径定位自己的服务。Windows 使用本机 CIM 进程查询，macOS 使用 `ps`。平台沙箱业务测试在两平台启用，Windows 专项覆盖只读自动执行、项目写入审批、执行快照、完全访问和关闭最后窗口后的取消与资源释放。后端 Windows 原生测试另覆盖权限及进程隔离、ACL 回收与恢复；本机只有交叉编译结果。Windows 实机结果与 macOS 回归结果分别记录。
 
 联调使用绝对路径的 `CALLUM_USER_DATA_DIR`，不访问日常数据库，不复制凭据。数据库迁移、命令权限与后台资源恢复由 Go 验证；客户端测试关注协议适配、状态展示和连接生命周期。开发检查命令见 [桌面端开发](development.md#开发与检查命令)。
+
+内置 run_command v9 在服务端拒绝不必要的简单 sh/bash 包装，失败步骤显示字段级参数原因。完整工具参数 JSON 损坏时，Go 保留失败模型步骤及 usage，在不执行本批工具的前提下带纠正反馈继续请求；客户端沿用既有步骤、运行状态和错误消息处理，无需自动重发用户消息。相同坏参数无进展时仍明确失败。

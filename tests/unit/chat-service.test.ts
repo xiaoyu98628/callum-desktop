@@ -8,26 +8,33 @@ import { ChatService, resolveBackendExecutable } from '../../src/main/backend/ch
 import { isActiveRun } from '../../src/shared/chat.ts'
 import type { ChatApproval, ChatEvent } from '../../src/shared/chat.ts'
 import type { ServiceState } from '../../src/shared/desktop-api.ts'
-import { backendExecutable, resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
-import { RpcClient } from '../../src/main/backend/rpc-client.ts'
+import {
+  backendExecutable,
+  createRuntimeFixture,
+  resourceRoot,
+  seedModel,
+  supportedBackend,
+} from '../helpers/backend.ts'
+import { RpcClient, RpcError } from '../../src/main/backend/rpc-client.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
-test('服务资源按平台选择，Windows x64 使用固定的 x86 可执行文件', () => {
-  assert.equal(
-    resolveBackendExecutable(resourceRoot, 'win32', 'x64'),
-    join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe'),
-  )
-  assert.equal(
-    resolveBackendExecutable(resourceRoot, 'darwin', 'arm64'),
-    join(resourceRoot, 'backend', 'darwin-arm64', 'callum'),
-  )
-  for (const [platform, arch] of [
-    ['win32', 'arm64'],
-    ['win32', 'ia32'],
-    ['darwin', 'x64'],
-    ['linux', 'x64'],
-  ] as const)
-    assert.throws(() => resolveBackendExecutable(resourceRoot, platform, arch), /没有适用于/)
+test('服务资源使用四个平台的匹配架构并拒绝不支持的目标', () => {
+  for (const platform of ['darwin', 'win32'] as const) {
+    for (const arch of ['x64', 'arm64']) {
+      assert.equal(
+        resolveBackendExecutable(resourceRoot, platform, arch),
+        join(
+          resourceRoot,
+          'backend',
+          `${platform}-${arch}`,
+          platform === 'win32' ? 'callum.exe' : 'callum',
+        ),
+      )
+    }
+  }
+  assert.throws(() => resolveBackendExecutable(resourceRoot, 'linux', 'x64'), /没有适用于/)
+  assert.throws(() => resolveBackendExecutable(resourceRoot, 'win32', 'ia32'), /没有适用于/)
+  assert.throws(() => resolveBackendExecutable('relative'), /绝对路径/)
 })
 
 async function until(check: () => boolean): Promise<void> {
@@ -37,6 +44,27 @@ async function until(check: () => boolean): Promise<void> {
     await setTimeout(20)
   }
 }
+
+test('随附 Go 程序拒绝已移除的旧消息分页接口', { skip: !supportedBackend }, async (t) => {
+  const profile = await mkdtemp(join(tmpdir(), 'callum-backend-contract-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  const client = new RpcClient(
+    backendExecutable,
+    ['--data-dir', join(profile, 'backend')],
+    () => undefined,
+    () => undefined,
+  )
+  try {
+    await assert.rejects(
+      client.request('conversation.messages', {
+        conversation_id: '019a4f39-0000-7000-8000-000000000001',
+      }),
+      (error: unknown) => error instanceof RpcError && error.code === -32601,
+    )
+  } finally {
+    await client.close()
+  }
+})
 
 test('服务就绪、重复关闭及订阅清理保持明确的生命周期', { skip: !supportedBackend }, async () => {
   const profile = await mkdtemp(join(tmpdir(), 'callum-service-state-'))
@@ -101,6 +129,7 @@ test(
       await mkdir(dirname(executable), { recursive: true, mode: 0o700 })
       await copyFile(backendExecutable, executable)
       await chmod(executable, 0o700)
+      await createRuntimeFixture(resources)
       assert.deepEqual(await service.retryStart(), { status: 'ready' })
       assert.deepEqual(await service.catalog.list(), { providers: [], models: [] })
       assert.deepEqual((await service.overview(0)).conversations, [])

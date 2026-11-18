@@ -1,5 +1,8 @@
 import { dialog, ipcMain } from 'electron'
 import { basename } from 'node:path'
+import { dirname, join } from 'node:path'
+import { mkdtemp, open, rename, rm, lstat, link } from 'node:fs/promises'
+import { withCleanup } from '../resource-cleanup'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
 import {
   id,
@@ -13,6 +16,11 @@ import {
   parseWorkspaceChange,
   parseUserInputAnswer,
 } from '../../shared/chat'
+import {
+  parseAttachmentPreviewInput,
+  parseAttachmentSaveInput,
+  parseAttachments,
+} from '../../shared/attachments'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
 import type { ChatService } from '../backend/chat-service'
@@ -33,6 +41,7 @@ export function registerChatHandlers(
   let selection: { id: string; paths: Map<string, string> } | null = null
   let choosingDirectory = false
   let creatingWorkspace = false
+  let savingAttachment = false
   const reset = (): void => {
     active = false
     delivery.reset()
@@ -254,10 +263,71 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.getStepDetails, 3, (conversationId, runId, stepId) =>
     service.stepDetails(id(conversationId), id(runId), id(stepId)),
   )
+  handle(IPC_CHANNELS.previewAttachment, 1, (input) =>
+    service.previewAttachment(parseAttachmentPreviewInput(input)),
+  )
+  handle(IPC_CHANNELS.saveAttachment, 1, async (input) => {
+    const parsed = parseAttachmentSaveInput(input)
+    const window = getWindow()
+    if (!window || window.isDestroyed() || savingAttachment)
+      throw new Error('附件另存为当前不可用。')
+    savingAttachment = true
+    try {
+      const file = await service.readAttachmentFile(parsed)
+      const result = await dialog.showSaveDialog(window, {
+        title: '附件另存为',
+        defaultPath: file.name,
+        buttonLabel: '保存',
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+      })
+      if (result.canceled || !result.filePath || window.isDestroyed()) return false
+      const targetPath = result.filePath
+      const existing = await lstat(targetPath).catch((error: unknown) => {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+        throw error
+      })
+      if (existing && !existing.isFile()) throw new Error('保存目标必须是普通文件。')
+      const staging = await mkdtemp(join(dirname(targetPath), '.callum-save-'))
+      await withCleanup(
+        async () => {
+          const path = join(staging, 'content')
+          const output = await open(path, 'wx', 0o600)
+          await withCleanup(
+            async () => {
+              await output.writeFile(file.bytes)
+              if (existing && process.platform !== 'win32')
+                await output.chmod(existing.mode & 0o777)
+              await output.sync()
+            },
+            () => output.close(),
+          )
+          if (existing) {
+            const current = await lstat(targetPath)
+            if (
+              current.ino !== existing.ino ||
+              current.dev !== existing.dev ||
+              current.mtimeMs !== existing.mtimeMs ||
+              current.size !== existing.size
+            )
+              throw new Error('保存目标已变化，请重新选择。')
+            await rename(path, targetPath)
+          } else await link(path, targetPath)
+        },
+        () => rm(staging, { recursive: true, force: true }),
+      )
+      return true
+    } finally {
+      savingAttachment = false
+    }
+  })
+  handle(IPC_CHANNELS.previewDraftAttachment, 1, (input) =>
+    service.previewDraftAttachment(parseAttachments([input])[0]!),
+  )
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
   handle(IPC_CHANNELS.getContextUsage, 1, (input) =>
     service.contextUsage(parseContextUsageInput(input)),
   )
+  handle(IPC_CHANNELS.listSkills, 0, () => service.listSkills())
   handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.compactConversation, 1, (input) => service.compact(parseCompactInput(input)))
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))

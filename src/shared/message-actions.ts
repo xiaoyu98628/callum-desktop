@@ -5,6 +5,15 @@ export const MAX_MESSAGE_COPY_LENGTH = 8 * 1024 * 1024
 
 /** 复制持久化消息的文字及 Markdown，不混入界面状态或工具过程。 */
 export function messageText(content: ContentBlock[]): string {
+  const body = messageBody(content)
+  const names = content
+    .filter((block) => block.type === 'skill')
+    .map((block) => `$${block.name ?? ''}`)
+  return names.length ? `${names.join(' ')}${body ? ` ${body}` : ''}` : body
+}
+
+/** 提供编辑表单的任务正文，技能由独立标记保留。 */
+export function messageBody(content: ContentBlock[]): string {
   return content
     .filter((block) => block.type === 'text')
     .map((block) => block.text)

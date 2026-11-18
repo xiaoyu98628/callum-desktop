@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { ConfiguredModel, ModelProvider, ModelInput } from '@shared/models'
-import { parseModelInput } from '@shared/models'
+import type { ConfiguredModel, ModelProvider, ModelInput, ModelInputType } from '@shared/models'
+import { MODEL_INPUT_TYPES, parseModelInput } from '@shared/models'
 import { Button } from '@/components/ui/button'
 import SettingsDialog from './SettingsDialog.vue'
 
@@ -17,6 +17,10 @@ const providerId = ref(props.model?.providerId ?? props.providerId)
 const name = ref(props.model?.name ?? '')
 const remoteModelId = ref(props.model?.remoteModelId ?? '')
 const enabled = ref(props.model?.enabled ?? true)
+const inputTypes = ref<ModelInputType[]>([
+  'text',
+  ...(props.model?.inputTypes.filter((type) => type !== 'text') ?? []),
+])
 const contextWindow = ref<number | string>(props.model?.contextWindow ?? '')
 const validationError = ref('')
 const inputClass =
@@ -32,6 +36,7 @@ function save(): void {
         name: name.value,
         remoteModelId: remoteModelId.value,
         enabled: enabled.value,
+        inputTypes: inputTypes.value,
         contextWindow: Number(contextWindow.value),
       }),
     )
@@ -107,6 +112,26 @@ function save(): void {
           填写模型实际支持的 Token 数，服务据此计算上下文预算。已有模型未配置时请补充。
         </p>
       </div>
+      <fieldset>
+        <legend class="text-xs text-muted-foreground">输入类型</legend>
+        <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label
+            v-for="option in MODEL_INPUT_TYPES"
+            :key="option.value"
+            class="flex items-center gap-2 text-sm"
+            :class="option.value === 'text' ? 'text-muted-foreground' : ''"
+          >
+            <input
+              v-model="inputTypes"
+              type="checkbox"
+              :value="option.value"
+              :disabled="busy || option.value === 'text'"
+              class="size-4 accent-primary disabled:opacity-50"
+            />
+            {{ option.label }}
+          </label>
+        </div>
+      </fieldset>
       <label class="flex items-center gap-2 text-sm"
         ><input
           v-model="enabled"

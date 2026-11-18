@@ -1,14 +1,43 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowUpIcon, LoaderCircleIcon } from '@lucide/vue'
+import { ArrowUpIcon, BoxIcon, LoaderCircleIcon, XIcon } from '@lucide/vue'
+import type { SkillReference } from '@shared/skills'
 import { MAX_MESSAGE_LENGTH } from '@shared/chat'
+import AttachmentPicker from './AttachmentPicker.vue'
+import AttachmentList from './AttachmentList.vue'
+import { dragFiles, dropFiles, pasteFiles, isImageAttachment } from './attachment-files'
+import type { AttachmentItem } from './attachment-files'
 import { Button } from '@/components/ui/button'
 
-const props = defineProps<{ modelValue: string; busy: boolean; disabled: boolean; error: string }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; submit: []; cancel: [] }>()
+const props = defineProps<{
+  modelValue: string
+  busy: boolean
+  disabled: boolean
+  error: string
+  attachments: AttachmentItem[]
+  imageInput: boolean
+  skill: SkillReference | null
+}>()
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  submit: []
+  cancel: []
+  files: [files: File[]]
+  remove: [index: number]
+  removeSkill: []
+}>()
 const input = ref<HTMLTextAreaElement | null>(null)
 const resendHint = '重发会替换旧回答，已执行的操作会保留。'
-const canSubmit = computed(() => !props.busy && !props.disabled && !!props.modelValue.trim())
+const canSubmit = computed(
+  () =>
+    !props.busy &&
+    !props.disabled &&
+    (!!props.attachments.length || !!props.modelValue.trim()) &&
+    (!props.attachments.some(isImageAttachment) || props.imageInput),
+)
+function receiveFiles(files: File[]): void {
+  if (!props.busy && !props.disabled) emit('files', files)
+}
 function submit(): void {
   if (canSubmit.value) emit('submit')
 }
@@ -33,8 +62,33 @@ onMounted(() => {
     class="min-w-0 rounded-2xl border bg-muted/60 px-3 pt-2.5 pb-2"
     aria-label="编辑最后一条提问"
     @submit.prevent="submit"
+    @dragover="dragFiles"
+    @drop="dropFiles($event, receiveFiles)"
+    @paste="pasteFiles($event, receiveFiles)"
   >
+    <AttachmentList
+      :items="attachments"
+      removable
+      :disabled="busy"
+      @remove="emit('remove', $event)"
+    />
     <label class="sr-only" for="edit-message">编辑提问</label>
+    <div
+      v-if="skill"
+      class="mb-1 flex w-fit max-w-full items-center gap-1 text-sm text-blue-600 dark:text-blue-400"
+    >
+      <BoxIcon class="size-3.5 shrink-0" aria-hidden="true" />
+      <span class="truncate" :title="skill.path">{{ skill.name }}</span>
+      <button
+        type="button"
+        :aria-label="`移除技能 ${skill.name}`"
+        :disabled="busy"
+        class="inline-flex size-5 items-center justify-center rounded-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+        @click="$emit('removeSkill')"
+      >
+        <XIcon class="size-3" aria-hidden="true" />
+      </button>
+    </div>
     <textarea
       id="edit-message"
       ref="input"
@@ -48,7 +102,14 @@ onMounted(() => {
     />
     <span id="edit-message-hint" class="sr-only">{{ resendHint }}</span>
     <p v-if="error" role="alert" class="mt-2 break-words text-xs text-destructive">{{ error }}</p>
+    <p
+      v-if="attachments.some(isImageAttachment) && !imageInput"
+      class="mt-2 text-xs text-muted-foreground"
+    >
+      当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
+    </p>
     <div class="mt-2 flex items-center justify-end gap-1.5">
+      <AttachmentPicker class="mr-auto" :disabled="busy || disabled" @files="receiveFiles" />
       <Button
         type="button"
         variant="ghost"

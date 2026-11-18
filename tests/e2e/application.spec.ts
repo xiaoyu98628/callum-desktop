@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test as base, expect } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
+import type { ElectronApplication, Locator, Page } from '@playwright/test'
 import { findTestBackend, resourceRoot, seedModel, supportedBackend } from '../helpers/backend'
 import { startModelServer } from '../helpers/model-server'
+import { createOfficeFixtures } from '../helpers/office-fixtures'
 import { ChatService } from '../../src/main/backend/chat-service'
 import {
   MARKDOWN_CODE,
@@ -33,6 +34,7 @@ const test = base.extend<{
   profile: string
   withModel: boolean
   withEndpoint: boolean
+  imageInput: boolean
   blockServiceStartup: boolean
   startupBlocker: ChatService | null
   approvalPolicy: 'on-request' | 'always'
@@ -40,6 +42,7 @@ const test = base.extend<{
 }>({
   withModel: [false, { option: true }],
   withEndpoint: [false, { option: true }],
+  imageInput: [false, { option: true }],
   blockServiceStartup: [false, { option: true }],
   approvalPolicy: ['on-request', { option: true }],
   profile: async ({ playwright }, use) => {
@@ -52,7 +55,7 @@ const test = base.extend<{
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   },
-  modelEndpoint: async ({ withModel, withEndpoint, profile, approvalPolicy }, use) => {
+  modelEndpoint: async ({ withModel, withEndpoint, profile, approvalPolicy, imageInput }, use) => {
     if (!withModel && !withEndpoint) {
       await use(null)
       return
@@ -61,7 +64,7 @@ const test = base.extend<{
     await writeFile(file, 'controlled-file', { mode: 0o600 })
     const endpoint = await startModelServer(file, 'fixture-ui-key')
     try {
-      if (withModel) await seedModel(profile, endpoint.baseUrl, approvalPolicy)
+      if (withModel) await seedModel(profile, endpoint.baseUrl, approvalPolicy, imageInput)
       await use(endpoint)
     } finally {
       await endpoint.close()
@@ -186,6 +189,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'deleteModel',
     'getChatOverview',
     'getContextUsage',
+    'listSkills',
     'getConversation',
     'chooseWorkspaceDirectories',
     'discardWorkspaceDirectories',
@@ -205,6 +209,9 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'getConversationHistory',
     'listRunSteps',
     'getStepDetails',
+    'previewAttachment',
+    'saveAttachment',
+    'previewDraftAttachment',
     'sendMessage',
     'compactConversation',
     'resendMessage',
@@ -564,6 +571,552 @@ testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', asy
   })
   const reopened = await nextWindow
   await expect(reopened.getByText('v0.1.0', { exact: true })).toBeVisible()
+})
+
+test.describe('Office 文件附件', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务与 Office 依赖')
+
+  test('回答中的交付文件在原件删除及重载后仍能另存', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await input.fill('生成交付文件')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const save = answer.getByRole('button', { name: '另存为fixture.txt', exact: true })
+    await expect(save).toBeVisible()
+    await rm(join(profile, 'fixture.txt'))
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '生成交付文件', exact: true })
+      .click()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await expect(save).toBeVisible()
+    await expect(answer).not.toContainText('暂不支持展示的内容')
+    const destination = join(profile, 'saved-result.txt')
+    await writeFile(destination, 'existing file')
+    await desktop.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: true, filePath })
+    }, destination)
+    await save.click()
+    await expect(save).toBeEnabled()
+    expect(await readFile(destination, 'utf8')).toBe('existing file')
+    await desktop.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+    }, destination)
+    await save.click()
+    await expect
+      .poll(() =>
+        readFile(destination, 'utf8').catch((error: unknown) => {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null
+          throw error
+        }),
+      )
+      .toBe('controlled-file')
+    await page.screenshot({ path: '.artifacts/screenshots/office-artifact.png' })
+    await input.fill('读取已交付文件')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toHaveCount(2)
+    await expect(answer).toContainText('已读取测试文件。')
+    expect(
+      modelEndpoint?.requests.some(
+        (request) => request.lastRole === 'tool' && request.text.includes('controlled-file'),
+      ),
+    ).toBe(true)
+  })
+
+  test('文字模型可添加真实 Office 文件，历史保留名称并支持编辑重发', async ({
+    desktop,
+    profile,
+  }) => {
+    const files = await createOfficeFixtures(profile)
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const picker = page.getByRole('button', { name: '添加', exact: true })
+    const composer = page.locator('form').filter({ has: picker })
+    const menu = page.getByRole('menu', { name: '添加', exact: true })
+    const addAttachment = menu.getByRole('menuitem', { name: '添加附件', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await input.fill('分析这些 Office 文件')
+    await picker.press('Enter')
+    await expect(menu.getByText('添加', { exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem')).toHaveCount(1)
+    await expect(addAttachment).toBeFocused()
+    for (const [width, height] of [
+      [1240, 820],
+      [860, 620],
+    ] as const) {
+      await desktop.evaluate(
+        ({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]?.setSize(...size),
+        [width, height] as const,
+      )
+      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width)
+      await expect
+        .poll(async () => {
+          const [popup, form] = await Promise.all([menu.boundingBox(), composer.boundingBox()])
+          if (!popup || !form) return null
+          return {
+            above: popup.y >= 0 && popup.y + popup.height < form.y,
+            leftOffset: Math.round(popup.x - form.x),
+            rightOffset: Math.round(popup.x + popup.width - (form.x + form.width)),
+          }
+        })
+        .toEqual({ above: true, leftOffset: 0, rightOffset: 0 })
+    }
+    await page.screenshot({ path: '.artifacts/screenshots/attachment-menu-compact.png' })
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(picker).toBeFocused()
+
+    await picker.click()
+    const choosing = page.waitForEvent('filechooser')
+    await addAttachment.click()
+    const chooser = await choosing
+    expect(chooser.isMultiple()).toBe(true)
+    await chooser.setFiles(files)
+    await expect(menu).toBeHidden()
+
+    await picker.press('ArrowDown')
+    await expect(addAttachment).toBeFocused()
+    const cancelling = page.waitForEvent('filechooser')
+    await page.keyboard.press('Enter')
+    await (await cancelling).setFiles([])
+    await expect(menu).toBeHidden()
+    await expect(picker).toBeFocused()
+    await expect(input).toHaveValue('分析这些 Office 文件')
+    for (const name of ['plan.docx', 'income.xlsx', 'review.pptx']) {
+      await expect(composer.getByRole('group', { name, exact: true })).toBeVisible()
+    }
+    await expect(composer.getByRole('img')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    for (const name of ['plan.docx', 'income.xlsx', 'review.pptx']) {
+      await expect(user.getByRole('group', { name, exact: true })).toBeVisible()
+    }
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await expect(picker).toBeDisabled()
+    await expect(editor.getByRole('button', { name: '添加附件', exact: true })).toBeEnabled()
+    await editor.getByRole('button', { name: '移除income.xlsx', exact: true }).click()
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeEnabled()
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(user.getByRole('group', { name: 'income.xlsx', exact: true })).toHaveCount(0)
+    await expect(user.getByRole('group', { name: 'plan.docx', exact: true })).toBeVisible()
+    await expect(user.getByRole('group', { name: 'review.pptx', exact: true })).toBeVisible()
+    await rm(files[0]!)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '分析这些 Office 文件', exact: true })
+      .click()
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await expect(
+      page
+        .getByRole('article', { name: '你的消息', exact: true })
+        .last()
+        .getByRole('group', { name: 'plan.docx', exact: true }),
+    ).toBeVisible()
+    await page.screenshot({ path: '.artifacts/screenshots/office-attachments.png' })
+  })
+})
+
+test.describe('图片附件', () => {
+  test.use({ withModel: true, imageInput: true })
+  test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+
+  test('多图缩略图在气泡上方和草稿中展示，编辑替换后不复用旧图', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    const emptyInputHeight = await input.evaluate(
+      (element) => element.getBoundingClientRect().height,
+    )
+    const composer = page.locator('form').last()
+    const emptyComposerHeight = await composer.evaluate(
+      (element) => element.getBoundingClientRect().height,
+    )
+    const images = await page.evaluate(() =>
+      ['设计说明', '项目进度', '验收清单'].map((title, index) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = index === 1 ? 1200 : 900
+        canvas.height = index === 1 ? 720 : 1200
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('测试画布不可用')
+        context.fillStyle = ['#eaf1ff', '#dff4ee', '#fff2d9'][index]!
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.fillStyle = ['#5069b8', '#287f70', '#ab7530'][index]!
+        context.fillRect(56, 56, canvas.width - 112, 220)
+        context.fillStyle = '#ffffff'
+        context.font = 'bold 72px sans-serif'
+        context.fillText(title, 100, 195)
+        for (let row = 0; row < (index === 1 ? 3 : 6); row++) {
+          context.fillStyle = '#ffffff'
+          context.fillRect(56, 320 + row * 130, canvas.width - 112, 96)
+          context.fillStyle = '#728097'
+          context.fillRect(90, 348 + row * 130, 550 - row * 48, 16)
+          context.fillStyle = '#cbd2dc'
+          context.fillRect(90, 379 + row * 130, 680, 10)
+        }
+        return canvas.toDataURL('image/png')
+      }),
+    )
+    const paths = ['设计.png', '进度.png', '清单.png'].map((name) => join(profile, name))
+    await Promise.all(
+      paths.map((path, index) =>
+        writeFile(path, Buffer.from(images[index]!.split(',')[1]!, 'base64')),
+      ),
+    )
+    await page.locator('input[type=file]').setInputFiles(paths.slice(0, 2))
+    const ready = async (region: Locator, count: number): Promise<void> => {
+      await expect(region.getByRole('img')).toHaveCount(count)
+      await expect
+        .poll(() =>
+          region
+            .getByRole('img')
+            .evaluateAll((elements) =>
+              elements.every(
+                (element) =>
+                  element instanceof HTMLImageElement &&
+                  element.complete &&
+                  element.naturalWidth > 0 &&
+                  element.naturalWidth <= 256 &&
+                  element.naturalHeight <= 256,
+              ),
+            ),
+        )
+        .toBe(true)
+    }
+    const fittedFrames = async (
+      region: Locator,
+      maxWidth: number,
+      maxHeight: number,
+    ): Promise<void> => {
+      const frames = await region.getByRole('img').evaluateAll((elements) =>
+        elements.map((image) => {
+          if (!(image instanceof HTMLImageElement)) throw new Error('图片元素无效')
+          const box = image.getBoundingClientRect()
+          const frame = image.closest('button')?.getBoundingClientRect()
+          if (!frame) throw new Error('图片外框缺失')
+          return {
+            width: box.width,
+            height: box.height,
+            frameWidth: frame.width,
+            frameHeight: frame.height,
+            ratio: image.naturalWidth / image.naturalHeight,
+          }
+        }),
+      )
+      for (const frame of frames) {
+        expect(frame.width).toBeLessThanOrEqual(maxWidth)
+        expect(frame.height).toBeLessThanOrEqual(maxHeight)
+        expect(Math.abs(frame.width / frame.height - frame.ratio)).toBeLessThan(0.035)
+        expect(Math.abs(frame.frameWidth - frame.width)).toBeLessThan(1)
+        expect(Math.abs(frame.frameHeight - frame.height)).toBeLessThan(1)
+      }
+    }
+    await ready(composer, 2)
+    await fittedFrames(composer, 128, 96)
+    await expect
+      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+      .toBeLessThan(emptyInputHeight)
+    expect(
+      (await composer.evaluate((element) => element.getBoundingClientRect().height)) -
+        emptyComposerHeight,
+    ).toBeLessThanOrEqual(104)
+    await input.fill('帮我比较这两张图')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    await ready(user, 2)
+    await fittedFrames(user, 80, 80)
+    const firstBefore = await user.getByRole('img').first().getAttribute('src')
+    const boxes = await user.getByRole('img').evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { top: box.top, bottom: box.bottom }
+      }),
+    )
+    const textBox = await user.locator('[data-user-message-text]').boundingBox()
+    if (!textBox || !boxes[0] || !boxes[1]) throw new Error('图片和文字布局缺失')
+    expect(boxes[0].top).toBe(boxes[1].top)
+    expect(boxes[0].bottom).toBeLessThanOrEqual(textBox.y)
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('img')).toHaveAttribute('src', images[0]!)
+    await page.keyboard.press('Escape')
+    await expect(preview).not.toBeVisible()
+    await composer.locator('input[type=file]').setInputFiles(paths[2]!)
+    await ready(composer, 1)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect
+      .poll(() => composer.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      .toBe(true)
+    await input.click()
+    await page.screenshot({ path: '.artifacts/screenshots/attachment-thumbnails.png' })
+    await composer.getByRole('button', { name: '移除清单.png', exact: true }).click()
+    await expect
+      .poll(() => input.evaluate((element) => element.getBoundingClientRect().height))
+      .toBe(emptyInputHeight)
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await ready(editor, 2)
+    await fittedFrames(editor, 128, 96)
+    await editor.getByRole('button', { name: '移除图片 1', exact: true }).click()
+    await editor.locator('input[type=file]').setInputFiles(paths[2]!)
+    await ready(editor, 2)
+    await editor.getByRole('textbox', { name: '编辑提问', exact: true }).fill('调整后的图片')
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    await ready(user, 2)
+    expect(await user.getByRole('img').first().getAttribute('src')).not.toBe(firstBefore)
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    await expect(preview.getByRole('img')).toHaveAttribute('src', images[1]!)
+    await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await composer
+      .locator('input[type=file]')
+      .setInputFiles(Array.from({ length: 8 }, (_, index) => paths[index % paths.length]!))
+    await ready(composer, 8)
+    expect(
+      await composer
+        .getByRole('img')
+        .evaluateAll(
+          (elements) =>
+            new Set(elements.map((element) => element.getBoundingClientRect().top)).size,
+        ),
+    ).toBeGreaterThan(1)
+    expect(await composer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    )
+  })
+
+  test('缩略图读取失败保留移除和重试入口，后续有效图片可继续显示', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled({
+      timeout: 30_000,
+    })
+    const path = join(profile, '损坏.png')
+    await writeFile(path, 'invalid image')
+    await page.locator('input[type=file]').setInputFiles(path)
+    await expect(page.getByText('无法加载', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '损坏.png', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('alert')).toBeVisible()
+    await preview.getByRole('button', { name: '重试加载', exact: true }).click()
+    await expect(preview.getByRole('alert')).toBeVisible()
+    await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await page.getByRole('button', { name: '移除损坏.png', exact: true }).click()
+    const valid =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    await writeFile(path, Buffer.from(valid, 'base64'))
+    await page.locator('input[type=file]').setInputFiles(path)
+    await expect(page.getByRole('img', { name: '损坏.png', exact: true })).toBeVisible()
+    await expect(page.getByText('无法加载', { exact: true })).toHaveCount(0)
+  })
+
+  test('用户选中的图片类型控制上传、粘贴和重发，切换模型清除过期提示', async ({
+    desktop,
+    profile,
+  }) => {
+    const page = await desktop.firstWindow()
+    const created = await page.evaluate(async () => {
+      const catalog = await window.callum.getModelCatalog()
+      if (!catalog.ok || !catalog.value.providers[0]) throw new Error('测试供应商不存在')
+      return window.callum.saveModel({
+        id: null,
+        providerId: catalog.value.providers[0].id,
+        name: '仅文字模型',
+        remoteModelId: 'text-only',
+        enabled: true,
+        contextWindow: 1000000,
+        inputTypes: ['text'],
+      })
+    })
+    expect(created.ok).toBe(true)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    await expect(
+      page.getByRole('button', { name: '编辑模型 仅文字模型', exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    const picker = page.getByRole('button', { name: '添加', exact: true })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const selectModel = async (name: string): Promise<void> => {
+      await page.getByRole('combobox', { name: '模型', exact: true }).click()
+      await page.getByRole('option', { name, exact: true }).click()
+    }
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await selectModel('仅文字模型')
+    await expect(picker).toBeEnabled()
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    await input.evaluate((element, data) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(
+        new File([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], 'paste.png', {
+          type: 'image/png',
+        }),
+      )
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+      )
+    }, base64)
+    await expect(page.getByRole('alert')).toContainText('当前模型未启用图片输入')
+    await selectModel('受控文本模型')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(picker).toBeEnabled()
+    const path = join(profile, 'selected.png')
+    await writeFile(path, Buffer.from(base64, 'base64'))
+    await picker.click()
+    const chooser = page.waitForEvent('filechooser')
+    await page.getByRole('menuitem', { name: '添加附件', exact: true }).click()
+    await (await chooser).setFiles(path)
+    await expect(page.getByRole('button', { name: 'selected.png', exact: true })).toBeVisible()
+    await selectModel('仅文字模型')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    await expect(
+      page.getByText('当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。', {
+        exact: true,
+      }),
+    ).toBeVisible()
+    await selectModel('受控文本模型')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+    await page
+      .getByRole('article', { name: '你的消息', exact: true })
+      .last()
+      .getByRole('button', { name: '编辑提问', exact: true })
+      .press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await selectModel('仅文字模型')
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeDisabled()
+    await selectModel('受控文本模型')
+    await expect(editor.getByRole('button', { name: '重新发送', exact: true })).toBeEnabled()
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(editor).not.toBeVisible()
+    await expect(
+      page.getByRole('article', { name: 'Callum 的回答', exact: true }).last(),
+    ).toContainText('这是受控回答。')
+  })
+
+  test('输入类型多选固定文本，图片可取消编辑、回填并联动对话', async ({ desktop }) => {
+    const page = await desktop.firstWindow()
+    for (const enabled of [false, true]) {
+      await page.getByRole('button', { name: '设置', exact: true }).click()
+      await page.getByRole('button', { name: '模型', exact: true }).click()
+      await page.getByRole('button', { name: '编辑模型 受控文本模型', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '编辑模型', exact: true })
+      const group = dialog.getByRole('group', { name: '输入类型', exact: true })
+      const text = group.getByRole('checkbox', { name: '文本', exact: true })
+      const checkbox = group.getByRole('checkbox', { name: '图片', exact: true })
+      await expect(group.getByRole('checkbox')).toHaveCount(2)
+      await expect(text).toBeChecked()
+      await expect(text).toBeDisabled()
+      await expect(checkbox).toBeChecked({ checked: !enabled })
+      if (!enabled) {
+        await checkbox.uncheck()
+        await dialog.getByRole('button', { name: '取消', exact: true }).click()
+        await page.getByRole('button', { name: '编辑模型 受控文本模型', exact: true }).click()
+        await expect(checkbox).toBeChecked()
+      }
+      await checkbox.focus()
+      await page.keyboard.press('Space')
+      await expect(checkbox).toBeChecked({ checked: enabled })
+      if (!enabled) await group.screenshot({ path: '.artifacts/screenshots/model-input-types.png' })
+      await dialog.getByRole('button', { name: '保存模型', exact: true }).click()
+      await expect(dialog).not.toBeVisible()
+      const catalog = await page.evaluate(() => window.callum.getModelCatalog())
+      expect(catalog.ok && catalog.value.models[0]?.inputTypes).toEqual(
+        enabled ? ['text', 'image'] : ['text'],
+      )
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      await expect(page.getByRole('button', { name: '添加', exact: true })).toBeEnabled()
+      const overview = await page.evaluate(() => window.callum.getChatOverview(0))
+      expect(overview.ok && overview.value.models[0]?.imageInput === true).toBe(enabled)
+    }
+  })
+
+  test('选图后预览并发送，原图移除后仍可查看和编辑重发', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNI6tgDAAL2AaeiLKo8AAAAAElFTkSuQmCC'
+    const path = join(profile, 'screen.png')
+    await writeFile(path, Buffer.from(base64, 'base64'))
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await page.locator('input[type=file]').setInputFiles(path)
+    await page.getByRole('button', { name: 'screen.png', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '图片预览' })
+    await expect(preview.getByRole('img')).toHaveAttribute('src', 'data:image/png;base64,' + base64)
+    await preview.getByRole('button', { name: '关闭预览' }).click()
+    const remove = page.getByRole('button', { name: '移除screen.png', exact: true })
+    await remove.click()
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    for (const action of ['paste', 'drop'] as const) {
+      await input.evaluate(
+        (element, { action, base64 }) => {
+          const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+          const transfer = new DataTransfer()
+          transfer.items.add(new File([bytes], 'screen.png', { type: 'image/png' }))
+          const event =
+            action === 'paste'
+              ? new ClipboardEvent('paste', {
+                  clipboardData: transfer,
+                  bubbles: true,
+                  cancelable: true,
+                })
+              : new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true })
+          element.dispatchEvent(event)
+        },
+        { action, base64 },
+      )
+      await expect(remove).toBeVisible()
+      if (action === 'paste') await remove.click()
+    }
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    await expect(answers.last()).toContainText('这是受控回答。')
+    await rm(path)
+    const user = page.getByRole('article', { name: '你的消息', exact: true }).last()
+    await user.getByRole('button', { name: '图片 1', exact: true }).click()
+    await expect(preview.getByRole('img')).toHaveAttribute('src', 'data:image/png;base64,' + base64)
+    await preview.getByRole('button', { name: '关闭预览' }).click()
+    await user.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editor = page.getByRole('form', { name: '编辑最后一条提问' })
+    await editor.getByRole('textbox', { name: '编辑提问' }).fill('再看这张图')
+    await editor.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(user).toContainText('再看这张图')
+    await expect(answers.last()).toContainText('这是受控回答。')
+    expect(
+      modelEndpoint?.requests.filter(
+        (request) => request.images?.[0] === 'data:image/png;base64,' + base64,
+      ),
+    ).toHaveLength(2)
+  })
 })
 
 test.describe('真实 Go 对话交互', () => {
@@ -1230,7 +1783,7 @@ test.describe('真实 Go 对话交互', () => {
       await disclosure.click()
       await timeline
         .getByRole('button', {
-          name: /^工具详情：已运行 .*process\.cwd/,
+          name: /^工具详情：(已运行|已在 \d+s 内运行) .*process\.cwd/,
         })
         .click()
       await expect(timeline.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -3787,6 +4340,260 @@ test.describe('会话与项目管理', () => {
   })
 })
 
+test.describe('输入框技能', () => {
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务')
+
+  test('技能消息在附件下方同行展示，长正文换行且历史重载保留样式', async ({ desktop, profile }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(860)
+
+    const file = join(profile, '技能样本.txt')
+    await writeFile(file, '技能消息的受控样本。')
+    await input.fill('/pdf')
+    await page.getByRole('option', { name: /^pdf\b/ }).click()
+    await page
+      .locator('form')
+      .filter({ has: input })
+      .locator('input[type=file]')
+      .setInputFiles(file)
+    await input.fill('解析一下')
+    await input.press('Enter')
+
+    const messages = page.getByRole('article', { name: '你的消息', exact: true })
+    const first = messages.first()
+    const bubble = first.locator('[data-user-message-text]')
+    const marker = bubble.locator('[data-user-message-skill]')
+    const body = bubble.locator('[data-user-message-skill-body]')
+    const attachment = first.getByRole('group', { name: '技能样本.txt', exact: true })
+    await expect(marker).toHaveText('pdf')
+    await expect(body).toHaveText('解析一下')
+    await expect(bubble).not.toContainText('完成以下任务')
+    await expect(attachment).toBeVisible()
+    const [bubbleBox, markerBox, bodyBox, attachmentBox] = await Promise.all([
+      bubble.boundingBox(),
+      marker.boundingBox(),
+      body.boundingBox(),
+      attachment.boundingBox(),
+    ])
+    if (!bubbleBox || !markerBox || !bodyBox || !attachmentBox) throw new Error('技能消息布局缺失')
+    expect(markerBox.x + markerBox.width).toBeLessThan(bodyBox.x)
+    expect(
+      Math.abs(markerBox.y + markerBox.height / 2 - (bodyBox.y + bodyBox.height / 2)),
+    ).toBeLessThan(4)
+    expect(attachmentBox.y + attachmentBox.height).toBeLessThan(bubbleBox.y)
+    expect(attachmentBox.x + attachmentBox.width).toBeCloseTo(bubbleBox.x + bubbleBox.width, 0)
+    await page.screenshot({ path: '.artifacts/screenshots/history-skill-message.png' })
+
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    const saved = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      const detail = await window.callum.getConversation(conversation.id)
+      if (!detail.ok) throw new Error(detail.error)
+      return {
+        title: conversation.title,
+        content: detail.value.messages.find((item) => item.role === 'user')?.content,
+      }
+    })
+    expect(saved.title).not.toContain('请使用技能')
+    expect(saved.content?.find((block) => block.type === 'skill')).toMatchObject({ name: 'pdf' })
+    expect(saved.content?.find((block) => block.type === 'text')?.text).toBe('解析一下')
+    await first.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    const editForm = first.getByRole('form', { name: '编辑最后一条提问', exact: true })
+    const editInput = editForm.getByRole('textbox', { name: '编辑提问', exact: true })
+    await expect(editInput).toHaveValue('解析一下')
+    await expect(editForm.getByRole('button', { name: '移除技能 pdf', exact: true })).toBeVisible()
+    await editInput.fill('解析这份文件')
+    await editForm.getByRole('button', { name: '重新发送', exact: true }).click()
+    await expect(body).toHaveText('解析这份文件')
+    await expect(marker).toHaveText('pdf')
+    await expect(attachment).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+
+    const longBody = '这是一段需要在窄窗口自然换行的历史正文。'.repeat(10) + '\n保留第二段。'
+    const storedText = `请使用技能 "Presentations" 完成以下任务：\n${longBody}`
+    await input.fill(storedText)
+    await input.press('Enter')
+    await expect(messages).toHaveCount(2)
+    const last = messages.last()
+    const longMarker = last.locator('[data-user-message-skill]')
+    const longText = last.locator('[data-user-message-skill-body]')
+    await expect(longMarker).toHaveText('Presentations')
+    await expect(longText).toHaveJSProperty('textContent', longBody)
+    expect(await longText.evaluate((element) => element.getClientRects().length)).toBeGreaterThan(2)
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+
+    const renamed = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      return window.callum.renameConversation(conversation.id, '技能消息历史')
+    })
+    expect(renamed.ok).toBe(true)
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '技能消息历史', exact: true })
+      .click()
+    await expect(marker).toHaveText('pdf')
+    await expect(attachment).toBeVisible()
+    await expect(longMarker).toHaveText('Presentations')
+    await expect(longText).toHaveJSProperty('textContent', longBody)
+
+    await last.getByRole('button', { name: '编辑提问', exact: true }).press('Enter')
+    await expect(last.getByRole('textbox', { name: '编辑提问', exact: true })).toHaveValue(
+      storedText,
+    )
+  })
+
+  test('按实际安装目录刷新技能，筛选后可用键盘添加引用并发送', async ({
+    desktop,
+    profile,
+    modelEndpoint,
+  }) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const menu = page.getByRole('listbox', { name: '命令和技能' })
+    const group = menu.getByRole('group', { name: '技能', exact: true })
+    const bundledDocuments = group.getByRole('option', { name: /^documents\b/ })
+    const pdf = group.getByRole('option', { name: /^pdf\b/ })
+    const selectedSkill = page.locator('[data-draft-skill]')
+    await expect(input).toBeEnabled({ timeout: 30_000 })
+    await input.fill('/')
+    await expect(menu.getByRole('option').first()).toContainText('压缩')
+    await expect(group.getByText('技能', { exact: true })).toBeVisible()
+    await expect(bundledDocuments).toContainText('Create, edit, redline')
+    for (const name of ['pdf', 'Presentations', 'Spreadsheets']) {
+      await expect(group.getByRole('option', { name: new RegExp(`^${name}\\b`) })).toBeVisible()
+    }
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(860)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-skills.png' })
+    await input.press('Escape')
+    await expect(menu).toBeHidden()
+
+    await input.fill('/pdf')
+    await pdf.click()
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('')
+    await expect(input).toHaveJSProperty('placeholder', '')
+    await expect(input).toBeFocused()
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+    await page.mouse.move(1, 1)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-selected-skill-empty.png' })
+    await page.keyboard.insertText('总结这份文件')
+    await expect(input).toHaveValue('总结这份文件')
+    const markerBounds = await selectedSkill.boundingBox()
+    const inputBounds = await input.boundingBox()
+    if (!markerBounds || !inputBounds) throw new Error('技能标记或输入框布局缺失')
+    expect(markerBounds.y).toBeCloseTo(inputBounds.y, 0)
+    const gap = inputBounds.x - (markerBounds.x + markerBounds.width)
+    expect(gap).toBeGreaterThan(0)
+    expect(gap).toBeLessThanOrEqual(8)
+    await page.screenshot({ path: '.artifacts/screenshots/composer-selected-skill.png' })
+
+    await input.fill('/documents')
+    await bundledDocuments.click()
+    await expect(selectedSkill).toHaveText('documents')
+    await input.fill('移除技能后保留正文X')
+    await input.evaluate((element: HTMLTextAreaElement) => {
+      element.setSelectionRange(element.value.length, element.value.length)
+    })
+    await input.press('Backspace')
+    await expect(input).toHaveValue('移除技能后保留正文')
+    await expect(selectedSkill).toHaveText('documents')
+    await input.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 0))
+    await input.press('Backspace')
+    await expect(selectedSkill).toHaveCount(0)
+    await expect(input).toHaveJSProperty('placeholder', '你想聊些什么？')
+    await expect(input).toHaveValue('移除技能后保留正文')
+    await expect(input).toBeFocused()
+
+    const root = join(profile, 'backend', 'skills')
+    for (const name of ['documents', 'local-review']) {
+      const directory = join(root, name)
+      await mkdir(directory, { recursive: true })
+      await writeFile(
+        join(directory, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: 审阅示例 ${name}\n---\n本地测试技能。\n`,
+      )
+    }
+    await input.fill('/审阅')
+    await expect(bundledDocuments).toContainText('审阅示例 documents')
+    await expect(group.getByRole('option')).toHaveCount(2)
+    const local = group.getByRole('option', { name: /^local-review\b/ })
+    await input.press('ArrowDown')
+    await expect(local).toHaveAttribute('aria-selected', 'true')
+    await input.press('Enter')
+    await expect(menu).toBeHidden()
+    await expect(selectedSkill).toHaveText('local-review')
+    const body = '检查这段受控文字。'
+    const request = `$local-review ${body}`
+    await page.keyboard.insertText(body)
+    await expect(input).toHaveValue(body)
+    await input.press('Enter')
+    await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
+      '这是受控回答。',
+    )
+    expect(
+      modelEndpoint?.requests.some(
+        (entry) =>
+          entry.lastRole === 'user' &&
+          entry.text.startsWith(request) &&
+          entry.text.includes('SKILL.md'),
+      ),
+    ).toBe(true)
+    await expect(selectedSkill).toHaveCount(0)
+
+    await rm(join(root, 'documents', 'SKILL.md'))
+    await rm(join(root, 'local-review', 'SKILL.md'))
+    await input.fill('/')
+    await expect(bundledDocuments).toContainText('Create, edit, redline')
+    await expect(local).toHaveCount(0)
+
+    const renamed = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      const conversation = overview.ok ? overview.value.conversations[0] : undefined
+      if (!conversation) throw new Error('测试对话不存在')
+      return window.callum.renameConversation(conversation.id, '技能草稿隔离')
+    })
+    expect(renamed.ok).toBe(true)
+    await input.fill('/pdf')
+    await pdf.click()
+    await input.fill('留在原对话里的正文')
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(selectedSkill).toHaveCount(0)
+    await input.fill('另一条对话草稿')
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '技能草稿隔离', exact: true })
+      .click()
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('留在原对话里的正文')
+
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => ({ ok: false, error: '受控发送受理失败' }))
+    }, IPC_CHANNELS.sendMessage)
+    await input.press('Enter')
+    await expect(page.getByRole('alert')).toContainText('受控发送受理失败')
+    await expect(selectedSkill).toHaveText('pdf')
+    await expect(input).toHaveValue('留在原对话里的正文')
+    await selectedSkill.getByRole('button', { name: '移除技能 pdf', exact: true }).press('Enter')
+    await expect(selectedSkill).toHaveCount(0)
+    await expect(input).toHaveValue('留在原对话里的正文')
+  })
+})
+
 test.describe('手动压缩上下文', () => {
   async function hoverUsage(page: Page): Promise<void> {
     await page.mouse.move(1, 1)
@@ -4546,6 +5353,10 @@ test.describe('模型配置与对话联动', () => {
     await expect(page.getByText('已设置 API Key', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '为 本机模型服务 添加模型', exact: true }).click()
     dialog = page.getByRole('dialog', { name: '添加模型', exact: true })
+    const types = dialog.getByRole('group', { name: '输入类型', exact: true })
+    await expect(types.getByRole('checkbox', { name: '文本', exact: true })).toBeChecked()
+    await expect(types.getByRole('checkbox', { name: '文本', exact: true })).toBeDisabled()
+    await expect(types.getByRole('checkbox', { name: '图片', exact: true })).not.toBeChecked()
     await dialog.getByLabel('模型名称', { exact: true }).fill('文本助手')
     await dialog.getByLabel('模型 ID', { exact: true }).fill('local-fixture')
     await dialog.getByLabel('上下文容量（Token）', { exact: true }).fill('1000000')
@@ -4694,6 +5505,88 @@ test.describe('模型配置与对话联动', () => {
 test.describe('Markdown 回答展示', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+
+  test('发送保留已排版消息，切回长会话首帧即显示最新消息', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const scroller = page.locator('[data-conversation-scroll]')
+    const send = page.getByRole('button', { name: '发送消息', exact: true })
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    const code = scroller.locator('pre').first()
+    await expect(input).toBeEnabled()
+    await input.fill('连续流渲染')
+    await input.press('Enter')
+    await expect(code).toBeVisible()
+    modelEndpoint.finishStream()
+    await expect(send).toBeVisible()
+    await code.evaluate((element) => element.setAttribute('data-test-retained', ''))
+
+    const distanceFromBottom = () =>
+      scroller.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      )
+    await input.fill('分页-继续发送\n' + '多行草稿。\n'.repeat(10))
+    await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1)
+    await input.press('Enter')
+    await expect(scroller.getByText('分页回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+    await expect(code).toHaveAttribute('data-test-retained', '')
+    await expect(input).toHaveValue('')
+    await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1)
+
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await input.fill('短会话')
+    await input.press('Enter')
+    await expect(scroller.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+
+    await scroller.evaluate((element) => {
+      const distances: number[] = []
+      function sample(): void {
+        if (element.textContent?.includes('分页-继续发送')) {
+          distances.push(element.scrollHeight - element.clientHeight - element.scrollTop)
+        }
+        if (distances.length < 12 && element.isConnected) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+      Reflect.set(window, 'conversationScrollDistances', distances)
+    })
+    await recent.getByRole('button', { name: '连续流渲染', exact: true }).click()
+    await expect(scroller.getByText('分页回答。', { exact: true })).toBeInViewport()
+    await expect(code).toBeVisible()
+    const readDistances = () =>
+      page.evaluate((): number[] => Reflect.get(window, 'conversationScrollDistances'))
+    await expect.poll(async () => (await readDistances()).length).toBe(12)
+    expect(Math.max(...(await readDistances()))).toBeLessThanOrEqual(1)
+  })
+
+  test('发送后的详情同步失败仍保留消息并接收已受理的回答', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('受控端点不存在')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const send = page.getByRole('button', { name: '发送消息', exact: true })
+    const messages = page.getByLabel('消息记录')
+    await expect(input).toBeEnabled()
+    await input.fill('分页-已经显示的提问')
+    await input.press('Enter')
+    await expect(messages.getByText('分页回答。', { exact: true })).toBeVisible()
+    await expect(send).toBeVisible()
+
+    await desktop.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, () => ({ ok: false, error: '受控详情同步失败' }))
+    }, IPC_CHANNELS.getConversation)
+    await input.fill('连续流渲染')
+    await input.press('Enter')
+    await expect(page.getByRole('alert')).toContainText('受控详情同步失败')
+    await expect(messages.getByText('分页-已经显示的提问', { exact: true })).toBeVisible()
+    await expect(messages.getByRole('heading', { name: '连续流渲染', exact: true })).toBeVisible()
+    modelEndpoint.finishStream()
+    await expect(send).toBeVisible()
+    await expect(messages.getByRole('article')).toHaveCount(4)
+  })
 
   for (const renderDelay of [0, 80])
     test(`持续分片和慢排版仍持续更新，复用稳定节点且不抢回阅读位置（${renderDelay}ms）`, async ({
@@ -5120,7 +6013,7 @@ test.describe('Codex 风格过程展示', () => {
     await thinking.press('Space')
     await expect(thinking).toHaveAttribute('aria-expanded', 'false')
     const command = overview.getByRole('button', {
-      name: /^工具详情：已运行 .*controlled-fold-output/,
+      name: /^工具详情：(已运行|已在 \d+s 内运行) .*controlled-fold-output/,
     })
     await expect(command).toBeVisible()
     await expect(overview.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
@@ -5230,58 +6123,110 @@ test.describe('Codex 风格过程展示', () => {
       .screenshot({ path: '.artifacts/screenshots/activity-command-detail-dark.png' })
   })
 
-  test('概述间合并多项操作，阶段结束自动收起，审批和失败始终可见', async ({
+  test('分组可展开收起，组内单行对齐，计时和审批失败在历史中保留', async ({
     desktop,
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const operations = answer.locator('.activity-tool')
     const groups = answer.locator('[data-operation-group]')
     const firstGroup = groups.first()
     const firstToggle = firstGroup.getByRole('button', { name: /^操作分组：/ })
     await expect(input).toBeEnabled()
     await input.fill('操作分组')
     await input.press('Enter')
-    await expect(answer).toContainText('我会先核对目录和文件')
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(operations).toHaveCount(5)
     await expect(answer).toContainText('第一组检查已完成')
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstToggle).toHaveText('已查看目录、读取文件、运行命令')
-    await expect(firstGroup.getByRole('region', { name: '本组操作', exact: true })).toHaveCount(0)
+    await expect(operations).toHaveCount(0)
+    await expect(firstToggle).toHaveText('已查看目录、读取文件、搜索内容、运行了命令')
+    await expect(firstToggle.locator('.activity-chevron')).toHaveCSS('opacity', '1')
     await firstToggle.focus()
     await firstToggle.press('Enter')
-    await expect(firstGroup.getByRole('button', { name: /^工具详情：/ })).toHaveCount(4)
-    const command = firstGroup.getByRole('button', {
-      name: /^工具详情：已运行 .*controlled-group-output/,
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(operations).toHaveCount(5)
+    const file = answer.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true })
+    await expect(file).toBeVisible()
+    const headerBounds = await firstToggle.boundingBox()
+    const fileBounds = await file.boundingBox()
+    expect(Math.abs(headerBounds!.x - fileBounds!.x)).toBeLessThan(1)
+    const labelBounds = await firstToggle.locator('.activity-label').boundingBox()
+    const arrowBounds = await firstToggle.locator('.activity-chevron').boundingBox()
+    expect(arrowBounds!.x - labelBounds!.x - labelBounds!.width).toBeLessThanOrEqual(8)
+    await expect(file).toHaveAttribute('title', /[\\/]fixture\.txt$/)
+    await expect(file.locator('.activity-file-target')).toHaveCSS(
+      'text-decoration-line',
+      'underline',
+    )
+    await file.focus()
+    await file.press('Enter')
+    await expect(answer.getByLabel('工具结果', { exact: true })).toContainText('controlled-file')
+    await file.press('Space')
+    await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
+    await expect(
+      answer.getByRole('button', { name: /工具详情：已在 .* 中搜索 "controlled-file"/ }),
+    ).toBeVisible()
+    const command = answer.getByRole('button', {
+      name: /^工具详情：(已运行|已在 \d+s 内运行) .*controlled-group-output/,
     })
+    await expect(command).toBeVisible()
     await expect(command).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
+    await command.focus()
     await command.press('Enter')
-    await expect(firstGroup.getByLabel('工具结果', { exact: true })).toContainText(
+    await expect(answer.getByLabel('工具结果', { exact: true })).toContainText(
       'controlled-group-output',
     )
-    await firstGroup.getByRole('button', { name: /^工具详情：已运行 .*setTimeout/ }).click()
-    await expect(
-      firstGroup
-        .locator('.activity-terminal')
-        .filter({ hasText: 'setTimeout' })
-        .getByLabel('工具结果', { exact: true }),
-    ).toHaveText('无输出。')
+    await expect(answer.getByLabel('命令', { exact: true })).toContainText('long-command-tail')
+    await firstToggle.click()
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
     await firstToggle.press('Space')
-    await firstToggle.press('Enter')
     await expect(command).toHaveAttribute('aria-expanded', 'false')
-    await expect(firstGroup.locator('[data-tool-details]')).toHaveCount(0)
+    const slowCommand = answer.getByRole('button', {
+      name: /^工具详情：已在 \d+s 内运行 .*setTimeout/,
+    })
+    await expect(slowCommand).toBeVisible()
+    const fixedLabel = await slowCommand.locator('.activity-tool-label > span').first().innerText()
+    await page.waitForTimeout(1100)
+    await expect(slowCommand.locator('.activity-tool-label > span').first()).toHaveText(fixedLabel)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(700, 650),
+    )
+    await expect
+      .poll(() =>
+        command
+          .locator('.activity-tool-target')
+          .evaluate((element) => element.scrollWidth > element.clientWidth),
+      )
+      .toBe(true)
+    expect(
+      await page.locator('main').evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
+    await input.focus()
+    await page.mouse.move(1, 1)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-expanded-light.png',
+      animations: 'disabled',
+    })
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
-    const lastGroup = groups.last()
-    const lastToggle = lastGroup.getByRole('button', { name: /^操作分组：/ })
-    await expect(groups).toHaveCount(2)
+    const failed = answer.getByRole('button', {
+      name: /^工具详情：读取文件失败 .*missing-group-file/,
+    })
+    const pending = answer.getByRole('button', { name: /^工具详情：运行命令 · 等待审批/ })
+    await expect(failed).toBeVisible()
+    await expect(failed.locator('.text-destructive')).toBeVisible()
+    await expect(pending).toBeVisible()
+    await expect(pending.locator('.activity-shimmer')).toHaveCount(0)
+    await expect(pending).not.toContainText('命令已运行')
+    const lastToggle = groups.last().getByRole('button', { name: /^操作分组：/ })
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'true')
-    await expect(lastToggle).toContainText('1 项等待审批')
-    await expect(lastToggle).toContainText('1 项失败')
     await lastToggle.click()
     await expect(lastToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(lastToggle).toContainText('1 项等待审批')
@@ -5292,11 +6237,13 @@ test.describe('Codex 风格过程展示', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await toggle.click()
     await expect(groups).toHaveCount(2)
-    for (const group of await groups.all())
-      await expect(group.getByRole('button', { name: /^操作分组：/ })).toHaveAttribute(
-        'aria-expanded',
-        'false',
-      )
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await expect(failed).toBeVisible()
     await expect(answer.locator('[data-tool-details]')).toHaveCount(0)
     await page.reload()
     await page
@@ -5305,20 +6252,40 @@ test.describe('Codex 风格过程展示', () => {
       .click()
     await toggle.click()
     await expect(groups).toHaveCount(2)
-    await expect(lastToggle).toContainText('1 项失败')
-    await expect(lastToggle).not.toContainText('等待审批')
-    await input.fill('操作分组')
-    await input.press('Enter')
-    await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
-    modelEndpoint!.continueProcess()
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
-    await firstToggle.click()
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(answer).toContainText('第一组检查已完成')
-    await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(input).toBeEnabled()
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await expect(slowCommand.locator('.activity-tool-label > span').first()).toHaveText(fixedLabel)
+    await expect(failed).toBeVisible()
+    await expect(pending).toHaveCount(0)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '操作分组', exact: true })
+      .click()
+    await toggle.click()
+    await expect(groups).toHaveCount(2)
+    for (const group of await groups.all()) {
+      const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
+      await expect(groupToggle).toHaveAttribute('aria-expanded', 'false')
+      await groupToggle.click()
+    }
+    await expect(operations).toHaveCount(7)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-expanded-dark.png',
+      animations: 'disabled',
+    })
+    for (const group of await groups.all())
+      await group.getByRole('button', { name: /^操作分组：/ }).click()
+    await expect(operations).toHaveCount(0)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-group-collapsed-dark.png',
+      animations: 'disabled',
+    })
   })
 
   test('终端块展示实时输出、非零退出和历史命令结果，读取失败可重试', async ({
@@ -5326,6 +6293,7 @@ test.describe('Codex 风格过程展示', () => {
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
     const stop = page.getByRole('button', { name: '停止生成', exact: true })
@@ -5336,13 +6304,38 @@ test.describe('Codex 风格过程展示', () => {
     await input.fill('命令取消步骤')
     await input.press('Enter')
     await expect(approval).toBeVisible()
+    await expect(pendingCommand.locator('.activity-shimmer')).toHaveCount(0)
     await pendingCommand.click()
     await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(terminal.getByLabel('实时输出', { exact: true })).toContainText('command-started')
+    const runningCommand = answer.getByRole('button', {
+      name: /^工具详情：(正在运行|命令已运行 \d+s)/,
+    })
+    const status = runningCommand.locator('.activity-shimmer')
+    await expect(status).toHaveText(/命令已运行 \d+s/)
+    await expect(runningCommand.locator('.activity-tool-target')).toHaveCount(0)
+    await answer.screenshot({
+      path: '.artifacts/screenshots/activity-running-light.png',
+      animations: 'disabled',
+    })
+    await expect(status).toHaveCSS('animation-name', 'activity-shimmer')
+    await expect(runningCommand.locator('.activity-tool-label > svg').first()).toHaveCSS(
+      'animation-name',
+      'none',
+    )
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await expect(status).toHaveCSS('animation-name', 'none')
+    await expect(runningCommand.locator('.activity-tool-spinner')).toHaveCSS(
+      'animation-name',
+      'none',
+    )
+    await expect(status).toBeVisible()
     await stop.click()
     await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
       '生成已停止',
     )
+    await expect(answer.locator('.activity-shimmer')).toHaveCount(0)
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
 
     await input.fill('命令非零步骤')
     await input.press('Enter')
@@ -5354,7 +6347,7 @@ test.describe('Codex 风格过程展示', () => {
       .getByRole('button', { name: '命令取消步骤', exact: true })
       .click()
     await openDetails.click()
-    await answer.getByRole('button', { name: /^工具详情：已运行 / }).click()
+    await answer.getByRole('button', { name: /^工具详情：(已运行|已在 \d+s 内运行) / }).click()
     await expect(terminal.getByLabel('工具结果', { exact: true })).toHaveText(
       /command-out\s+\[stderr\]\s+command-err/,
     )
@@ -5569,14 +6562,12 @@ test.describe('过程自动读取与固定分隔线', () => {
     expect(expected).toHaveLength(220)
     const group = timeline.locator('[data-operation-group]').first()
     const groupToggle = group.getByRole('button', { name: /^操作分组：/ })
-    // 超过一个窗口的长组不把局部数量伪装成整组次数。
     await expect(groupToggle).toContainText('操作记录')
-    await expect(groupToggle).not.toContainText('次')
     await groupToggle.click()
+    await expect(groupToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(
-      group.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }).first(),
+      overview.getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true }).first(),
     ).toBeVisible()
-    await expect(group.locator('.activity-reveal-enter-active')).toHaveCount(0)
     const seen = new Set<string>()
     const loaded = async () =>
       overview
@@ -5599,6 +6590,10 @@ test.describe('过程自动读取与固定分隔线', () => {
         const ids = await loaded()
         ids.forEach((id) => seen.add(id))
         expect(ids.length).toBeLessThanOrEqual(150)
+        if (!ids.includes(expected.at(-1)!)) {
+          await scroller.hover()
+          await page.mouse.wheel(0, 10000)
+        }
         return ids.includes(expected.at(-1)!)
       })
       .toBe(true)
@@ -5608,7 +6603,10 @@ test.describe('过程自动读取与固定分隔线', () => {
     await scroller.evaluate((element) => {
       element.scrollTop = 0
     })
-    await groupToggle.hover()
+    await overview
+      .getByRole('button', { name: /^工具详情：/ })
+      .first()
+      .hover()
     await page.mouse.wheel(0, -10000)
     await expect
       .poll(async () => {

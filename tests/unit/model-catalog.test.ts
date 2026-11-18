@@ -7,9 +7,9 @@ import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { ModelCatalog } from '../../src/main/backend/model-catalog.ts'
 import { ChatService } from '../../src/main/backend/chat-service.ts'
-import { parseModelInput, parseProviderInput } from '../../src/shared/models.ts'
+import { availableModels, parseModelInput, parseProviderInput } from '../../src/shared/models.ts'
 import type { ProviderInput } from '../../src/shared/models.ts'
-import { record } from '../../src/shared/chat.ts'
+import { array, record, string } from '../../src/shared/chat.ts'
 import { supportedBackend, resourceRoot } from '../helpers/backend.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
@@ -53,6 +53,23 @@ test('模型配置边界拒绝非 HTTP 地址、URL 凭据、意外清空和无�
   ])
     assert.throws(() => parseProviderInput({ ...input, ...change }))
   assert.throws(() => parseModelInput({ ...basic, enabled: 'true' }))
+  assert.throws(() => parseModelInput({ ...basic, imageInput: 'true' }))
+  for (const inputTypes of [
+    null,
+    true,
+    'image',
+    [],
+    ['image'],
+    ['text', 'text'],
+    ['text', 'audio'],
+    ['text', null],
+    ['text', 'image', 'video'],
+  ])
+    assert.throws(() => parseModelInput({ ...basic, inputTypes }))
+  assert.deepEqual(parseModelInput({ ...basic, inputTypes: ['text', 'image'] }).inputTypes, [
+    'text',
+    'image',
+  ])
   assert.throws(() => parseModelInput({ ...basic, remoteModelId: ' ' }))
   assert.throws(() => parseModelInput({ ...basic, providerId: '../../file' }))
   for (const contextWindow of [0, -1, 1.5, 1_000_000_001, '100000'])
@@ -107,6 +124,65 @@ test('编辑模型保留后端已有元数据，读取列表剔除非公开字�
   for (const [key, value] of Object.entries(metadata))
     if (key !== 'context_window') assert.deepEqual(saved[key], value)
   assert.ok(!JSON.stringify(await catalog.list()).includes('must-not-return'))
+})
+
+test('图片输入按用户选中的类型回填，不从模型拥有的能力推断', async () => {
+  for (const [modelType, capabilities, expected] of [
+    [undefined, { image_input: true }, false],
+    [['text'], { image_input: true }, false],
+    [['image'], null, true],
+    [['text', 'image'], { image_input: false }, true],
+    [['text', 'image', 'audio', 'video'], null, true],
+  ] as const) {
+    const catalog = new ModelCatalog(async (method) => {
+      if (method === 'provider.list') return []
+      if (method === 'model.list')
+        return [
+          {
+            id: uuid,
+            provider_id: uuid,
+            display_name: '模型',
+            remote_model_id: 'remote',
+            enabled: true,
+            model_type: modelType,
+            capabilities,
+          },
+        ]
+      throw new Error('非预期方法')
+    })
+    const models = await catalog.list()
+    assert.deepEqual(
+      models.models[0]?.inputTypes,
+      (modelType ?? []).filter((type) => type === 'text' || type === 'image'),
+    )
+    assert.equal(availableModels(models)[0]?.imageInput === true, expected)
+  }
+})
+
+test('输入类型多选保存文本及图片，保留模型能力和未展示的类型', async () => {
+  for (const capabilities of [null, { image_input: false, reasoning: true, tools: false }]) {
+    const writes: Record<string, unknown>[] = []
+    let modelTypes = ['text', 'audio', 'video']
+    const catalog = new ModelCatalog(async (method, params) => {
+      if (method === 'model.get') return { id: uuid, model_type: modelTypes, capabilities }
+      if (method === 'model.update' || method === 'model.create') {
+        const value = record(params)
+        writes.push(value)
+        modelTypes = array(value.model_type, string)
+        return { id: uuid }
+      }
+      throw new Error('非预期方法')
+    })
+    await catalog.saveModel({ ...basic, inputTypes: ['text', 'image'] })
+    await catalog.saveModel({ ...basic, inputTypes: ['text', 'image'] })
+    assert.deepEqual(modelTypes, ['text', 'image', 'audio', 'video'])
+    await catalog.saveModel({ ...basic, inputTypes: ['text'] })
+    assert.deepEqual(modelTypes, ['text', 'audio', 'video'])
+    for (const write of writes) assert.deepEqual(write.capabilities, capabilities)
+    await catalog.saveModel({ ...basic, id: null, inputTypes: ['text', 'image'] })
+    assert.deepEqual(writes.at(-1)?.model_type, ['text', 'image'])
+    assert.equal(writes.at(-1)?.capabilities, null)
+  }
 })
 
 test('保留密钥不会传空字符串，清除与替换必须明确提交', async () => {

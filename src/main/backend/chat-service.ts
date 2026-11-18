@@ -1,6 +1,20 @@
-import { access, mkdir } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { installSkillAssets } from './skill-assets.ts'
+import { installRuntimeAssets } from './runtime-installation.ts'
+import { basename, isAbsolute, join } from 'node:path'
+import {
+  MAX_ATTACHMENT_BYTES,
+  parseAttachmentPreview,
+  parseAttachments,
+} from '../../shared/attachments.ts'
+import type {
+  AttachmentInput,
+  AttachmentPreview,
+  AttachmentPreviewInput,
+  AttachmentSaveInput,
+} from '../../shared/attachments.ts'
 import {
   array,
   comparePinnedItems,
@@ -55,6 +69,7 @@ import {
   contextUsageFromRpc,
 } from './protocol-mapper.ts'
 import { RpcClient, RpcConnectionError, RpcError } from './rpc-client.ts'
+import { resolveResourceTarget, resolveRuntimeDirectory } from './runtime-assets.ts'
 import { ModelCatalog } from './model-catalog.ts'
 import {
   boundSteps,
@@ -73,6 +88,8 @@ export { resolveWorkspaceDirectory } from './workspace-catalog.ts'
 import { parseContextUsageInput } from '../../shared/context-usage.ts'
 import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage.ts'
 import type { ServiceState } from '../../shared/desktop-api.ts'
+import { parseSkills } from '../../shared/skills.ts'
+import type { Skill } from '../../shared/skills.ts'
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((current) => current.id !== item.id), item]
@@ -89,6 +106,12 @@ function startupError(error: unknown, phase: string): string {
     if (code === 'EACCES' || code === 'EPERM') return '没有执行对话服务程序的权限，请检查文件权限。'
     return '无法访问对话服务程序，请检查客户端服务资源。'
   }
+  if (phase === 'runtime')
+    return '未找到完整的内置 Python/Node/Git 资源，请重新准备客户端运行时资源。'
+  if (phase === 'runtime-install')
+    return '无法安装内置运行时，请检查资源完整性、数据目录权限及磁盘空间；原有目录按安装恢复记录保留。'
+  if (phase === 'skills')
+    return '无法安装随附技能，请检查客户端技能资源、数据目录权限及磁盘空间；用户技能保留，自带技能旧副本已备份。'
   if (phase === 'directory') {
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS')
       return '服务数据目录不可写，请检查目录权限。'
@@ -125,6 +148,7 @@ export class ChatService {
     (runId) => [...this.steps.values()].find((step) => step.runId === runId && step.sequence === 1),
   )
   private readonly contextReads = new Map<string, Promise<ContextUsage>>()
+  private skillRead: Promise<Skill[]> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly history: { event: ChatEvent; bytes: number }[] = []
   private historyBytes = 0
@@ -140,7 +164,11 @@ export class ChatService {
       publish: (change) => this.publish(change),
     },
   )
+  private stagingDirectory = ''
+  private readonly transfers = new Set<Promise<unknown>>()
   private closing = false
+  private startupAbort = new AbortController()
+  private installing = false
   private closeTask: Promise<void> | null = null
 
   constructor(dataDirectory: string, resourceRoot: string) {
@@ -150,6 +178,7 @@ export class ChatService {
     void this.ready.catch(() => undefined)
   }
   private async initialize(dataDirectory: string, resourceRoot: string): Promise<void> {
+    this.startupAbort = new AbortController()
     let phase = 'path'
     try {
       if (!isAbsolute(dataDirectory)) throw new Error('服务数据目录必须是绝对路径')
@@ -157,13 +186,56 @@ export class ChatService {
       const executable = resolveBackendExecutable(resourceRoot)
       phase = 'executable'
       await access(executable, constants.X_OK)
+      phase = 'runtime'
+      const sourceRuntime = resolveRuntimeDirectory(resourceRoot)
+      const manifest = await lstat(join(sourceRuntime, 'manifest.json'))
+      if (!manifest.isFile() || manifest.isSymbolicLink())
+        throw new Error('内置运行时清单必须是普通文件')
       phase = 'directory'
       await mkdir(dataDirectory, { recursive: true, mode: 0o700 })
       if (this.closing) return
       phase = 'handshake'
+      const guard = new RpcClient(
+        executable,
+        ['resource-lock', '--data-dir', dataDirectory],
+        () => undefined,
+        (error) => {
+          if (this.closing || this.client !== guard) return
+          this.error = error.message
+          this.startupAbort.abort(error)
+        },
+      )
+      this.client = guard
+      await guard.ready
+      if (this.closing) return
+      const canonicalData = await realpath(dataDirectory)
+      phase = 'runtime-install'
+      let runtimeDirectory: string
+      this.installing = true
+      try {
+        runtimeDirectory = await installRuntimeAssets(
+          sourceRuntime,
+          canonicalData,
+          this.startupAbort.signal,
+          async (directory) => {
+            const result = record(
+              await guard.request('runtime.validate', { name: basename(directory) }, 35_000),
+            )
+            if (typeof result.valid !== 'boolean') throw new Error('运行时校验响应无效')
+            return result.valid
+          },
+        )
+        phase = 'skills'
+        await installSkillAssets(resourceRoot, canonicalData, this.startupAbort.signal)
+      } finally {
+        this.installing = false
+      }
+      await guard.close()
+      if (this.closing) return
+      phase = 'handshake'
       const client = new RpcClient(
         executable,
-        ['--data-dir', dataDirectory],
+        ['--data-dir', dataDirectory, '--runtime-dir', runtimeDirectory],
         (method, params) => this.receive(method, params),
         (error) => {
           if (this.closing || this.client !== client) return
@@ -181,7 +253,12 @@ export class ChatService {
       this.client = client
       await client.ready
       if (this.error) throw new RpcConnectionError(this.error)
-      if (!this.closing) this.setState({ status: 'ready' })
+      if (!this.closing) {
+        this.stagingDirectory = join(await realpath(dataDirectory), '.attachment-staging')
+        // 后端已取得数据目录实例锁，此时才回收上一次异常退出留下的草稿。
+        await this.resetAttachmentStaging()
+        if (!this.closing) this.setState({ status: 'ready' })
+      }
     } catch (error) {
       this.error ??= startupError(error, phase)
       if (!this.closing) this.setState({ status: 'startup-failed', error: this.error })
@@ -289,7 +366,11 @@ export class ChatService {
     return {
       models: array(models ?? [], (item) => {
         const v = record(item)
-        return { id: id(v.id), name: string(v.display_name) }
+        return {
+          id: id(v.id),
+          name: string(v.display_name),
+          ...(array(v.model_type ?? [], string).includes('image') ? { imageInput: true } : {}),
+        }
       }),
       conversations: conversations
         .filter((item) => item.workspaceId === null && isVisible(item))
@@ -438,6 +519,16 @@ export class ChatService {
       revision: this.revision,
     }
   }
+  async listSkills(): Promise<Skill[]> {
+    if (this.skillRead) return this.skillRead
+    this.skillRead = this.request('skills.list', {}).then(parseSkills)
+    try {
+      return await this.skillRead
+    } finally {
+      this.skillRead = null
+    }
+  }
+
   async contextUsage(input: ContextUsageInput): Promise<ContextUsage> {
     const parsed = parseContextUsageInput(input)
     const key = JSON.stringify(parsed)
@@ -451,6 +542,7 @@ export class ChatService {
           workspace_id: parsed.workspaceId ?? undefined,
           model_id: parsed.modelId,
           draft: parsed.draft,
+          ...(parsed.draftImages ? { draft_images: parsed.draftImages } : {}),
         }),
       )
       if (value.conversationId !== parsed.conversationId || value.modelId !== parsed.modelId)
@@ -632,15 +724,163 @@ export class ChatService {
     result.revision = this.revision
     return result
   }
+  private async resetAttachmentStaging(): Promise<void> {
+    try {
+      const info = await lstat(this.stagingDirectory)
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('附件暂存目录无效')
+      await rm(this.stagingDirectory, { recursive: true })
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    }
+    await mkdir(this.stagingDirectory, { mode: 0o700 })
+  }
+  private async withStagedAttachments<T>(
+    input: AttachmentInput[] | undefined,
+    action: (paths: string[]) => Promise<T>,
+  ): Promise<T> {
+    if (!input?.length) return action([])
+    const attachments = parseAttachments(input)
+    await this.ready
+    if (this.closing || this.state.status !== 'ready') throw new Error('对话服务尚未就绪。')
+    if (this.transfers.size >= 2) throw new Error('正在处理其他附件，请稍后重试。')
+    const task = (async () => {
+      const dir = await mkdtemp(join(this.stagingDirectory, 'upload-'))
+      try {
+        const paths: string[] = []
+        for (const { bytes } of attachments) {
+          const path = join(dir, String(paths.length))
+          await writeFile(path, bytes, { flag: 'wx', mode: 0o600 })
+          paths.push(path)
+        }
+        return await action(paths)
+      } finally {
+        // 受理后的临时文件清理失败不能让客户端重发。下次启动在实例锁内回收。
+        await rm(dir, { recursive: true, force: true }).catch(() => {
+          console.error(
+            JSON.stringify({ level: 'warn', module: 'attachments', message: '附件暂存文件待清理' }),
+          )
+        })
+      }
+    })()
+    this.transfers.add(task)
+    try {
+      return await task
+    } finally {
+      this.transfers.delete(task)
+    }
+  }
+  async previewAttachment(input: AttachmentPreviewInput): Promise<AttachmentPreview> {
+    return parseAttachmentPreview(
+      await this.request('conversation.attachment_preview', {
+        conversation_id: input.conversationId,
+        message_id: input.messageId,
+        index: input.index,
+      }),
+    )
+  }
+  /** 分片绑定用户所选消息版本，完整性确认后才交给另存流程。 */
+  async readAttachmentFile(input: AttachmentSaveInput): Promise<{ name: string; bytes: Buffer }> {
+    const chunks: Buffer[] = []
+    const hash = createHash('sha256')
+    const chunkSize = 1024 * 1024
+    let offset = 0
+    let name = ''
+    let size = -1
+    let digest = ''
+    for (;;) {
+      const value = record(
+        await this.request('conversation.attachment_read', {
+          conversation_id: input.conversationId,
+          message_id: input.messageId,
+          expected_run_id: input.runId,
+          index: input.index,
+          offset,
+        }),
+      )
+      const nextName = string(value.name)
+      const nextSize = value.size
+      const nextDigest = string(value.sha256)
+      const encoded = string(value.data)
+      if (
+        typeof nextSize !== 'number' ||
+        !Number.isSafeInteger(nextSize) ||
+        nextSize < 0 ||
+        nextSize > MAX_ATTACHMENT_BYTES ||
+        !nextName ||
+        nextName.length > 1024 ||
+        /[\p{Cc}/\\]/u.test(nextName) ||
+        value.offset !== offset ||
+        !/^[a-f0-9]{64}$/.test(nextDigest) ||
+        encoded.length > Math.ceil(chunkSize / 3) * 4 ||
+        /[^A-Za-z0-9+/=]/.test(encoded)
+      )
+        throw new Error('附件读取结果无效')
+      if (size < 0) {
+        name = nextName
+        size = nextSize
+        digest = nextDigest
+      }
+      if (
+        value.run_id !== input.runId ||
+        name !== nextName ||
+        size !== nextSize ||
+        digest !== nextDigest
+      )
+        throw new Error('附件在读取期间发生变化，请从当前消息重新另存')
+      const bytes = Buffer.from(encoded, 'base64')
+      if (
+        bytes.toString('base64') !== encoded ||
+        bytes.length !== Math.min(chunkSize, size - offset)
+      )
+        throw new Error('附件片段无效')
+      chunks.push(bytes)
+      hash.update(bytes)
+      offset += bytes.length
+      if (value.next_offset === null) {
+        if (offset !== size) throw new Error('附件读取不完整')
+        if (hash.digest('hex') !== digest) throw new Error('附件完整性校验失败')
+        return { name, bytes: Buffer.concat(chunks, size) }
+      }
+      if (value.next_offset !== offset || bytes.length === 0 || offset >= size)
+        throw new Error('附件读取没有推进')
+    }
+  }
+  async previewDraftAttachment(input: AttachmentInput): Promise<AttachmentPreview> {
+    return this.withStagedAttachments([input], async ([path]) =>
+      parseAttachmentPreview(await this.request('conversation.attachment_preview', { path })),
+    )
+  }
+  private withMessageContent<T>(
+    input: SendMessageInput | ResendMessageInput,
+    action: (
+      content: { type: string; text?: string; path?: string; name?: string }[],
+    ) => Promise<T>,
+  ): Promise<T> {
+    return this.withStagedAttachments(input.attachments, (paths) =>
+      action([
+        ...(input.skill ? [{ type: 'skill', name: input.skill.name, path: input.skill.path }] : []),
+        ...(input.text.trim() ? [{ type: 'text', text: input.text }] : []),
+        ...paths.map((path, index) => ({
+          type: input.attachments?.[index]?.kind ?? 'image',
+          path,
+          ...(input.attachments?.[index]?.name ? { name: input.attachments[index]!.name } : {}),
+        })),
+      ]),
+    )
+  }
   async send(input: SendMessageInput): Promise<SendMessageResult> {
     const value = record(
-      await this.request('conversation.send', {
-        ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
-        ...(!input.conversationId && input.workspaceId ? { workspace_id: input.workspaceId } : {}),
-        model_id: input.modelId,
-        stream: true,
-        content: [{ type: 'text', text: input.text }],
-      }),
+      await this.withMessageContent(input, (content) =>
+        this.request('conversation.send', {
+          ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+          ...(!input.conversationId && input.workspaceId
+            ? { workspace_id: input.workspaceId }
+            : {}),
+          model_id: input.modelId,
+          stream: true,
+          content,
+        }),
+      ),
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
   }
@@ -661,13 +901,19 @@ export class ChatService {
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
     return this.gate.run(`resend:${input.conversationId}`, async () => {
       const value = record(
-        await this.request('conversation.resend', {
-          conversation_id: input.conversationId,
-          message_id: input.messageId,
-          model_id: input.modelId,
-          stream: true,
-          content: [{ type: 'text', text: input.text }],
-        }),
+        await this.withMessageContent(input, (content) =>
+          this.request('conversation.resend', {
+            conversation_id: input.conversationId,
+            message_id: input.messageId,
+            model_id: input.modelId,
+            stream: true,
+            content,
+            ...(input.expectedRunId ? { expected_run_id: input.expectedRunId } : {}),
+            ...(input.retainedAttachments?.length
+              ? { retained_attachments: input.retainedAttachments }
+              : {}),
+          }),
+        ),
       )
       const conversationId = id(value.conversation_id),
         runId = id(value.run_id)
@@ -981,9 +1227,13 @@ export class ChatService {
   }
   private async shutdown(): Promise<void> {
     this.closing = true
+    this.startupAbort.abort(new Error('应用正在退出。'))
     this.setState({ status: 'closing' })
     // 退出可能发生在握手期间，先关闭已创建的进程，不能等待就绪超时后才取消启动。
-    const closeClient = this.client?.close() ?? Promise.resolve()
+    // 安装期间先取消并等待文件清理，再由初始化释放实例锁。
+    const closeClient = this.installing
+      ? Promise.resolve()
+      : (this.client?.close() ?? Promise.resolve())
     void closeClient.catch(() => undefined)
     try {
       await this.ready
@@ -992,6 +1242,7 @@ export class ChatService {
     }
     try {
       const results = await Promise.allSettled([closeClient, this.retryTask])
+      await Promise.allSettled(this.transfers)
       const errors = results.flatMap((result) =>
         result.status === 'rejected' ? [result.reason] : [],
       )
@@ -1012,17 +1263,19 @@ export class ChatService {
   }
 }
 
-/** Windows x64 客户端使用随附的 x86 服务；资源路径不依赖当前工作目录。 */
+/** 服务程序与客户端采用相同架构，资源路径不依赖当前工作目录。 */
 export function resolveBackendExecutable(
   resourceRoot: string,
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,
 ): string {
-  if (platform === 'darwin' && architecture === 'arm64')
-    return join(resourceRoot, 'backend', 'darwin-arm64', 'callum')
-  if (platform === 'win32' && architecture === 'x64')
-    return join(resourceRoot, 'backend', 'win32-ia32', 'callum.exe')
-  throw new Error(`当前没有适用于 ${platform}-${architecture} 的服务程序。`)
+  if (!isAbsolute(resourceRoot)) throw new Error('服务资源根目录必须是绝对路径')
+  return join(
+    resourceRoot,
+    'backend',
+    resolveResourceTarget(platform, architecture),
+    platform === 'win32' ? 'callum.exe' : 'callum',
+  )
 }
 export function publicChatError(error: unknown): string {
   if (error instanceof RpcError) return error.message.replaceAll('工作区', '项目')

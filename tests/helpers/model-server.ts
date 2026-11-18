@@ -17,6 +17,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     summaryRequest: boolean
     contextSummary: boolean
     messageCount: number
+    images?: string[]
   }[] = []
   let compactionRound = 0
   let pauseCompaction = false
@@ -47,10 +48,20 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         last = messages.at(-1)
       if (!last) throw new Error('消息为空')
       const role = string(last.role),
-        text = typeof last.content === 'string' ? last.content : ''
+        parts = Array.isArray(last.content) ? array(last.content, record) : [],
+        text =
+          typeof last.content === 'string'
+            ? last.content
+            : parts
+                .filter((part) => part.type === 'text')
+                .map((part) => string(part.text))
+                .join('')
+      const images = parts
+        .filter((part) => part.type === 'image_url')
+        .map((part) => string(record(part.image_url).url))
       const summaryRequest =
         typeof messages[0]?.content === 'string' &&
-        messages[0].content.startsWith('你负责压缩对话历史')
+        messages[0].content.startsWith('You are performing a CONTEXT CHECKPOINT COMPACTION.')
       requests.push({
         summaryRequest,
         contextSummary: messages.some(
@@ -60,6 +71,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
               message.content.includes('conversation_context_summary')),
         ),
         messageCount: messages.length,
+        ...(images.length ? { images } : {}),
         reasoningReturned: messages.some(
           (message) =>
             message.role === 'assistant' &&
@@ -86,7 +98,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                 choices: [
                   {
                     index: 0,
-                    message: { role: 'assistant', content: '结构不合法的摘要' },
+                    message: { role: 'assistant', content: '{"facts":["旧格式摘要"]}' },
                     finish_reason: 'stop',
                   },
                 ],
@@ -102,13 +114,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   index: 0,
                   message: {
                     role: 'assistant',
-                    content: JSON.stringify({
-                      goals: ['完成长任务'],
-                      constraints: ['保留当前要求'],
-                      decisions: [],
-                      facts: ['早期读取批次已完成，原始结果保存在步骤中'],
-                      open_questions: [],
-                    }),
+                    content:
+                      '## 进展\n- 早期读取批次已完成，原始结果保存在步骤中。\n\n保留当前要求，继续完成长任务。',
                   },
                   finish_reason: 'stop',
                 },
@@ -150,6 +157,60 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      const deliveredFollowUp =
+        messages.findLast((message) => message.role === 'user')?.content === '读取已交付文件'
+      if (deliveredFollowUp) {
+        let name = ''
+        let args: unknown = {}
+        if (role === 'user') {
+          const published = messages.find((message) => {
+            if (message.role !== 'tool' || typeof message.content !== 'string') return false
+            return message.content.includes('"published":true')
+          })
+          if (!published) throw new Error('历史缺少交付文件记录')
+          const metadata = record(JSON.parse(String(published.content)))
+          const attachment = record(record(metadata.result).attachment)
+          name = 'open_attachment'
+          args = { attachment_ref: string(attachment.attachment_ref) }
+        } else if (role === 'tool') {
+          const result = record(record(JSON.parse(text)).result)
+          if (typeof result.path === 'string' && typeof result.work_directory === 'string') {
+            name = 'read_file'
+            args = { path: result.path }
+          }
+        }
+        if (name) {
+          emit(response, {
+            tool_calls: [
+              {
+                index: 0,
+                id: `followup-${name}`,
+                type: 'function',
+                function: { name, arguments: JSON.stringify(args) },
+              },
+            ],
+          })
+          finish(response, 'tool_calls')
+          return
+        }
+      }
+      if (role === 'user' && text === '生成交付文件') {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'publish-file',
+              type: 'function',
+              function: {
+                name: 'publish_artifact',
+                arguments: JSON.stringify({ path: fixturePath }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (role === 'user' && (text === 'AI 审批目录' || text === 'AI 审批转人工')) {
         emit(response, {
           tool_calls: [
@@ -272,7 +333,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         const completed = messages
           .slice(afterUser)
           .filter((message) => message.role === 'tool').length
-        if (completed >= 6) {
+        if (completed >= 7) {
           emit(response, { content: '操作分组检查已完成。' })
           finish(response)
           return
@@ -291,12 +352,18 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   { name: 'list_directory', arguments: { path: dirname(fixturePath) } },
                   { name: 'read_file', arguments: { path: fixturePath } },
                   {
+                    name: 'search_text',
+                    arguments: { path: dirname(fixturePath), query: 'controlled-file', limit: 10 },
+                  },
+                  {
                     name: 'run_command',
                     arguments: {
                       command: [
                         process.execPath,
                         '-e',
-                        "process.stdout.write('controlled-group-output')",
+                        "process.stdout.write('controlled-group-output'); // " +
+                          'long-command-'.repeat(40) +
+                          'long-command-tail',
                       ],
                       cwd: dirname(fixturePath),
                     },

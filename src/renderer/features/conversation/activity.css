@@ -21,8 +21,7 @@
   background: transparent;
   transition: color 160ms ease;
 }
-.activity-tool > .activity-heading,
-.activity-operation-group > .activity-heading {
+.activity-tool > .activity-heading {
   color: var(--muted-foreground);
 }
 .activity-trigger:is(:hover, :focus-visible) {
@@ -105,7 +104,36 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+}
+.activity-rows > [data-step-id]:has(.activity-commentary) {
+  margin-block: 4px;
+}
+.activity-tool {
+  line-height: 1.6;
+}
+.activity-tool > .activity-heading {
+  vertical-align: top;
+}
+.activity-tool .activity-label {
+  display: flex;
+}
+.activity-operation-group > .activity-heading {
+  color: var(--foreground);
+}
+.activity-operation-group > .activity-heading > .activity-chevron {
+  opacity: 1;
+}
+.activity-group-label {
+  gap: 4px;
+  white-space: nowrap;
+}
+.activity-group-operations {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-block: 4px 2px;
 }
 .activity-commentary {
   color: var(--foreground);
@@ -124,6 +152,21 @@
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+.activity-file-target {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 3px;
+}
+.activity-tool-label > .activity-tool-spinner {
+  width: 12px;
+  height: 12px;
+  animation: activity-spin 1.5s linear infinite;
+}
+@keyframes activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .activity-tool-target {
   overflow: hidden;
@@ -182,21 +225,6 @@
 }
 .activity-command-record[open] > summary svg {
   transform: rotate(180deg);
-}
-.activity-group-label {
-  flex-wrap: wrap;
-  column-gap: 4px;
-  row-gap: 0;
-}
-.activity-group-label > svg {
-  margin-right: 2px;
-}
-.activity-group-operations {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-  padding: 3px 0 2px 20px;
 }
 .activity-shimmer {
   color: transparent;
@@ -273,6 +301,9 @@
   font-size: 12px;
 }
 @media (prefers-reduced-motion: reduce) {
+  .activity-tool-label > .activity-tool-spinner {
+    animation: none;
+  }
   .activity-trigger,
   .activity-chevron,
   .activity-reveal-enter-active,

@@ -5,8 +5,10 @@
 ## 环境与启动
 
 - Node.js **26.13.0**，由 nvm 管理；npm **11.20.0**。
-- 随附 Go 程序覆盖 macOS Apple Silicon（darwin-arm64）和 Windows x86（win32-ia32）；Windows x64 客户端通过 WOW64 使用 x86 服务。macOS 桌面对话已有验证，Windows 原生启动与桌面联调仍待 Windows 环境验收；其他平台尚无配套服务程序。
+- 随附 Go 程序及 Python/Node/Git 归档覆盖 macOS Intel x64、Apple Silicon ARM64，以及 Windows x64、ARM64；服务与客户端使用相同架构。macOS ARM64 已有实际调用验证，其他目标原生运行及桌面联调仍需对应环境验收。
 - 安装依赖需要访问 npm 注册表；首次启动或主动安装 Electron 二进制时需要访问其下载服务。
+
+`npm run dev`、`npm run build` 和 `npm test` 的前置步骤使用仓库内归档离线准备当前平台运行时。资源布局和维护步骤见 [内置 Python/Node/Git 资源](#内置-pythonnodegit-资源)。
 
 ```bash
 nvm use
@@ -31,8 +33,16 @@ Node.js 版本由 `.nvmrc` 和 `package.json` 约束。Electron 内置的 Node.j
 ```text
 resources/
   backend/
-    darwin-arm64/callum          随附的 macOS arm64 Go 服务程序
-    win32-ia32/callum.exe        Windows x64 客户端使用的 x86 Go 服务程序
+    darwin-arm64/callum          macOS Apple Silicon 服务
+    darwin-x64/callum            macOS Intel 服务
+    win32-x64/callum.exe         Windows x64 服务
+    win32-arm64/callum.exe       Windows ARM64 服务
+  runtimes/
+    sources.json                固定版本、来源和归档校验值
+    archives/                   四平台完整上游归档（入 Git）
+    unpacked/                   离线生成的完整运行时及清单（不入 Git）
+scripts/
+  prepare-runtimes.ts            调用随附服务离线准备资源
 src/
   main/
     index.ts                    应用入口和启动失败处理
@@ -72,26 +82,90 @@ docs/
 
 ## 开发与检查命令
 
-| 命令                   | 用途                                    |
-| ---------------------- | --------------------------------------- |
-| `npm run dev`          | 开发模式，启动 Electron 和热更新        |
-| `npm run typecheck`    | 分别检查主进程、测试和 Vue 界面         |
-| `npm run lint`         | 代码规范及跨进程导入边界检查            |
-| `npm test`             | 使用 Node.js 内置测试运行器执行单元测试 |
-| `npm run format:check` | 检查格式，不修改文件                    |
-| `npm run format`       | 格式化文件，会修改源码和文档            |
-| `npm run check`        | 类型、规范、单元测试和格式检查          |
-| `npm run build`        | 类型检查并构建三个进程的产物            |
-| `npm start`            | 用 Electron 打开已有构建产物            |
-| `npm run test:e2e`     | 构建并在真实 Electron 中验证桌面行为    |
+| 命令                       | 用途                                    |
+| -------------------------- | --------------------------------------- |
+| `npm run prepare:runtimes` | 从仓库归档离线准备当前平台运行时        |
+| `npm run dev`              | 开发模式，启动 Electron 和热更新        |
+| `npm run typecheck`        | 分别检查主进程、测试和 Vue 界面         |
+| `npm run lint`             | 代码规范及跨进程导入边界检查            |
+| `npm test`                 | 使用 Node.js 内置测试运行器执行单元测试 |
+| `npm run format:check`     | 检查格式，不修改文件                    |
+| `npm run format`           | 格式化文件，会修改源码和文档            |
+| `npm run check`            | 类型、规范、单元测试和格式检查          |
+| `npm run build`            | 类型检查并构建三个进程的产物            |
+| `npm start`                | 用 Electron 打开已有构建产物            |
+| `npm run test:e2e`         | 构建并在真实 Electron 中验证桌面行为    |
 
 生产构建输出到 `out/main`、`out/preload`、`out/renderer`。`npm run build` 不生成安装包；安装格式、签名和分发方式在发布需求确定后配置。
 
-Windows 开发环境使用 Node.js 26.13.0 x64，在 PowerShell 中执行本页的 `npm ci`、`npm run dev`，或执行 `npm run build` 后运行 `npm start`。Go 程序的平台选择与路径见 [Go 服务接入](backend-integration.md#程序与数据路径)，程序来源、哈希及安装资源映射见 [服务程序资源](../resources/backend/README.md)。Windows ARM64 的资源与运行验证尚未落实。
+Windows 开发环境使用 Node.js 26.13.0 x64，在 PowerShell 中执行本页的 `npm ci`、`npm run dev`，或执行 `npm run build` 后运行 `npm start`。Go 程序的平台选择与路径见 [Go 服务接入](backend-integration.md#程序与数据路径)，程序来源、哈希及安装资源映射见 [服务程序资源](../resources/backend/README.md)。Windows x64 与 ARM64 均使用对应原生服务；原生运行仍需 Windows 环境验收。
 
 Electron 测试直接使用项目中的 Electron，不需要另外下载 Playwright 浏览器。测试会创建独立临时用户目录，并在退出后清理；截图和失败产物保存在忽略的 `.artifacts/` 下。
 
+`npm test` 按测试文件依次执行。多个集成测试会启动真实 Go 服务并完整校验随附依赖，避免并发启动争抢磁盘与 CPU 而触发生产启动时限；每个文件内部的并发、隔离与生命周期断言继续执行。
+
 Electron 端到端测试默认设置 `CALLUM_TEST_BACKGROUND=1`，在隔离数据目录中保持窗口隐藏，不主动聚焦；macOS 同时隐藏测试应用的 Dock 图标。该开关只在非打包应用且显式提供 `CALLUM_USER_DATA_DIR` 时生效。后台测试禁用渲染进程后台节流以验证流式更新，不更改正常启动行为。
+
+## 内置 Python/Node/Git 资源
+
+四个平台 `darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64` 均固定 Python 3.12.14、Node 26.13.0 与 Git 2.56.1（Windows 为 2.56.1.windows.1）。macOS ARM64 Python 来自用户指定技能运行时，含已验证的第三方依赖；其他三个平台使用 Astral `python-build-standalone` 的 `20260929 install_only_stripped`，配套固定 cp312 wheel。Node 和 Git 的完整发行内容保留。裸命令与技能查询共用同一套解释器，不再维护独立 Office Python。
+
+`resources/runtimes/archives/` 持有十二份基础完整归档、固定 wheel 和技能依赖分片，单个归档小于 100 MiB；不使用 Git LFS。`sources.json` 记录版本、架构、来源、归档文件名、SHA-256 和入口。归档不会因换行转换而改变。只有可重新生成的 `unpacked/` 被 Git 忽略；格式检查与 ESLint 忽略归档、解压内容和保留来源风格的技能资源。
+
+正常开发无需 Go 源码或本机 Go。以下命令通过当前平台随附 `callum prepare-runtimes` 校验本地归档并解压：
+
+```sh
+npm run prepare:runtimes
+npm run prepare:runtimes -- --all
+```
+
+第一条只准备当前平台，第二条准备全部四个平台。`npm run dev`、`npm run build`、`npm test` 均自动执行当前平台准备。归档缺失或校验失败直接报错，不访问 GitHub 或 Node 下载地址。随附服务的准备子命令只允许离线操作，不打开数据库或启动 stdio 服务。该离线约定针对内置运行时；`npm ci` 和首次获取 Electron 仍需各自的下载服务。
+
+来源与生成清单格式为 `3`，该编号只用于格式校验，不加入目录。资源固定放在 `unpacked/<平台>/`。已有旧格式缓存时准备命令会拒绝覆盖，应先在新输出目录校验资源，再关闭服务、备份并替换原缓存。
+
+准备结果位于 `resources/runtimes/unpacked/<平台>/`，包含 Python、Node、Git 及完整性清单 `manifest.json`。解压在隔离暂存目录进行，拒绝越界路径、硬链接和特殊文件，校验全部成功后才激活平台目录。每次准备都会验证归档及已有解压内容；重复执行不替换有效目录，损坏或版本不符拒绝覆盖。更新资源时应在新输出目录完成核验，并在服务关闭后替换生成目录，不能修改共享运行时安装第三方依赖。
+
+Git 包保留 HTTPS、模板、Git LFS、Git Credential Manager、Windows 的 DLL/shell/ssh 及许可证。Dugite 面向脚本调用，未提供 Perl/Tcl GUI 和 SVN 功能；不承诺完整 Git 安装器的所有可选工具。四份 Git 归档共约 212 MiB，各自小于 100 MiB。
+
+v9 命令指引及执行前校验要求单个命令直接传参数数组，多个独立操作分别调用工具，目录查看优先用 `list_directory`；确需管道、重定向等 Shell 语法时使用非登录 Shell 与内置程序的绝对路径。模型默认直接调用 `git`，Go 固定内置入口与配套资源环境，不依赖用户安装 Git。非交互认证不可用时明确失败，不弹登录窗口；不修改用户全局配置。`status` 禁用可选索引刷新，`.git` 写入和网络访问继续按后端审批与沙箱处理。设置中不提供 Git 版本切换。简单 sh/bash 包装在执行前以字段错误拒绝；坏参数 JSON 的整批调用不执行，由 Go 保留审计并请求模型纠正，重复同一错误无进展时终止。该恢复不重放已完成操作，也不替代审批。
+
+维护者需要升级归档时，从 Go 服务源码仓库运行：
+
+```sh
+go run -mod=readonly ./cmd/prepare-runtimes \
+  --sources /absolute/path/callum-desktop/resources/runtimes/sources.json \
+  --output /absolute/path/new-runtime-output \
+  --cache /absolute/path/callum-desktop/resources/runtimes/archives \
+  --download
+```
+
+只有此独立维护命令显式传入 `--download` 才允许获取缺失归档；正常开发命令和应用启动不使用该选项。新归档及来源清单应一同评审入库，已有归档校验失败不会被自动覆盖。
+
+主进程先启动 `callum resource-lock --data-dir <数据根目录>` 取得与正式服务相同的实例锁；此模式提供就绪、关闭和只读完整性校验，不打开业务数据库。客户端在资源锁内通过 `runtime.validate` 验证复用目录或待激活的暂存目录，校验与正式服务一致。切换前原子写入安装记录并保留旧目录，激活完成才回收备份。截断的旧安装记录保存在数据目录便于核对。释放锁后，再以 `<数据根目录>/runtimes/` 作为 `--runtime-dir` 启动正式服务。安装目录仅包含 `git/`、`python/`、`node/`、`native/` 和 `manifest.json`；版本及平台信息留在清单内。服务运行期不下载、解压或升级资源，设置不提供多版本切换。
+
+`npm run build` 不生成安装包。后续打包必须将目标 `backend/<平台>/` 与已经解压的 `runtimes/unpacked/<平台>/` 完整放入 ASAR 外同名目录；同时将 `resources/runtimes/licenses/` 复制到资源目录 `runtimes/licenses/`，保留公共许可证及第三方声明。归档入库不等于已验证安装包复制。
+
+macOS ARM64 的真实解释器及完整客户端调用链已验证；macOS Intel、Windows x64/ARM64 的资源校验与 Go 交叉构建不能替代对应设备的原生运行验收。
+
+运行时安装使用私有暂存目录、逐文件哈希校验和安装恢复记录 `.runtimes-install.json`。旧目录在激活前保留；中断恢复只处理已登记的自有目录。取消等待复制工作者与清理完成后才释放实例锁。重复启动复用同一清单，Go 仍校验全部实际内容。
+
+## 技能资源与安装
+
+默认技能位于客户端 `resources/skills/.system/{documents,spreadsheets,presentations,pdf}`。技能脚本、参考资料和质量流程保留，副本中的 `callum.md` 说明本地宿主约定；用户指定的原始技能目录不修改。Go 只保留通用发现、读取与调用。
+
+客户端在资源锁覆盖下把自带技能安装到 `<数据根目录>/skills/.system/`；用户技能平铺在 `skills/<技能名>/`，不覆盖或合并用户文件。系统技能更新前将旧目录移到 `skills/.system-backups/`；旧平铺技能只有完整匹配 `legacy-manifest.json` 的文件集合及哈希时才备份迁移到 `skills/.legacy-backups/`，有用户修改的目录原位保留。Go 特别扫描根目录的 `.system`，其余隐藏目录不扫描；用户技能按 YAML `name` 覆盖同名系统技能，删除覆盖后下一轮恢复系统技能。
+
+四个平台的 `native/` 都提供 LibreOffice、Poppler、HEIF 和 JPEG XR 转换工具。macOS Intel 与两个 Windows 平台的依赖版本为 `26.1111.10934-native`，在原有解释器中增加 `pdf2image`、`pypdf`、`reportlab`、`charset-normalizer` 和 `numpy`。macOS ARM64 的 `26.1111.10934-flat` 还包括 Artifact Tool 2.8.148 和 `pdfplumber`。另外三个平台的 Excel、PowerPoint 可使用已有的 `openpyxl`、`python-pptx` 和随附 LibreOffice，依赖 Artifact Tool 的原有脚本仅在提供该库的运行时可用。上游归档及许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md#随附原生技能工具)。
+
+`load_workspace_dependencies` 返回与 `python3` 相同的解释器及实际 `bin_directory`。macOS 从 `native/` 下的入口执行。Windows 从 `native/native-executables.json` 查找 `.exe` 或 `.com` 的相对路径，并将 LibreOffice 用户配置显式放在本轮私有目录。Windows LibreOffice 随附 26.8.3 的程序、运行时库及配套资源，省去安装器的帮助、扩展和可选界面翻译。四个平台的离线资源均已校验，macOS Intel、Windows x64 和 ARM64 的原生转换及沙箱行为仍需在对应环境验收。
+
+真实格式、原技能脚本、图片输入及交付副本检查：
+
+```sh
+node --test tests/unit/office-runtime.test.ts tests/unit/skill-assets.test.ts
+```
+
+这些测试使用临时数据和受控模型端点，不等于真实厂商模型自主选用技能的验收。普通文件卡片、编辑重发、历史重载、交付另存和跨轮读取由 Electron E2E 覆盖。安装包复制仍未配置；客户端资源是安装来源，实际命令从数据目录运行。
 
 ## 数据目录与通信边界
 
