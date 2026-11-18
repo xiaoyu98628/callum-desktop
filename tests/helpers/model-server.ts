@@ -61,7 +61,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         .map((part) => string(record(part.image_url).url))
       const summaryRequest =
         typeof messages[0]?.content === 'string' &&
-        messages[0].content.startsWith('你负责压缩对话历史')
+        messages[0].content.startsWith('You are performing a CONTEXT CHECKPOINT COMPACTION.')
       requests.push({
         summaryRequest,
         contextSummary: messages.some(
@@ -98,7 +98,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                 choices: [
                   {
                     index: 0,
-                    message: { role: 'assistant', content: '结构不合法的摘要' },
+                    message: { role: 'assistant', content: '{"facts":["旧格式摘要"]}' },
                     finish_reason: 'stop',
                   },
                 ],
@@ -114,13 +114,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
                   index: 0,
                   message: {
                     role: 'assistant',
-                    content: JSON.stringify({
-                      goals: ['完成长任务'],
-                      constraints: ['保留当前要求'],
-                      decisions: [],
-                      facts: ['早期读取批次已完成，原始结果保存在步骤中'],
-                      open_questions: [],
-                    }),
+                    content:
+                      '## 进展\n- 早期读取批次已完成，原始结果保存在步骤中。\n\n保留当前要求，继续完成长任务。',
                   },
                   finish_reason: 'stop',
                 },

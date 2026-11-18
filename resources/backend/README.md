@@ -14,20 +14,20 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `f96e6d94d440edff7991fb425ff8c528a1f23d5da597e5bd346dcfad5452619c`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `20cba69d9b6be5aa011dcfb870b7b8dc4845ed29faf49ca2ba4c55ebd8b4c3dd`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `c1ecf653b0e1d6cbf31788f823437e5177aad48c332439ba31a105df2b3edd7d` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `7790841f7a650ab2b28353b0f346eca558154af66b87156418ac6d7020064adb` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `7923114ce0d0f6dbb2c22c25ec824b05cdca85a9d14692764d3efcb2c3412f2c` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `b1544424dd063a031f4478f89c4193bd23883426d819a741755a4f919303e016` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `3aa82a6dc47f86b9fad2488c3bb36d118500a7079c12cde9d82acbcf232c5121` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `ec82d9bdc3980b5950761a065e0939c8c4f6b3773039b2b15d1bb94f63434047` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `1319dc4f2f939cde8b708db7adaf5af065c8706989cbcd888b07d000d4cd0ca7` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `e62cf51d19ef2e8c990eae5aff9a52f94f1e515369490fd91dab2734dbaa6b04` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
 ## 随附程序兼容说明
 
-主对话提示以 Callum 为身份，补充持续推进、响应用户中途修正、确认前的准备及交付前核验。技能目录提示以 `SKILL.md` 描述入口。主对话模型请求携带该次执行的审批与沙箱设置快照和工作区路径信息，Token 预览使用同一套组装逻辑。
+主对话提示以 Callum 为身份，补充持续推进、响应用户中途修正、确认前的准备及交付前核验。技能目录提示以 `SKILL.md` 描述入口。主对话模型请求携带该次执行的审批与沙箱设置快照和工作区路径信息，Token 预览使用同一套组装逻辑。手动压缩、自动压缩和运行内检查点生成 UTF-8 纯文本交接摘要。摘要提示主体取自 [OpenAI 上游交接提示](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/prompts/templates/compact/prompt.md)，Copyright 2025 OpenAI，采用 Apache-2.0 许可。
 
 技能资源位于客户端 `resources/skills/.system/`，安装到 `DataDir/skills/.system/`。用户技能平铺且优先；旧随附内容完整匹配才备份迁移，用户改动保留。运行时从实际数据目录的 `runtimes/{python,node,git,native}` 执行，版本及平台仅在清单中。`resource-lock` 与服务共用实例锁，不打开业务数据库，并提供只读的 `runtime.validate` 完整校验。附件另存按消息版本读取不超过 1 MiB 的分片，每片返回原件 SHA-256。
 
@@ -39,7 +39,7 @@ resources/backend/
 
 单项工具参数超过 16 KiB 时保留明确的工具名和已接收字节数，流式读取及时关闭；确认整批尚未执行且没有取消、传输或保存错误后，反馈模型拆分小补丁或使用脚本生成大文件。相同超限参数无进展时结束，不执行部分批次。`apply_patch` 定义版本为 `2`，同步提示单次参数容量；不提高资源边界、不重放已完成操作。
 
-当前随附程序使用数据库结构版本 `4`。版本 `1`、`2` 和 `3` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
+当前随附程序使用数据库结构版本 `4`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1`、`2` 和 `3` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
 
 | 接入能力     | 随附程序基线与客户端约束                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
