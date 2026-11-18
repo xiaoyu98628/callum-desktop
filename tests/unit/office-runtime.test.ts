@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
-import { mkdtemp, readFile, writeFile, rm, stat, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, rm, stat, readdir, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,6 +13,7 @@ import { ChatService } from '../../src/main/backend/chat-service.ts'
 import { resolveRuntimeDirectory } from '../../src/main/backend/runtime-assets.ts'
 import { array, record } from '../../src/shared/chat.ts'
 import type { ChatEvent } from '../../src/shared/chat.ts'
+import type { Skill } from '../../src/shared/skills.ts'
 import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts'
 
 const appleSilicon = process.platform === 'darwin' && process.arch === 'arm64'
@@ -189,6 +190,7 @@ test(
     let work = ''
     let python = ''
     let imageSeen = false
+    const expectedSkills: Skill[] = []
     const errors: unknown[] = []
     const upstream = createServer((request, response) => {
       void (async () => {
@@ -199,9 +201,26 @@ test(
         const auxiliary = !Array.isArray(input.tools) || input.tools.length === 0
         let message: Record<string, unknown> = { role: 'assistant', content: 'Files are ready.' }
         if (!auxiliary) {
-          assert.ok(JSON.stringify(messages).includes('Codex SKILL.md'))
-          for (const skill of ['documents', 'spreadsheets', 'presentations', 'pdf']) {
-            assert.ok(JSON.stringify(messages).includes(`skills/.system/${skill}/SKILL.md`))
+          const catalog = messages
+            .filter((row) => row.role === 'system' && typeof row.content === 'string')
+            .flatMap((row) => {
+              // 技能目录作为 JSON 附在系统说明末尾，校验目录数据不依赖说明文案。
+              const line = String(row.content).split('\n').at(-1) ?? ''
+              try {
+                return array(JSON.parse(line), record)
+              } catch {
+                return []
+              }
+            })
+          for (const skill of expectedSkills) {
+            const entries = catalog.filter((entry) => entry.path === skill.path)
+            assert.equal(entries.length, 1, `模型上下文应包含唯一技能入口：${skill.path}`)
+            const entry = entries[0]!
+            assert.deepEqual(
+              { name: entry.name, description: entry.description, path: entry.path },
+              skill,
+            )
+            assert.equal(entry.source, 'system')
           }
           const last = messages.findLast((row) => row.role === 'tool')
           const result = last ? record(JSON.parse(String(last.content))) : null
@@ -312,6 +331,14 @@ test(
         true,
       )
       service = new ChatService(join(profile, 'backend'), resourceRoot)
+      const installedSkills = await service.listSkills()
+      for (const directory of ['documents', 'spreadsheets', 'presentations', 'pdf']) {
+        const path = await realpath(join(profile, 'backend/skills/.system', directory, 'SKILL.md'))
+        const skill = installedSkills.find((entry) => entry.path === path)
+        assert.ok(skill, `实际技能目录缺少入口：${path}`)
+        assert.ok((await stat(path)).isFile())
+        expectedSkills.push(skill)
+      }
       const events: ChatEvent[] = []
       service.subscribe((event) => events.push(event))
       const accepted = await service.send({

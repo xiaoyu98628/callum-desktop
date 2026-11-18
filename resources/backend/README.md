@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `b4a924c4c7481d2f10909bb0e301ffc671ba69bc922abf3476c4087a1822edb4`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `f96e6d94d440edff7991fb425ff8c528a1f23d5da597e5bd346dcfad5452619c`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `7ff70f255b0262f70c8183ed56e7ce95e8fbd354bb2cb1fd7e9551da30bda54a` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `ce4a8b2b6f012ff122e7391559193c13dda0080d99ac7e6a267376f10d780e4b` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `e8515a63811cdf1ee5d9476207bf687e93e506f8ce5d5f55ee878fdd4dbed63a` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `8a734f24109666f6a1d21c993e736465b5b5efd2ca7a107636c312b2305c4127` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `c1ecf653b0e1d6cbf31788f823437e5177aad48c332439ba31a105df2b3edd7d` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `7790841f7a650ab2b28353b0f346eca558154af66b87156418ac6d7020064adb` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `7923114ce0d0f6dbb2c22c25ec824b05cdca85a9d14692764d3efcb2c3412f2c` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `b1544424dd063a031f4478f89c4193bd23883426d819a741755a4f919303e016` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -36,6 +36,8 @@ resources/backend/
 四个平台均随附 LibreOffice、Poppler 和图像转换工具，位于 `native/`。macOS ARM64 的 `26.1111.10934-flat` 还提供 Artifact Tool 2.8.148。Intel Mac 和两个 Windows 平台的 `26.1111.10934-native` 提供 Word、PDF 脚本所需的 Python 库，原生转换仍需目标环境验收。详见 [技能资源与安装](../../docs/development.md#技能资源与安装)。
 
 本次随附服务接受 `--runtime-dir`。客户端在资源锁内安装后传入实际 `DataDir/runtimes/`，固定 Python 3.12.14、Node 26.13.0 与 Git 2.56.1（Windows 为 2.56.1.windows.1）；资源清单及全部内容由 Go 校验，命令执行继续使用既有审批和沙箱。内置运行时的 `run_command` 定义版本为 `9`：模型每轮收到直接调用 `python3`/`node`/`git` 的示例及实际内置入口，不必由用户重复提醒。多个独立操作分别调用工具，目录查看优先使用 `list_directory`；不为打印分隔标题或串联独立命令构造 Shell 脚本。确需管道、重定向或条件控制时使用非登录 Shell，并引用 Python、Node、Git 的内置绝对路径。对仅包装普通程序或串联独立调用的 sh/bash -c 增加执行前拒绝，并返回字段级错误。完整模型响应中的坏参数 JSON 会使本轮整批工具不执行，再带服务端反馈重新生成；原响应与 usage 保留，相同坏参数无进展时明确结束。取消和其他错误不走此纠正路径。此功能不变更数据库结构，也不提供运行期下载或版本切换。完整上游归档保存在仓库 `resources/runtimes/archives/`，开发、构建和测试前由随附程序的 `prepare-runtimes` 子命令严格离线解压，不依赖 Go 源码或本机 Go；该子命令不打开业务数据库。来源和准备步骤见 [运行时资源准备](../../docs/development.md#内置-pythonnodegit-资源)。
+
+单项工具参数超过 16 KiB 时保留明确的工具名和已接收字节数，流式读取及时关闭；确认整批尚未执行且没有取消、传输或保存错误后，反馈模型拆分小补丁或使用脚本生成大文件。相同超限参数无进展时结束，不执行部分批次。`apply_patch` 定义版本为 `2`，同步提示单次参数容量；不提高资源边界、不重放已完成操作。
 
 当前随附程序使用数据库结构版本 `4`。版本 `1`、`2` 和 `3` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
 
