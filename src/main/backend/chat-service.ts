@@ -1,3 +1,10 @@
+import { followUpFromRpc } from '../../shared/follow-up.ts'
+import type {
+  FollowUpInput,
+  FollowUpItem,
+  FollowUpChange,
+  FollowUpStart,
+} from '../../shared/follow-up.ts'
 import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -80,6 +87,8 @@ import {
 import { StepOutput, readStepDetails } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
+import { generalSettingsFromRpc } from '../../shared/general-settings.ts'
+import type { GeneralSettings } from '../../shared/general-settings.ts'
 import { isManualCompactionStep } from '../../shared/manual-compaction.ts'
 import { ConversationHistoryReader } from './conversation-history.ts'
 import { WorkspaceCatalog } from './workspace-catalog.ts'
@@ -378,6 +387,20 @@ export class ChatService {
       hasMore,
       revision: this.revision,
     }
+  }
+  async generalSettings(): Promise<GeneralSettings> {
+    return generalSettingsFromRpc(await this.request('settings.get', { key: 'general' }))
+  }
+  async updateGeneralSettings(input: GeneralSettings): Promise<GeneralSettings> {
+    return this.gate.run('general-settings', async () =>
+      generalSettingsFromRpc(
+        await this.request('settings.update', {
+          key: 'general',
+          revision: input.revision,
+          value: { follow_up_mode: input.followUpMode },
+        }),
+      ),
+    )
   }
   async executionSettings(): Promise<ExecutionSettings> {
     return executionSettingsFromRpc(await this.request('settings.get', { key: 'execution' }))
@@ -884,6 +907,70 @@ export class ChatService {
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
   }
+  async followUps(conversationId: string): Promise<FollowUpItem[]> {
+    const items = array(
+      await this.request('conversation.follow_ups', { conversation_id: conversationId }),
+      followUpFromRpc,
+    )
+    if (items.length > 32 || items.some((item) => item.conversationId !== conversationId))
+      throw new Error('后续消息列表数据无效')
+    return items
+  }
+  async addFollowUp(input: FollowUpInput): Promise<FollowUpItem> {
+    const item = await this.withMessageContent(input, (content) =>
+      this.request('conversation.follow_up_add', {
+        conversation_id: input.conversationId,
+        model_id: input.modelId,
+        expected_run_id: input.expectedRunId,
+        mode: input.mode,
+        content,
+      }),
+    ).then(followUpFromRpc)
+    if (item.conversationId !== input.conversationId) throw new Error('后续消息归属不匹配')
+    return item
+  }
+  async changeFollowUp(input: FollowUpChange): Promise<FollowUpItem> {
+    const item = followUpFromRpc(
+      await this.request('conversation.follow_up_change', {
+        conversation_id: input.conversationId,
+        id: input.id,
+        revision: input.revision,
+        action: input.action,
+        expected_run_id: input.expectedRunId,
+        text: input.text,
+      }),
+    )
+    if (item.conversationId !== input.conversationId || item.id !== input.id)
+      throw new Error('后续消息归属不匹配')
+    return item
+  }
+  async startFollowUp(input: FollowUpStart, afterRunId?: string): Promise<SendMessageResult> {
+    const value = record(
+      await this.request('conversation.follow_up_start', {
+        conversation_id: input.conversationId,
+        id: input.id,
+        revision: input.revision,
+        after_run_id: afterRunId,
+      }),
+    )
+    if (id(value.conversation_id) !== input.conversationId) throw new Error('后续执行归属不匹配')
+    return { conversationId: input.conversationId, runId: id(value.run_id) }
+  }
+  private async dispatchFollowUp(run: ChatRun): Promise<void> {
+    const connection = this.ready
+    try {
+      const items = await this.followUps(run.conversationId)
+      const item = items.find((item) => item.state === 'queued')
+      if (item && connection === this.ready) await this.startFollowUp(item, run.id)
+    } catch {
+      // 受理冲突、容量不足或连接变化时，Go 事务仍保留队列。
+      if (connection === this.ready)
+        this.publish({
+          kind: 'follow-ups',
+          value: { id: run.conversationId, conversationId: run.conversationId },
+        })
+    }
+  }
   async compact(input: CompactConversationInput): Promise<SendMessageResult> {
     const parsed = parseCompactInput(input)
     return this.gate.run(`compact:${parsed.conversationId}`, async () => {
@@ -998,7 +1085,10 @@ export class ChatService {
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
-    if (method === 'conversation.context_usage.updated') {
+    if (method === 'conversation.follow_ups_updated') {
+      const conversationId = id(p.conversation_id)
+      this.publish({ kind: 'follow-ups', value: { id: conversationId, conversationId } })
+    } else if (method === 'conversation.context_usage.updated') {
       const value = contextUsageFromRpc(p.context_usage)
       if (value.conversationId !== id(p.conversation_id) || value.runId !== id(p.run_id))
         throw new Error('上下文占用通知归属不匹配')
@@ -1133,6 +1223,12 @@ export class ChatService {
       this.flush()
       this.publish({ kind: 'run', value: run, persisted: p.persisted !== false })
       if (!isActiveRun(run)) {
+        this.publish({
+          kind: 'follow-ups',
+          value: { id: run.conversationId, conversationId: run.conversationId },
+        })
+        if (method === 'run.completed' && p.persisted !== false && run.status === 'completed')
+          void this.dispatchFollowUp(run)
         for (const [key, message] of this.messages)
           if (message.runId === run.id) this.messages.delete(key)
         this.runs.delete(run.id)

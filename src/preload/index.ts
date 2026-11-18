@@ -1,3 +1,4 @@
+import { parseFollowUpItem } from '../shared/follow-up'
 import { contextBridge, ipcRenderer } from 'electron'
 import { parseAppInfo, parseServiceState } from '../shared/desktop-api'
 import type { DesktopApi } from '../shared/desktop-api'
@@ -27,6 +28,7 @@ import {
 import { parseAttachmentPreview } from '../shared/attachments'
 import { parseCatalog } from '../shared/models'
 import { parseExecutionSettings } from '../shared/execution'
+import { parseGeneralSettings } from '../shared/general-settings'
 import { parseContextUsage } from '../shared/context-usage'
 import { parseSkills } from '../shared/skills'
 
@@ -69,6 +71,18 @@ const desktopApi: DesktopApi = {
   },
   async getModelCatalog() {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.getModelCatalog), parseCatalog)
+  },
+  async getGeneralSettings() {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getGeneralSettings),
+      parseGeneralSettings,
+    )
+  },
+  async updateGeneralSettings(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.updateGeneralSettings, input),
+      parseGeneralSettings,
+    )
   },
   async getExecutionSettings() {
     return parseResult(
@@ -240,6 +254,24 @@ const desktopApi: DesktopApi = {
       await ipcRenderer.invoke(IPC_CHANNELS.previewDraftAttachment, input),
       parseAttachmentPreview,
     )
+  },
+  async listFollowUps(conversationId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.listFollowUps, conversationId),
+      (value) => array(value, parseFollowUpItem),
+    )
+  },
+  async addFollowUp(input) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.addFollowUp, input), parseFollowUpItem)
+  },
+  async changeFollowUp(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.changeFollowUp, input),
+      parseFollowUpItem,
+    )
+  },
+  async startFollowUp(input) {
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.startFollowUp, input), parseSendResult)
   },
   async sendMessage(input) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.sendMessage, input), parseSendResult)

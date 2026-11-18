@@ -206,6 +206,7 @@ export interface ChatUserInput {
   updatedAt: number
 }
 export type ChatChange =
+  | { kind: 'follow-ups'; value: { id: string; conversationId: string } }
   | { kind: 'context-usage'; value: ContextUsage }
   | { kind: 'conversation'; value: Conversation }
   | { kind: 'workspace'; value: Workspace }
@@ -867,6 +868,14 @@ export function parseChatEvent(value: unknown): ChatEvent {
     change = record(v.change)
   const revision = integer(v.revision)
   switch (change.kind) {
+    case 'follow-ups': {
+      const value = record(change.value)
+      const conversationId = id(value.conversationId)
+      return {
+        revision,
+        change: { kind: 'follow-ups', value: { id: conversationId, conversationId } },
+      }
+    }
     case 'context-usage':
       return { revision, change: { kind: 'context-usage', value: parseContextUsage(change.value) } }
     case 'workspace':

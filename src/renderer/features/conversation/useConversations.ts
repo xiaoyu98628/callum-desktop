@@ -1,4 +1,4 @@
-import { computed, inject, onMounted, onScopeDispose, provide, watch } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide, ref, watch } from 'vue'
 import { createConversationState } from './state'
 import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
@@ -26,6 +26,8 @@ import { MAX_ATTACHMENT_BATCH_BYTES } from '@shared/attachments'
 import { addAttachmentFiles, attachmentInputs, isImageFile } from './attachment-files'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
+
+import type { FollowUpChange, FollowUpItem, FollowUpMode } from '@shared/follow-up'
 
 const IMAGE_INPUT_REQUIRED = '当前模型未启用图片输入，请在模型设置中启用或切换模型。'
 
@@ -128,6 +130,68 @@ function createConversations() {
       state.detail?.runs.find(isActiveRun) ??
       null,
   )
+  const followUps = ref<FollowUpItem[]>([])
+  const followUpError = ref('')
+  const followUpBusy = ref(false)
+  let followUpRequest = 0
+
+  async function loadFollowUps(): Promise<void> {
+    const id = state.selectedId
+    const request = ++followUpRequest
+    if (!id || state.serviceError) return
+    try {
+      const items = unwrap(await getDesktopApi().listFollowUps(id))
+      if (!disposed && request === followUpRequest) followUps.value = items
+    } catch (error) {
+      if (!disposed && request === followUpRequest) followUpError.value = message(error)
+    }
+  }
+
+  watch(
+    () => [state.selectedId, state.serviceError],
+    () => {
+      followUps.value = []
+      followUpError.value = ''
+      void loadFollowUps()
+    },
+    { flush: 'sync' },
+  )
+
+  async function actOnFollowUp(
+    item: FollowUpItem,
+    action: FollowUpChange['action'] | 'start',
+    text?: string,
+  ): Promise<void> {
+    if (followUpBusy.value || state.selectedId !== item.conversationId || state.serviceError) return
+    const run = activeRun.value
+    if (action === 'steer' && (!run || run.status !== 'running' || run.compaction)) return
+    if (action === 'start' && run) return
+    const token = selection
+    followUpBusy.value = true
+    followUpError.value = ''
+    try {
+      const api = getDesktopApi()
+      const input = { id: item.id, conversationId: item.conversationId, revision: item.revision }
+      if (action === 'start') {
+        unwrap(await api.startFollowUp(input))
+      } else {
+        unwrap(
+          await api.changeFollowUp({
+            ...input,
+            action,
+            ...(action === 'edit' && text !== undefined ? { text } : {}),
+            ...(action === 'steer' && run ? { expectedRunId: run.id } : {}),
+          }),
+        )
+      }
+    } catch (error) {
+      if (token === selection) followUpError.value = message(error)
+    } finally {
+      if (token === selection) await loadFollowUps()
+      followUpBusy.value = false
+    }
+  }
+
   const lastUserMessage = computed(() =>
     state.historical
       ? null
@@ -446,6 +510,10 @@ function createConversations() {
   }
   function receive(event: ChatEvent): void {
     const change = event.change
+    if (change.kind === 'follow-ups') {
+      if (change.value.conversationId === state.selectedId) void loadFollowUps()
+      return
+    }
     if ((change.kind === 'conversation' || change.kind === 'workspace') && state.archivesLoading) {
       archiveEvents.set(`${change.kind}:${change.value.id}`, event)
       if (archiveEvents.size > 500) {
@@ -958,7 +1026,7 @@ function createConversations() {
       }
     }
   }
-  async function send(): Promise<void> {
+  async function send(mode: FollowUpMode = 'queue'): Promise<void> {
     if (state.executionSettingsSaving) return
     if (!draftAttachments.value.length && isCompactCommand(draft.value)) {
       await compact(true)
@@ -970,7 +1038,9 @@ function createConversations() {
       state.compacting ||
       state.editing ||
       state.loading ||
-      activeRun.value ||
+      (activeRun.value &&
+        mode === 'steer' &&
+        (activeRun.value.status !== 'running' || activeRun.value.compaction)) ||
       state.serviceError ||
       state.modelsLoading ||
       state.modelError ||
@@ -988,20 +1058,35 @@ function createConversations() {
       token = selection
     const key = draftKey()
     const workspaceId = conversationId ? null : state.workspaceId
+    const run = activeRun.value
+    const modelId = state.modelId
     try {
-      const result = unwrap(
-        await getDesktopApi().sendMessage({
-          conversationId,
-          workspaceId,
-          text: body,
-          ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
-          modelId: state.modelId,
-          ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
-        }),
+      const input = {
+        conversationId,
+        workspaceId,
+        text: body,
+        ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
+        modelId,
+        ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
+      }
+      const api = getDesktopApi()
+      let acceptedId = conversationId
+      if (run && conversationId) {
+        unwrap(await api.addFollowUp({ ...input, conversationId, expectedRunId: run.id, mode }))
+      } else {
+        acceptedId = unwrap(await api.sendMessage(input)).conversationId
+      }
+      if (
+        (state.drafts[key] ?? '') === body &&
+        (state.draftSkills[key] ?? null) === skill &&
+        (state.draftAttachments[key]?.length ?? 0) === files.length &&
+        files.every((file, index) => state.draftAttachments[key]?.[index] === file)
       )
-      if ((state.drafts[key] ?? '') === body && (state.draftSkills[key] ?? null) === skill)
         clearDraft(key)
-      if (token === selection && !disposed) await openConversation(result.conversationId, true)
+      if (token === selection && !disposed && acceptedId) {
+        if (run) await loadFollowUps()
+        else await openConversation(acceptedId, true)
+      }
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
       if (token === selection) state.error = message(error)
@@ -1180,6 +1265,10 @@ function createConversations() {
   return {
     initialize,
     state,
+    followUps,
+    followUpError,
+    followUpBusy,
+    actOnFollowUp,
     draft,
     draftAttachments,
     draftSkill,

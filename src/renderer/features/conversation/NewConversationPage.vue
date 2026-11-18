@@ -43,7 +43,13 @@ import ComposerCommands from './ComposerCommands.vue'
 import { compactCommandId, useComposerCommands } from './useComposerCommands'
 import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
+import type { AppInfo } from '@shared/desktop-api'
+import { useFollowUpPreference } from '@/features/settings/useFollowUpPreference'
+import FollowUpQueue from './FollowUpQueue.vue'
+
+const props = defineProps<{ platform?: AppInfo['platform'] | undefined }>()
 defineEmits<{ configureModels: [] }>()
+const { mode } = useFollowUpPreference()
 
 const {
   state,
@@ -59,6 +65,10 @@ const {
   removeAttachment,
   workspace,
   activeRun,
+  followUps,
+  followUpError,
+  followUpBusy,
+  actOnFollowUp,
   compactUnavailable,
   compact,
   lastUserMessage,
@@ -366,7 +376,6 @@ const canSend = computed(
     !state.resending &&
     !state.compacting &&
     !state.editing &&
-    !activeRun.value &&
     !currentInteraction.value &&
     !state.serviceError &&
     !state.modelsLoading &&
@@ -375,6 +384,21 @@ const canSend = computed(
     (!requestingCompact.value || !compactUnavailable.value) &&
     (!!draftItems.value.length || !!draft.value.trim()) &&
     (!draftItems.value.some(isImageAttachment) || imageInput.value),
+)
+const canSteer = computed(
+  () =>
+    activeRun.value?.status === 'running' &&
+    !activeRun.value.compaction &&
+    !currentInteraction.value,
+)
+const sendLabel = computed(() =>
+  requestingCompact.value
+    ? '压缩上下文'
+    : activeRun.value
+      ? mode.value === 'queue'
+        ? '排队发送'
+        : '引导当前任务'
+      : '发送消息',
 )
 const runLabels = {
   pending: '正在准备回答…',
@@ -448,7 +472,7 @@ function keydown(event: KeyboardEvent): void {
   }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
-    submitMessage()
+    submitMessage(props.platform === 'darwin' ? event.metaKey : event.ctrlKey)
   }
 }
 function selectComposerOption(id: string): void {
@@ -465,12 +489,17 @@ function removeComposerSkill(): void {
   removeDraftSkill()
   messageInput.value?.focus({ preventScroll: true })
 }
-function submitMessage(): void {
+function submitMessage(alternate = false): void {
   if (!canSend.value) return
   if (requestingCompact.value) void compact(true)
   else {
     if (!awayFromLatest.value) follow.value = true
-    void send()
+    const method = alternate ? (mode.value === 'queue' ? 'steer' : 'queue') : mode.value
+    if (activeRun.value && method === 'steer' && !canSteer.value) {
+      state.error = '当前任务暂时无法接受引导，可以将消息加入队列。'
+      return
+    }
+    void send(method)
   }
 }
 function updateDistance(): void {
@@ -1045,10 +1074,20 @@ onScopeDispose(() => {
           <LaptopIcon class="size-3.5" aria-hidden="true" />此计算机
         </span>
       </div>
+      <FollowUpQueue
+        :key="state.selectedId ?? 'new'"
+        :items="followUps"
+        :active="!!activeRun"
+        :can-steer="canSteer"
+        :busy="followUpBusy || state.sending || !!state.serviceError"
+        :error="followUpError"
+        @change="actOnFollowUp"
+        @start="actOnFollowUp($event, 'start')"
+      />
       <form
         ref="composerForm"
         class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
-        @submit.prevent="submitMessage"
+        @submit.prevent="submitMessage()"
         @dragover="dragFiles"
         @drop="dropFiles($event, receiveFiles)"
         @paste="pasteFiles($event, receiveFiles)"
@@ -1203,12 +1242,12 @@ onScopeDispose(() => {
             <SquareIcon v-else class="size-3 fill-current" aria-hidden="true"
           /></Button>
           <Button
-            v-else
             type="submit"
             size="icon"
             class="size-7 shrink-0 rounded-full bg-foreground text-background hover:bg-foreground/90"
             :disabled="!canSend"
-            :aria-label="requestingCompact ? '压缩上下文' : '发送消息'"
+            :aria-label="sendLabel"
+            :title="sendLabel"
             ><LoaderCircleIcon
               v-if="state.sending"
               class="size-4 animate-spin"

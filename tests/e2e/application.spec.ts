@@ -573,6 +573,114 @@ testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', asy
   await expect(reopened.getByText('v0.1.0', { exact: true })).toBeVisible()
 })
 
+test.describe('后续消息', () => {
+  test.describe.configure({ timeout: 90_000 })
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务')
+
+  test('排队、单条引导和自动续发使用实际 Go 服务', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    async function openGeneral(): Promise<void> {
+      await page.getByRole('button', { name: '设置', exact: true }).click()
+      await page.getByRole('button', { name: '常规', exact: true }).click()
+    }
+    const readSettings = () => page.evaluate(() => window.callum.getGeneralSettings())
+    const legacy = 'callum:follow-up-mode'
+    const queueSetting = page.getByRole('radio', { name: '排队', exact: true })
+    const steerSetting = page.getByRole('radio', { name: '引导', exact: true })
+    await openGeneral()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 1, followUpMode: 'queue' },
+    })
+    await page.evaluate((key) => localStorage.setItem(key, 'steer'), legacy)
+    await page.reload()
+    await openGeneral()
+    await expect(steerSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 2, followUpMode: 'steer' },
+    })
+    expect(await page.evaluate((key) => localStorage.getItem(key), legacy)).toBeNull()
+
+    await page.getByText('排队', { exact: true }).click()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 3, followUpMode: 'queue' },
+    })
+    await page.evaluate((key) => localStorage.setItem(key, 'steer'), legacy)
+    await page.reload()
+    await openGeneral()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 3, followUpMode: 'queue' },
+    })
+    expect(await page.evaluate((key) => localStorage.getItem(key), legacy)).toBeNull()
+
+    await queueSetting.press('ArrowRight')
+    await expect(steerSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 4, followUpMode: 'steer' },
+    })
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
+    await expect
+      .poll(() => modelEndpoint.requests.some((item) => item.stream && item.text === '思考等待'))
+      .toBe(true)
+
+    const alternate = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter'
+    await input.fill('转换为队列')
+    await input.press(alternate)
+    const queue = page.getByRole('list', { name: '后续消息队列' })
+    await expect(queue.getByText('转换为队列')).toBeVisible()
+    await queue.getByRole('button', { name: '引导', exact: true }).click()
+    await expect(queue.getByText('等待引导')).toBeVisible()
+
+    await input.fill('任务完成后发送')
+    await input.press(alternate)
+    await expect(queue.getByText('任务完成后发送')).toBeVisible()
+    modelEndpoint.finishStream()
+    await page.getByText('任务完成后发送', { exact: true }).last().waitFor()
+    await expect
+      .poll(() => modelEndpoint.requests.filter((item) => item.stream).map((item) => item.text))
+      .toEqual(['思考等待', '转换为队列', '任务完成后发送'])
+    await expect(queue).toHaveCount(0)
+  })
+
+  test('停止后保留待发消息并允许手动续发', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await input.fill('思考等待')
+    await input.press('Enter')
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(stop).toBeEnabled()
+    await input.fill('手动继续的任务')
+    await input.press('Enter')
+    const queue = page.getByRole('list', { name: '后续消息队列' })
+    await expect(queue.getByText('手动继续的任务')).toBeVisible()
+    await stop.click()
+    await expect(stop).toHaveCount(0)
+    expect(modelEndpoint.requests.some((item) => item.text === '手动继续的任务')).toBe(false)
+    await queue.getByRole('button', { name: '发送队列', exact: true }).click()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((item) => item.stream && item.text === '手动继续的任务'),
+      )
+      .toBe(true)
+    await expect(queue).toHaveCount(0)
+  })
+})
+
 test.describe('Office 文件附件', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的原生服务与 Office 依赖')
