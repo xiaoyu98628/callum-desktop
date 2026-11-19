@@ -277,6 +277,11 @@ export interface CompactConversationInput {
   conversationId: string
   modelId: string
 }
+export interface ContinueConversationInput {
+  conversationId: string
+  runId: string
+  modelId: string
+}
 export interface ResendMessageInput {
   conversationId: string
   messageId: string
@@ -807,6 +812,12 @@ export function parseCompactInput(value: unknown): CompactConversationInput {
   if (Object.keys(v).some((key) => key !== 'conversationId' && key !== 'modelId'))
     throw new Error('压缩参数无效')
   return { conversationId: id(v.conversationId), modelId: id(v.modelId) }
+}
+export function parseContinueInput(value: unknown): ContinueConversationInput {
+  const v = record(value)
+  if (Object.keys(v).some((key) => !['conversationId', 'runId', 'modelId'].includes(key)))
+    throw new Error('继续任务参数无效')
+  return { conversationId: id(v.conversationId), runId: id(v.runId), modelId: id(v.modelId) }
 }
 export function parseSendInput(value: unknown): SendMessageInput {
   const v = record(value)

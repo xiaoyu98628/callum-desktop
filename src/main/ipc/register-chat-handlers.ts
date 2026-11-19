@@ -13,6 +13,7 @@ import {
   parseSendInput,
   parseResendInput,
   parseCompactInput,
+  parseContinueInput,
   parseWorkspaceInput,
   parseWorkspaceChange,
   parseUserInputAnswer,
@@ -342,6 +343,9 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.listSkills, 0, () => service.listSkills())
   handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.compactConversation, 1, (input) => service.compact(parseCompactInput(input)))
+  handle(IPC_CHANNELS.continueConversation, 1, (input) =>
+    service.continueConversation(parseContinueInput(input)),
+  )
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
   handle(IPC_CHANNELS.submitUserInput, 3, (inputId, runId, answer) =>
     service.submitUserInput(id(inputId), id(runId), parseUserInputAnswer(answer)),

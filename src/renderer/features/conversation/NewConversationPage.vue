@@ -6,6 +6,7 @@ import {
   BoxIcon,
   LaptopIcon,
   LoaderCircleIcon,
+  PlayIcon,
   SparklesIcon,
   SquareIcon,
   XIcon,
@@ -68,6 +69,8 @@ const {
   activeRun,
   followUps,
   followUpDraft,
+  continuableRun,
+  continueTask,
   followUpError,
   followUpBusy,
   actOnFollowUp,
@@ -424,6 +427,69 @@ const sendLabel = computed(() =>
         : '引导当前任务'
       : '发送消息',
 )
+const hasComposerDraft = computed(
+  () =>
+    !!draft.value.trim() ||
+    !!draftItems.value.length ||
+    !!draftSkill.value ||
+    !!followUpDraft.value,
+)
+const composerAction = computed(() => {
+  if (
+    activeRun.value &&
+    (!hasComposerDraft.value || !!currentInteraction.value || compactingRun.value)
+  )
+    return 'stop'
+  if (!hasComposerDraft.value && continuableRun.value) return 'continue'
+  return 'send'
+})
+const canStop = computed(
+  () =>
+    !!activeRun.value &&
+    !state.cancelling &&
+    !state.deciding &&
+    !state.replying &&
+    !state.serviceError,
+)
+const canContinue = computed(
+  () =>
+    !!continuableRun.value &&
+    availableModel.value &&
+    !state.loading &&
+    !state.loadingList &&
+    !state.sending &&
+    !state.resending &&
+    !state.compacting &&
+    !state.editing &&
+    !followUpBusy.value &&
+    !state.executionSettingsSaving &&
+    !state.serviceError &&
+    !state.modelsLoading &&
+    !state.modelError,
+)
+const primaryLabel = computed(() =>
+  composerAction.value === 'stop'
+    ? stopLabel.value
+    : composerAction.value === 'continue'
+      ? '继续任务'
+      : sendLabel.value,
+)
+const primaryEnabled = computed(() =>
+  composerAction.value === 'stop'
+    ? canStop.value
+    : composerAction.value === 'continue'
+      ? canContinue.value
+      : canSend.value,
+)
+const primaryBusy = computed(() =>
+  composerAction.value === 'stop' ? state.cancelling : state.sending,
+)
+const showProcessStop = computed(() => !!activeRun.value && composerAction.value === 'send')
+const activeTimelineVisible = computed(
+  () =>
+    !!activeRun.value &&
+    [...messageRuns.value.values()].some((run) => run.id === activeRun.value?.id),
+)
 const runLabels = {
   pending: '正在准备回答…',
   running: '正在回答…',
@@ -535,6 +601,14 @@ function submitMessage(alternate = false): void {
     }
     void send(method)
   }
+}
+function activateComposer(): void {
+  if (!primaryEnabled.value) return
+  if (composerAction.value === 'stop') void cancel()
+  else if (composerAction.value === 'continue') {
+    if (!awayFromLatest.value) follow.value = true
+    void continueTask()
+  } else submitMessage()
 }
 function updateDistance(): void {
   const element = scroller.value
@@ -864,6 +938,26 @@ onScopeDispose(() => {
                 @inspect="pauseFollowing"
                 @changed="followRunLayout(item.runId)"
               >
+                <template #actions>
+                  <Button
+                    v-if="showProcessStop && activeRun?.id === item.runId"
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 gap-1.5 px-2 text-xs"
+                    :disabled="!canStop"
+                    :aria-busy="state.cancelling"
+                    @click="cancel"
+                  >
+                    <LoaderCircleIcon
+                      v-if="state.cancelling"
+                      class="size-3 animate-spin"
+                      aria-hidden="true"
+                    />
+                    <SquareIcon v-else class="size-3 fill-current" aria-hidden="true" />
+                    {{ stopLabel }}
+                  </Button>
+                </template>
                 <template #steering="{ message }">
                   <article
                     class="group/message ml-auto w-fit max-w-[88%]"
@@ -1160,6 +1254,14 @@ onScopeDispose(() => {
         </span>
       </div>
       <div
+        v-if="showProcessStop && !activeTimelineVisible"
+        class="mx-auto mb-1 flex max-w-3xl justify-end"
+      >
+        <Button type="button" variant="ghost" size="sm" :disabled="!canStop" @click="cancel">
+          {{ stopLabel }}
+        </Button>
+      </div>
+      <div
         data-composer-frame
         class="mx-auto max-w-3xl rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-foreground/30"
       >
@@ -1330,36 +1432,34 @@ onScopeDispose(() => {
               />
             </div>
             <Button
-              v-if="activeRun"
               type="button"
-              variant="ghost"
               size="icon"
-              class="size-7 shrink-0 rounded-full border bg-background text-foreground hover:bg-muted"
-              :aria-label="stopLabel"
-              :title="state.cancelling ? '正在停止…' : stopLabel"
-              :aria-busy="state.cancelling"
-              :disabled="
-                state.cancelling || !!state.deciding || !!state.replying || !!state.serviceError
+              class="size-7 shrink-0 rounded-full"
+              :class="
+                composerAction === 'stop'
+                  ? 'border bg-background text-foreground hover:bg-muted'
+                  : 'bg-foreground text-background hover:bg-foreground/90'
               "
-              @click="cancel"
-              ><LoaderCircleIcon
-                v-if="state.cancelling"
-                class="size-3.5 animate-spin"
-                aria-hidden="true" />
-              <SquareIcon v-else class="size-3 fill-current" aria-hidden="true"
-            /></Button>
-            <Button
-              type="submit"
-              size="icon"
-              class="size-7 shrink-0 rounded-full bg-foreground text-background hover:bg-foreground/90"
-              :disabled="!canSend"
-              :aria-label="sendLabel"
-              :title="sendLabel"
-              ><LoaderCircleIcon
-                v-if="state.sending"
-                class="size-4 animate-spin"
-                aria-hidden="true" /><ArrowUpIcon v-else class="size-4" aria-hidden="true"
-            /></Button>
+              :disabled="!primaryEnabled"
+              :aria-label="primaryLabel"
+              :title="composerAction === 'stop' && state.cancelling ? '正在停止…' : primaryLabel"
+              :aria-busy="primaryBusy"
+              data-composer-primary
+              @click="activateComposer"
+            >
+              <LoaderCircleIcon v-if="primaryBusy" class="size-4 animate-spin" aria-hidden="true" />
+              <SquareIcon
+                v-else-if="composerAction === 'stop'"
+                class="size-3 fill-current"
+                aria-hidden="true"
+              />
+              <PlayIcon
+                v-else-if="composerAction === 'continue'"
+                class="size-3.5 fill-current"
+                aria-hidden="true"
+              />
+              <ArrowUpIcon v-else class="size-4" aria-hidden="true" />
+            </Button>
           </div>
         </form>
       </div>

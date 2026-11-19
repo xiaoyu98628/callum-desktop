@@ -635,6 +635,7 @@ onScopeDispose(() => {
       <template #label>
         <RunStatus v-if="run" :run="run" :connected="connected" />
         <span v-else>处理过程</span>
+        <slot v-if="active" name="actions" />
       </template>
       <div
         ref="viewport"

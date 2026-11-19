@@ -240,6 +240,42 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         })
         return
       }
+      if (text === '继续任务') {
+        if (
+          !messages.some((item) => item.role === 'user' && item.content === '先读取文件再核对') ||
+          !messages.some(
+            (item) =>
+              item.role === 'tool' &&
+              typeof item.content === 'string' &&
+              item.content.includes('controlled-file'),
+          )
+        )
+          throw new Error('续跑请求没有恢复原要求和读取结果')
+        emit(response, { content: '已根据原有读取结果完成剩余核对。' })
+        finish(response)
+        return
+      }
+      if (text === '先读取文件再核对') {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'continue-read',
+              type: 'function',
+              function: {
+                name: 'read_file',
+                arguments: JSON.stringify({ path: fixturePath }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (role === 'tool' && last.tool_call_id === 'continue-read') {
+        emit(response, { content: '文件已读取，正在核对。' })
+        return
+      }
       if (text === '边运行命令边接收引导') {
         emit(response, { content: '先完成原本的检查命令。' })
         const calls = [

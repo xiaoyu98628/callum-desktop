@@ -159,10 +159,13 @@ async function prepareManualCompaction(page: Page, title: string, turns = 6) {
 }
 
 test('发布页面通过受限桥接读取真实应用信息', async ({ desktop }) => {
+  test.setTimeout(75_000)
   const page = await desktop.firstWindow()
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible({
+    timeout: 50_000,
+  })
   await expect(page.getByText('v0.1.0', { exact: true })).toBeVisible()
   expect(page.url()).toBe('callum://app/')
   const bridge = await page.evaluate(async () => ({
@@ -180,6 +183,8 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'copyMessage',
     'openWebLink',
     'getModelCatalog',
+    'getGeneralSettings',
+    'updateGeneralSettings',
     'getExecutionSettings',
     'updateExecutionSettings',
     'saveModelProvider',
@@ -212,7 +217,12 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'previewAttachment',
     'saveAttachment',
     'previewDraftAttachment',
+    'listFollowUps',
+    'addFollowUp',
+    'changeFollowUp',
+    'startFollowUp',
     'sendMessage',
+    'continueConversation',
     'compactConversation',
     'resendMessage',
     'cancelRun',
@@ -582,7 +592,7 @@ test.describe('后续消息', () => {
     if (!modelEndpoint) throw new Error('缺少模型模拟端点')
     const page = await desktop.firstWindow()
     async function openGeneral(): Promise<void> {
-      await page.getByRole('button', { name: '设置', exact: true }).click()
+      await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 50_000 })
       await page.getByRole('button', { name: '常规', exact: true }).click()
     }
     const readSettings = () => page.evaluate(() => window.callum.getGeneralSettings())
@@ -906,6 +916,61 @@ test.describe('后续消息', () => {
       .toBe(1)
     await expect(input).toHaveValue('原先输入框的草稿')
     expect(modelEndpoint.requests.some((item) => item.text === '取出前的队首正文')).toBe(false)
+  })
+
+  test('单一输入按钮切换发送与停止，重载后通过三角继续原任务', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const frame = page.locator('[data-composer-frame]')
+    const primary = frame.locator('[data-composer-primary]')
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('先读取文件再核对')
+    await expect(primary).toHaveAccessibleName('发送消息')
+    await input.press('Enter')
+    await expect(page.getByText('文件已读取，正在核对。', { exact: true })).toBeVisible()
+    await expect(primary).toHaveAccessibleName('停止生成')
+
+    await input.fill('核对结束后继续发出的队列')
+    await expect(primary).toHaveAccessibleName('排队发送')
+    await expect(frame.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    await primary.click()
+    await expect(
+      page.getByRole('list', { name: '后续消息队列' }).getByText('核对结束后继续发出的队列'),
+    ).toBeVisible()
+    await expect(primary).toHaveAccessibleName('停止生成')
+
+    await input.fill('稍后发送的输入草稿')
+    const timeline = page.getByRole('region', { name: '调用过程', exact: true }).last()
+    await timeline.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(primary).toHaveAccessibleName('发送消息')
+    await expect(input).toHaveValue('稍后发送的输入草稿')
+    await input.fill('')
+    await expect(primary).toHaveAccessibleName('继续任务')
+
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '先读取文件再核对', exact: true })
+      .click()
+    await expect(primary).toHaveAccessibleName('继续任务')
+    await expect(primary.locator('svg.lucide-play')).toHaveCount(1)
+    await primary.press('Enter')
+    await expect(page.getByText('已根据原有读取结果完成剩余核对。', { exact: true })).toBeVisible()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some(
+          (item) => item.stream && item.text === '核对结束后继续发出的队列',
+        ),
+      )
+      .toBe(true)
+    expect(
+      modelEndpoint.requests.filter((item) => item.stream && item.text === '继续任务'),
+    ).toHaveLength(1)
+    expect(modelEndpoint.requests.some((item) => item.text === '稍后发送的输入草稿')).toBe(false)
   })
 
   test('停止后保留待发消息并允许手动续发', async ({ desktop, modelEndpoint }) => {

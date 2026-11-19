@@ -276,6 +276,12 @@ const desktopApi: DesktopApi = {
   async sendMessage(input) {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.sendMessage, input), parseSendResult)
   },
+  async continueConversation(input) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.continueConversation, input),
+      parseSendResult,
+    )
+  },
   async compactConversation(input) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.compactConversation, input),

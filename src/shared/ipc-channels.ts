@@ -49,6 +49,7 @@ export const IPC_CHANNELS = {
   resendMessage: 'callum:chat:resend',
   compactConversation: 'callum:chat:compact',
   cancelRun: 'callum:chat:cancel',
+  continueConversation: 'callum:chat:continue',
   submitUserInput: 'callum:chat:submit-user-input',
   decideApproval: 'callum:chat:decide-approval',
   listDirectoryGrants: 'callum:chat:directory-grants',

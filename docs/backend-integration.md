@@ -82,6 +82,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 `protocol-mapper.ts` 将 Go 字段转换为界面需要的类型，不传递厂商配置。`chat-service.ts` 负责调用固定方法、拼接文本增量、处理归属并构造一致快照：
 
 - `conversation.send` 首次提问创建会话；历史上下文、模型调用和标题均由 Go 管理。
+- `continueConversation` 是固定 IPC 入口，通过 `conversation.continue` 传入会话、来源执行及当前模型 ID。Go 在事务内校验来源仍为最新的已停止或中断任务，追加新执行并恢复保存的工具轨迹。桌面端将受理结果合入同一会话，沿用事件和历史恢复流程。原任务待发送的队列仍等待新执行成功。
 - `conversation.resend` 使用固定会话、用户消息及模型 ID，Go 校验最后一条提问和活动执行。适配层校验受理结果及 `removed_message_ids`，排空旧增量、清理内存旧回答，并发布按新执行标识关联的 `messages-removed` 客户端通知；通知参与同一有界队列和快照回放，查询期间的旧回答不能覆盖已移除状态。旧执行步骤及审计仍由 Go 保存。协议及 Go 服务实现保持现有契约。
 - `message.delta` 追加到指定消息和内容块，`message.updated` 使用完整消息替换本地内容，工具调用前的中间文本可以被清空。
 - 消息的 `created_at`、`completed_at` 经查询和完整消息事件分别映射为 `createdAt`、`completedAt`，以毫秒时间戳传递并校验；缺失或空值保留为未知，不用 `updated_at` 或客户端当前时间补造完成时间。

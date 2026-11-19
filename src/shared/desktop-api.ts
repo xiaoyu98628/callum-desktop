@@ -25,6 +25,7 @@ import type {
   ResendMessageInput,
   ResendMessageResult,
   CompactConversationInput,
+  ContinueConversationInput,
 } from './chat'
 import type {
   AttachmentInput,
@@ -127,6 +128,7 @@ export interface DesktopApi {
   changeFollowUp(input: FollowUpChange): Promise<ChatResult<FollowUpItem>>
   startFollowUp(input: FollowUpStart): Promise<ChatResult<SendMessageResult>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
+  continueConversation(input: ContinueConversationInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
   compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>

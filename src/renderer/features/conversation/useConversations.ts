@@ -145,6 +145,11 @@ function createConversations() {
       state.detail?.runs.find(isActiveRun) ??
       null,
   )
+  const continuableRun = computed(() => {
+    if (state.historical || activeRun.value) return null
+    const run = state.detail?.runs.findLast((item) => !item.compaction)
+    return run && (run.status === 'cancelled' || run.status === 'interrupted') ? run : null
+  })
   const followUps = ref<FollowUpItem[]>([])
   const followUpError = ref('')
   const followUpBusy = ref(false)
@@ -1194,6 +1199,46 @@ function createConversations() {
       if (state.compacting === conversationId) state.compacting = ''
     }
   }
+  async function continueTask(): Promise<void> {
+    const run = continuableRun.value
+    const modelId = state.modelId
+    if (
+      !run ||
+      run.conversationId !== state.selectedId ||
+      !modelId ||
+      state.loading ||
+      state.sending ||
+      state.resending ||
+      state.compacting ||
+      state.editing ||
+      state.executionSettingsSaving ||
+      state.serviceError ||
+      state.modelsLoading ||
+      state.modelError ||
+      draft.value.trim() ||
+      draftAttachments.value.length ||
+      draftSkill.value ||
+      followUpDraft.value
+    )
+      return
+    const token = selection
+    state.sending = true
+    state.error = ''
+    try {
+      unwrap(
+        await getDesktopApi().continueConversation({
+          conversationId: run.conversationId,
+          runId: run.id,
+          modelId,
+        }),
+      )
+      if (!disposed && token === selection) await openConversation(run.conversationId, true)
+    } catch (error) {
+      if (!disposed && token === selection) state.error = message(error)
+    } finally {
+      state.sending = false
+    }
+  }
   function startEditing(messageId: string): void {
     const target = lastUserMessage.value
     if (
@@ -1338,6 +1383,8 @@ function createConversations() {
     state,
     followUps,
     followUpDraft,
+    continuableRun,
+    continueTask,
     followUpError,
     followUpBusy,
     actOnFollowUp,

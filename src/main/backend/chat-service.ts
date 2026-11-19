@@ -63,6 +63,7 @@ import type {
   ResendMessageInput,
   ResendMessageResult,
   CompactConversationInput,
+  ContinueConversationInput,
 } from '../../shared/chat.ts'
 import {
   appendDelta,
@@ -1008,6 +1009,20 @@ export class ChatService {
       const conversationId = id(value.conversation_id)
       if (conversationId !== parsed.conversationId) throw new Error('压缩结果会话归属不匹配')
       return { conversationId, runId: id(value.run_id) }
+    })
+  }
+  async continueConversation(input: ContinueConversationInput): Promise<SendMessageResult> {
+    return this.gate.run(`continue:${input.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.continue', {
+          conversation_id: input.conversationId,
+          run_id: input.runId,
+          model_id: input.modelId,
+        }),
+      )
+      if (id(value.conversation_id) !== input.conversationId)
+        throw new Error('继续任务的受理结果归属不匹配。')
+      return { conversationId: input.conversationId, runId: id(value.run_id) }
     })
   }
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
