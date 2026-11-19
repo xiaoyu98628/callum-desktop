@@ -195,7 +195,9 @@ function createConversations() {
   const lastUserMessage = computed(() =>
     state.historical
       ? null
-      : (state.detail?.messages.findLast((item) => item.role === 'user') ?? null),
+      : (state.detail?.messages.findLast(
+          (item) => item.role === 'user' && item.steeringOrder === undefined,
+        ) ?? null),
   )
   const editUnavailable = computed(
     () =>
@@ -459,6 +461,10 @@ function createConversations() {
       state.detail.messages = state.detail.messages.filter(
         (item) => !change.value.messageIds.includes(item.id),
       )
+      if (change.value.steeringRequeued) {
+        followUpError.value = '本轮引导未完成，消息已退回待发区。'
+        void loadFollowUps()
+      }
       return
     }
     if (

@@ -1,3 +1,4 @@
+import { compareMessages } from '../../shared/chat.ts'
 import { followUpFromRpc } from '../../shared/follow-up.ts'
 import type {
   FollowUpInput,
@@ -635,7 +636,7 @@ export class ChatService {
     for (const message of this.messages.values())
       if (message.conversationId === conversationId)
         result.messages = upsert(result.messages, message)
-    result.messages.sort((a, b) => a.sequence - b.sequence)
+    result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     result.revision = this.revision
     return result
@@ -724,11 +725,17 @@ export class ChatService {
     const result = await this.historyReader.page(conversationId, beforeRunId)
     for (const { change } of this.since(start)) {
       if (change.kind === 'service') throw new Error(change.error)
-      if (
-        change.kind === 'messages-removed' &&
-        change.value.messageIds.some((id) => result.messages.some((message) => message.id === id))
-      )
-        throw new Error('历史已被编辑，请回到最新消息后重新读取。')
+      if (change.kind === 'messages-removed') {
+        if (change.value.steeringRequeued) {
+          result.messages = result.messages.filter(
+            (message) => !change.value.messageIds.includes(message.id),
+          )
+        } else if (
+          change.value.messageIds.some((id) => result.messages.some((message) => message.id === id))
+        ) {
+          throw new Error('历史已被编辑，请回到最新消息后重新读取。')
+        }
+      }
       if (change.kind === 'message') {
         if (
           result.messages.some(
@@ -742,7 +749,7 @@ export class ChatService {
       if (change.kind === 'run' && result.runs.some((run) => run.id === change.value.id))
         result.runs = upsert(result.runs, change.value)
     }
-    result.messages.sort((a, b) => a.sequence - b.sequence)
+    result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.id.localeCompare(b.id))
     result.revision = this.revision
     return result
@@ -1085,7 +1092,17 @@ export class ChatService {
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
-    if (method === 'conversation.follow_ups_updated') {
+    if (method === 'conversation.steering_requeued') {
+      this.publish({
+        kind: 'messages-removed',
+        value: {
+          id: id(p.run_id),
+          conversationId: id(p.conversation_id),
+          messageIds: array(p.removed_message_ids, id),
+          steeringRequeued: true,
+        },
+      })
+    } else if (method === 'conversation.follow_ups_updated') {
       const conversationId = id(p.conversation_id)
       this.publish({ kind: 'follow-ups', value: { id: conversationId, conversationId } })
     } else if (method === 'conversation.context_usage.updated') {
@@ -1098,8 +1115,10 @@ export class ChatService {
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)
       this.checkOwner(p, message)
-      this.messages.set(message.id, message)
-      this.dirty.delete(message.id)
+      if (message.steeringOrder === undefined) {
+        this.messages.set(message.id, message)
+        this.dirty.delete(message.id)
+      }
       this.publish({ kind: 'message', value: message })
     } else if (method === 'step.created' || method === 'step.updated') {
       let step = stepFromRpc(p.step)

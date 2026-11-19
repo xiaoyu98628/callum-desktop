@@ -96,7 +96,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 「常规」通过固定 IPC 读写 `settings.get` 和 `settings.update` 的 `general` 组，由 Go 持久化到 `app_settings`。客户端携带读取到的 revision 保存，冲突后重新读取。桌面只在数据库记录仍为版本 1 的默认排队时迁入旧的本地引导偏好，成功后清理旧键。
 
-主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。发送附件复用消息暂存过程，Go 在回复前将文件移入持久保管目录。客户端收到 `conversation.follow_ups_updated` 及执行终态后刷新队列。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
+主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按 `steering_after_step` 插入所属调用过程，同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
 
 ## 步骤查询与输出
 

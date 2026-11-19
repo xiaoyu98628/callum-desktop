@@ -84,11 +84,20 @@ export interface ChatMessage {
   conversationId: string
   runId: string
   sequence: number
+  steeringOrder?: number
+  steeringAfterStep?: number
   role: 'user' | 'assistant'
   content: ContentBlock[]
   status: string
   createdAt: number | null
   completedAt: number | null
+}
+/** 同一序号下，引导消息按受理顺序显示在所属回答前。 */
+export function compareMessages(a: ChatMessage, b: ChatMessage): number {
+  if (a.sequence !== b.sequence) return a.sequence - b.sequence
+  if (a.steeringOrder === undefined) return b.steeringOrder === undefined ? 0 : 1
+  if (b.steeringOrder === undefined) return -1
+  return a.steeringOrder - b.steeringOrder || a.id.localeCompare(b.id)
 }
 export type RunStatus =
   | 'pending'
@@ -124,6 +133,7 @@ export interface ChatStep {
   name: string
   purpose: string
   status: RunStatus
+  steered?: true
   input: string
   inputTruncated: boolean
   error: string | null
@@ -213,7 +223,7 @@ export type ChatChange =
   | { kind: 'message'; value: ChatMessage }
   | {
       kind: 'messages-removed'
-      value: { id: string; conversationId: string; messageIds: string[] }
+      value: { id: string; conversationId: string; messageIds: string[]; steeringRequeued?: true }
     }
   | { kind: 'step'; value: ChatStep }
   | { kind: 'run'; value: ChatRun; persisted: boolean }
@@ -243,7 +253,7 @@ export interface ConversationDetail {
   warning: string | null
   history?: { beforeRunId: string; hasMore: boolean }
 }
-/** 消息和独立执行共用游标，单页最多 25 个执行、50 条消息。 */
+/** 消息和独立执行共用游标，单页最多 25 个执行、200 条含引导的消息。 */
 export interface ConversationHistory {
   messages: ChatMessage[]
   runs: ChatRun[]
@@ -443,11 +453,18 @@ export function parseWorkspacePage(value: unknown): WorkspacePage {
 export function parseMessage(value: unknown): ChatMessage {
   const v = record(value)
   if (v.role !== 'user' && v.role !== 'assistant') throw new Error('消息角色无效')
+  if (v.steeringOrder !== undefined && v.role !== 'user') throw new Error('引导角色无效')
+  if (v.steeringAfterStep !== undefined && v.steeringOrder === undefined)
+    throw new Error('引导位置缺少消息归属')
   return {
     id: id(v.id),
     conversationId: id(v.conversationId),
     runId: id(v.runId),
     sequence: integer(v.sequence, 1),
+    ...(v.steeringOrder === undefined ? {} : { steeringOrder: integer(v.steeringOrder, 1) }),
+    ...(v.steeringAfterStep === undefined
+      ? {}
+      : { steeringAfterStep: integer(v.steeringAfterStep, 0) }),
     role: v.role,
     content: array(v.content, (item) => {
       const b = record(item)
@@ -555,6 +572,9 @@ export function parseStep(value: unknown): ChatStep {
     name: string(v.name),
     purpose: string(v.purpose),
     status,
+    ...(v.steered === true && v.type === 'model_call' && status === 'cancelled'
+      ? { steered: true }
+      : {}),
     input,
     inputTruncated: v.inputTruncated,
     error: v.error === null ? null : string(v.error),
@@ -760,7 +780,9 @@ export function parseConversationHistory(value: unknown): ConversationHistory {
   const messages = array(v.messages, parseMessage),
     runs = array(v.runs, parseRun)
   if (
-    messages.length > 50 ||
+    messages.length > 200 ||
+    messages.filter((message) => message.steeringOrder === undefined).length > 50 ||
+    new Set(messages.map((message) => message.id)).size !== messages.length ||
     runs.length > 25 ||
     (cursor.hasMore && !runs.length) ||
     cursor.beforeRunId !== (runs[0]?.id ?? '') ||
@@ -773,7 +795,8 @@ export function parseConversationHistory(value: unknown): ConversationHistory {
       (message, index) =>
         !runs.some(
           (run) => run.id === message.runId && run.conversationId === message.conversationId,
-        ) || message.sequence <= (messages[index - 1]?.sequence ?? 0),
+        ) ||
+        (index > 0 && compareMessages(messages[index - 1]!, message) >= 0),
     )
   )
     throw new Error('历史分页顺序或归属无效')
@@ -894,6 +917,7 @@ export function parseChatEvent(value: unknown): ChatEvent {
             id: id(value.id),
             conversationId: id(value.conversationId),
             messageIds: array(value.messageIds, id),
+            ...(value.steeringRequeued === true ? { steeringRequeued: true } : {}),
           },
         },
       }

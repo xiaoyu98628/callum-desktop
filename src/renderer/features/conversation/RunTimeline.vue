@@ -10,7 +10,7 @@ import {
   SearchIcon,
   SquareTerminalIcon,
 } from '@lucide/vue'
-import type { ChatRun, ChatStep, StepDetails } from '@shared/chat'
+import type { ChatMessage, ChatRun, ChatStep, StepDetails } from '@shared/chat'
 import {
   STEP_PAGE_SIZE,
   commandStepInput,
@@ -37,6 +37,7 @@ const props = defineProps<{
   connected: boolean
   expanded: boolean
   active: boolean
+  steering: ChatMessage[]
 }>()
 const emit = defineEmits<{ changed: []; inspect: []; expand: [value: boolean] }>()
 const showContent = computed(() => props.active || props.expanded)
@@ -67,7 +68,21 @@ const visible = computed(() =>
           failures.value[step.id])),
   ),
 )
-const items = computed(() => groupTimeline(visible.value))
+const items = computed(() => {
+  const first = rows.value[0]?.sequence ?? 0
+  const last = rows.value.at(-1)?.sequence ?? 0
+  const steering = props.steering
+    .filter((message) => {
+      const anchor = message.steeringAfterStep ?? Infinity
+      return (!hasPrevious.value || anchor >= first - 1) && (!hasMore.value || anchor <= last)
+    })
+    .sort(
+      (a, b) =>
+        (a.steeringAfterStep ?? Infinity) - (b.steeringAfterStep ?? Infinity) ||
+        (a.steeringOrder ?? 0) - (b.steeringOrder ?? 0),
+    )
+  return groupTimeline(visible.value, steering)
+})
 const currentGroupId = computed(() => {
   if (!props.active) return null
   const latest = [...rows.value, ...props.snapshots]
@@ -685,6 +700,7 @@ onScopeDispose(() => {
             :status="compactionStatus(item.steps, connected, run?.status ?? null)"
             :data-step-id="item.steps[0]?.id"
           />
+          <slot v-else-if="item.kind === 'steering'" name="steering" :message="item.message" />
           <OperationGroup
             v-else
             :group="item"

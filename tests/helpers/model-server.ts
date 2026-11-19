@@ -30,6 +30,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   const approvalContinuations = new Set<() => void>()
   const processContinuations = new Set<() => void>()
   const streamingResponses = new Set<ServerResponse>()
+  const steeredResponses = new Set<ServerResponse>()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
@@ -229,6 +230,30 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
           ],
         })
         finish(response, 'tool_calls')
+        return
+      }
+      if (text === '详细分析原始问题') {
+        emit(response, { reasoning_content: '按原要求分析，已收到第一段资料。' })
+        emit(response, { content: '这是切换前已输出的草稿。' })
+        response.once('close', () => {
+          cancelled++
+        })
+        return
+      }
+      if (text.endsWith('把回答改成三条风险') && text.includes('较新的明确要求')) {
+        if (
+          !messages.some(
+            (message) => message.role === 'user' && message.content === '详细分析原始问题',
+          )
+        ) {
+          response.destroy()
+          return
+        }
+        steeredResponses.add(response)
+        emit(response, { reasoning_content: '收到引导，正在核对三条风险。' })
+        response.once('close', () => {
+          steeredResponses.delete(response)
+        })
         return
       }
       if (text === '思考等待' || text === '思考长内容') {
@@ -751,6 +776,13 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     finishStream() {
       for (const response of streamingResponses) finish(response)
       streamingResponses.clear()
+    },
+    finishSteeredAnswer() {
+      for (const response of steeredResponses) {
+        emit(response, { content: '按引导调整为三条风险：范围、成本、交付。' })
+        finish(response)
+      }
+      steeredResponses.clear()
     },
     finishMarkdown() {
       for (const continuation of [...markdownContinuations]) continuation()

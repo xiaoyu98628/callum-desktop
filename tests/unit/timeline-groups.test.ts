@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { ChatStep, RunStatus } from '../../src/shared/chat.ts'
+import type { ChatMessage, ChatStep, RunStatus } from '../../src/shared/chat.ts'
 import type { TimelineStep } from '../../src/shared/timeline-window.ts'
 import { TimelineWindow } from '../../src/shared/timeline-window.ts'
 import {
@@ -63,7 +63,9 @@ test('两段概述之间的连续操作合并为一组，文字和操作顺序�
     ['model', 'operations', 'model', 'operations', 'model'],
   )
   assert.deepEqual(
-    items.flatMap((item) => (item.kind === 'model' ? [item.step] : item.steps)),
+    items.flatMap((item) =>
+      item.kind === 'steering' ? [] : item.kind === 'model' ? [item.step] : item.steps,
+    ),
     source,
   )
   assert.equal(items[1]?.kind === 'operations' && items[1].steps.length, 2)
@@ -71,6 +73,33 @@ test('两段概述之间的连续操作合并为一组，文字和操作顺序�
   assert.equal(source.length, 6)
   assert.deepEqual(groupTimeline([]), [])
   assert.equal(groupTimeline([step(1), step(2)]).length, 1)
+})
+
+test('引导按锚点插入顺序，同位置的引导不会并入操作组', () => {
+  const first: ChatMessage = {
+    id: 'steer-1',
+    conversationId: 'conversation',
+    runId: 'run',
+    sequence: 2,
+    steeringOrder: 1,
+    steeringAfterStep: 2,
+    role: 'user',
+    content: [{ type: 'text', text: '调整要求', path: '' }],
+    status: 'running',
+    createdAt: 1,
+    completedAt: null,
+  }
+  const second = { ...first, id: 'steer-2', steeringOrder: 2 }
+  const items = groupTimeline([model(1), step(2), step(3), model(4)], [first, second])
+  assert.deepEqual(
+    items.map((item) => item.kind),
+    ['model', 'operations', 'steering', 'steering', 'operations', 'model'],
+  )
+  assert.deepEqual(
+    items.filter((item) => item.kind === 'steering').map((item) => item.message),
+    [first, second],
+  )
+  assert.equal(new Set(items.map((item) => item.id)).size, items.length)
 })
 
 test('跨批长组保持身份，前后读取后概述边界仍正确', async () => {
@@ -186,7 +215,9 @@ test('连续压缩独立成行，不进入工具分组，阶段顺序与原始�
   assert.ok(compressed.kind === 'compaction')
   assert.equal(compressed.steps.length, 2)
   assert.deepEqual(
-    items.flatMap((item) => (item.kind === 'model' ? [item.step] : item.steps)),
+    items.flatMap((item) =>
+      item.kind === 'steering' ? [] : item.kind === 'model' ? [item.step] : item.steps,
+    ),
     source,
   )
   assert.equal(new Set(items.map((item) => item.id)).size, items.length)

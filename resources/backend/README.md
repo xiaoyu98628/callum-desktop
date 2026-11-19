@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `39c65ce630d525e196a49fe30c0a2c2ac197d1240604d16b4d9fca3bbd8e3234`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `0ba9aeaeea703b03acf95a9de1c162512f4559bca9dc09bafbadf15aef8cb9ea`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `a36dcfaf7804e6c3c19fb9c881440b45cfd218622add3dcf4a5ec5d2d2338c93` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `0b35fd1bb05d6e324222529a3650e3a4a147ec9e471853d12d3bb7d4bc6a92b9` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `34d9355e2b41fff3375c1383b7b8fbb8751db4ccccae5793e80337c2832e1949` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `eac46653af78b5f3ee8a44ce137398957c6f52964a2c8237cf339813beb67ccd` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `3084113c62945a388f4625d978f6cd970f0e4b992abc8fb57e90a213659d20b3` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `85462611e60be1cecae740efe62d0d27a6af852f12bf5df6890a1bd11511742b` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `42513ae68d6965c95fa453427b13e3b47c1fea510e8438655098f53df482c841` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `987dd0e303c3ff945d43d24d2408063031ea11f914e81b3e08390719ce9b0b7f` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
