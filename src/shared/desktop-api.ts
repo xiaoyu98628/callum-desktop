@@ -1,3 +1,4 @@
+import type { McpRequest, McpResponse } from './mcp.ts'
 import type { FollowUpInput, FollowUpItem, FollowUpChange, FollowUpStart } from './follow-up.ts'
 import type {
   ChatEvent,
@@ -64,6 +65,7 @@ export interface DesktopApi {
   copyCode(text: string): Promise<ChatResult<boolean>>
   copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
+  mcp(input: McpRequest): Promise<ChatResult<McpResponse>>
   getGeneralSettings(): Promise<ChatResult<GeneralSettings>>
   updateGeneralSettings(input: GeneralSettings): Promise<ChatResult<GeneralSettings>>
   getExecutionSettings(): Promise<ChatResult<ExecutionSettings>>

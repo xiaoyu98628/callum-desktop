@@ -92,7 +92,13 @@ const test = base.extend<{
     try {
       application = await playwright._electron.launch({
         args: [projectRoot],
-        env: { ...process.env, CALLUM_USER_DATA_DIR: profile, CALLUM_TEST_BACKGROUND: '1' },
+        env: {
+          ...process.env,
+          CALLUM_USER_DATA_DIR: profile,
+          CALLUM_TEST_BACKGROUND: '1',
+          // 桌面回归必须启动仓库中的随附程序，即使开发者设置了联调覆盖路径。
+          CALLUM_BACKEND_EXECUTABLE: '',
+        },
       })
       application.on('close', () => {
         closed = true
@@ -183,6 +189,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'copyMessage',
     'openWebLink',
     'getModelCatalog',
+    'mcp',
     'getGeneralSettings',
     'updateGeneralSettings',
     'getExecutionSettings',
@@ -7393,4 +7400,104 @@ test.describe('上下文压缩异常状态', () => {
       ).toBe(false)
     })
   }
+})
+
+test.describe('随附 Go 服务的 MCP 回归', () => {
+  test.use({ withModel: true })
+
+  testOnMacOS('MCP 设置启动随附 Go 服务并完成工具审批', async ({ desktop, profile }) => {
+    test.setTimeout(75_000)
+    const fixture = join(profile, 'mcp-fixture.mjs')
+    await writeFile(
+      fixture,
+      `import { createInterface } from 'node:readline'
+const input = createInterface({ input: process.stdin })
+for await (const line of input) {
+  const request = JSON.parse(line)
+  if (!Object.hasOwn(request, 'id')) continue
+  let result
+  if (request.method === 'initialize') {
+    result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+  } else if (request.method === 'tools/list') {
+    result = { tools: [{ name: 'echo', description: '受控回显', inputSchema: { type: 'object' } }] }
+  } else if (request.method === 'tools/call' && request.params.name === 'echo') {
+    result = { content: [{ type: 'text', text: 'mcp-bundled-result' }] }
+  }
+  const response = result ? { result } : { error: { code: -32601, message: 'Method not found' } }
+  console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...response }))
+}`,
+      { mode: 0o600 },
+    )
+    const page = await desktop.firstWindow()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: 'MCP', exact: true }).click()
+    await expect(page.getByText('暂无 MCP 服务。', { exact: false })).toBeVisible()
+    const parentId = await desktop.evaluate(() => process.pid)
+    expect(await findTestBackend(parentId, await realpath(profile))).toBeGreaterThan(0)
+    const add = page.getByRole('button', { name: '添加服务' })
+    const editor = page.getByRole('textbox', { name: 'MCP JSON', exact: true })
+    const save = page.getByRole('button', { name: '保存', exact: true })
+    const draft = JSON.stringify({
+      mcpServers: {
+        本机回显: { command: process.execPath, args: [fixture] },
+        远程配置: {
+          type: 'http',
+          url: 'https://example.com/mcp',
+          headers: { Authorization: 'Bearer isolated-mcp-token' },
+        },
+      },
+    })
+    await add.click()
+    await editor.fill('{')
+    await save.click()
+    await expect(page.getByRole('alert')).toContainText('MCP JSON 格式无效')
+    await editor.fill(draft)
+    await save.click()
+    await expect(page.getByRole('alert')).toContainText('请选择要保存的服务')
+    await page.getByLabel('要保存的服务').selectOption('远程配置')
+    await save.click()
+    const remote = page.getByRole('article').filter({ hasText: '远程配置' })
+    await expect(remote).toContainText('已配置访问凭据')
+    await remote.getByRole('button', { name: '编辑', exact: true }).click()
+    await expect(editor).toHaveValue(/https:\/\/example\.com\/mcp/)
+    await expect(editor).not.toHaveValue(/isolated-mcp-token/)
+    await expect(page.getByText('已保存访问令牌。', { exact: false })).toBeVisible()
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await add.click()
+    await editor.fill(draft)
+    await page.getByLabel('要保存的服务').selectOption('本机回显')
+    await save.click()
+    const local = page.getByRole('article').filter({ hasText: '本机回显' })
+    await page.getByRole('button', { name: '测试连接' }).click()
+    await expect(page.getByRole('alertdialog')).toContainText(process.execPath)
+    await page.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(page.getByRole('checkbox', { name: /echo/ })).toBeVisible()
+    await page.getByRole('checkbox', { name: /echo/ }).check()
+    await page.getByRole('button', { name: '保存工具选择' }).click()
+    await expect(page.getByText('工具选择已保存。')).toBeVisible()
+    await local.getByRole('button', { name: '启用', exact: true }).click()
+    await page.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停用', exact: true })).toBeVisible()
+    const stored = await page.evaluate(() => window.callum.mcp({ action: 'list' }))
+    expect(stored).toMatchObject({
+      ok: true,
+      value: {
+        servers: [
+          { name: '远程配置', enabled: false, auth: 'token', authorized: true },
+          { name: '本机回显', enabled: true, allowed_tools: ['echo'] },
+        ],
+      },
+    })
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('MCP 回归：执行回显')
+    await input.press('Enter')
+    const approval = page.getByRole('region', { name: '工具审批', exact: true })
+    await expect(approval.getByRole('heading', { name: '允许调用 echo？' })).toBeVisible()
+    await expect(approval).toContainText('本机回显')
+    await expect(approval).toContainText('bundled-fixture')
+    await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
+    await expect(page.getByText('随附 MCP 工具已完成。', { exact: true })).toBeVisible()
+  })
 })

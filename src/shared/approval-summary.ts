@@ -9,6 +9,7 @@ export interface ApprovalSummary {
   fields: SummaryField[]
   recognized: boolean
   executionNotice?: string
+  mcpTool?: string
 }
 
 /** 摘要只读取服务端固定快照中的展示字段；完整原文仍由面板提供，不据此生成审批请求。 */
@@ -19,6 +20,7 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
     const request = record(JSON.parse(snapshot) as unknown)
     const fields: SummaryField[] = []
     let executionNotice: string | undefined
+    let mcpTool: string | undefined
     const add = (label: string, value: unknown): void => {
       if (typeof value === 'string' && value) fields.push({ label, value })
     }
@@ -55,6 +57,13 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
     }
     if (request.details !== undefined && request.details !== null) {
       const details = record(request.details)
+      if (details.kind === 'mcp' && typeof details.tool_name === 'string') {
+        mcpTool = details.tool_name
+        add('MCP 服务', details.server_name)
+        add('实际目标', details.target)
+        add('工具参数', JSON.stringify(request.arguments, null, 2))
+        executionNotice = '批准后将参数交给该 MCP 服务处理。本次批准仅用于当前调用。'
+      }
       add('可执行文件', details.executable)
       add('工作目录', details.cwd)
       if (details.execution_boundary != null) {
@@ -127,6 +136,7 @@ export function approvalSummary(snapshot: string): ApprovalSummary {
       description: typeof request.summary === 'string' ? request.summary : '',
       fields,
       recognized: hasLocation && (request.plan == null || recognizedPlan),
+      ...(mcpTool ? { mcpTool } : {}),
       ...(executionNotice ? { executionNotice } : {}),
     }
   } catch {

@@ -1,7 +1,7 @@
 # Callum Desktop
 
 Callum 的 Electron 桌面客户端，使用 TypeScript、Vue 3 和 shadcn-vue。
-客户端由主进程管理随附 Go 服务，通过 stdio JSON-RPC 使用对话、模型及工具能力。
+客户端由主进程管理 Go 服务，通过 stdio JSON-RPC 使用对话、模型及工具能力。设置中可管理本地 stdio 和远程 Streamable HTTP MCP 服务。
 
 ## 功能概览
 

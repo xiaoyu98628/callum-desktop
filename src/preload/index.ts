@@ -1,3 +1,4 @@
+import { parseMcpRequest, parseMcpResponse } from '../shared/mcp'
 import { parseFollowUpItem } from '../shared/follow-up'
 import { contextBridge, ipcRenderer } from 'electron'
 import { parseAppInfo, parseServiceState } from '../shared/desktop-api'
@@ -71,6 +72,12 @@ const desktopApi: DesktopApi = {
   },
   async getModelCatalog() {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.getModelCatalog), parseCatalog)
+  },
+  async mcp(input) {
+    const request = parseMcpRequest(input)
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.mcp, request), (value) =>
+      parseMcpResponse(request.action, value),
+    )
   },
   async getGeneralSettings() {
     return parseResult(

@@ -80,6 +80,7 @@ import {
 import { RpcClient, RpcConnectionError, RpcError } from './rpc-client.ts'
 import { resolveResourceTarget, resolveRuntimeDirectory } from './runtime-assets.ts'
 import { ModelCatalog } from './model-catalog.ts'
+import { McpService } from './mcp-service.ts'
 import {
   boundSteps,
   STEP_PAGE_SIZE,
@@ -135,9 +136,11 @@ function startupError(error: unknown, phase: string): string {
 
 /** 应用持有服务；RPC 细节、增量装配、快照一致性均止于此处。 */
 export class ChatService {
+  readonly mcp = new McpService((method, params) => this.request(method, params))
   readonly catalog = new ModelCatalog((method, params) => this.request(method, params))
   private client: RpcClient | null = null
   private ready: Promise<void>
+  private readonly developmentExecutable: string | undefined
   private readonly dataDirectory: string
   private readonly resourceRoot: string
   private retryTask: Promise<ServiceState> | null = null
@@ -182,7 +185,8 @@ export class ChatService {
   private installing = false
   private closeTask: Promise<void> | null = null
 
-  constructor(dataDirectory: string, resourceRoot: string) {
+  constructor(dataDirectory: string, resourceRoot: string, developmentExecutable?: string) {
+    this.developmentExecutable = developmentExecutable
     this.dataDirectory = dataDirectory
     this.resourceRoot = resourceRoot
     this.ready = this.initialize(dataDirectory, resourceRoot)
@@ -194,7 +198,8 @@ export class ChatService {
     try {
       if (!isAbsolute(dataDirectory)) throw new Error('服务数据目录必须是绝对路径')
       phase = 'platform'
-      const executable = resolveBackendExecutable(resourceRoot)
+      const executable = this.developmentExecutable ?? resolveBackendExecutable(resourceRoot)
+      if (!isAbsolute(executable)) throw new Error('开发服务程序路径必须是绝对路径')
       phase = 'executable'
       await access(executable, constants.X_OK)
       phase = 'runtime'

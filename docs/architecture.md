@@ -209,3 +209,7 @@ electron-vite 构建主进程、preload 与界面到 `out/`。普通构建不生
 普通附件通过主进程暂存并交给 Go 保存。`open_attachment` 为本轮工具提供只读副本和私有可写工作目录，结束后回收。`publish_artifact` 保留交付副本到会话，Go 恢复执行时补齐成功步骤的附件引用。主进程通过固定的 `saveAttachment` IPC 入口按会话、消息版本及索引读取附件。分片一致且完整摘要校验通过后显示系统保存对话框，再以同目录临时文件完成写入和替换。
 
 四平台资源由客户端固定归档及校验值描述；开发准备生成 `resources/runtimes/unpacked/<平台>/`，它仅作为安装来源。实际运行固定在 `DataDir/runtimes/{python,node,git,native}`，Node 依赖位于 `node/node_modules/`，清单保存平台、版本和哈希。裸命令和技能查询共用 Python 3.12.14，审批及沙箱保持有效。
+
+## MCP 设置与审批
+
+MCP 设置页使用 preload 的 MCP 操作契约。主进程维护允许的动作及固定 RPC 映射，接收后端授权链接并打开系统浏览器。MCP 请求和审批使用同一 Go 进程。工具来源和参数取自 Go 固定的审批快照，桌面端提交用户决定。

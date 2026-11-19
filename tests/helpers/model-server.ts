@@ -158,6 +158,37 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      if (
+        messages.some(
+          (message) => message.role === 'user' && message.content === 'MCP 回归：执行回显',
+        )
+      ) {
+        if (role === 'tool') {
+          if (!text.includes('mcp-bundled-result')) throw new Error('未收到随附服务调用的 MCP 结果')
+          emit(response, { content: '随附 MCP 工具已完成。' })
+          finish(response, 'stop')
+          return
+        }
+        const mcp = array(input.tools, record)
+          .map((definition) => record(definition.function))
+          .find((definition) => string(definition.name).startsWith('mcp_'))
+        if (!mcp) throw new Error('随附服务未向模型提供已允许的 MCP 工具')
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-bundled-mcp',
+              type: 'function',
+              function: {
+                name: string(mcp.name),
+                arguments: JSON.stringify({ text: 'bundled-fixture' }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       const deliveredFollowUp =
         messages.findLast((message) => message.role === 'user')?.content === '读取已交付文件'
       if (deliveredFollowUp) {
