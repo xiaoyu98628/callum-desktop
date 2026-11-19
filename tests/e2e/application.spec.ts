@@ -159,10 +159,13 @@ async function prepareManualCompaction(page: Page, title: string, turns = 6) {
 }
 
 test('发布页面通过受限桥接读取真实应用信息', async ({ desktop }) => {
+  test.setTimeout(75_000)
   const page = await desktop.firstWindow()
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible({
+    timeout: 50_000,
+  })
   await expect(page.getByText('v0.1.0', { exact: true })).toBeVisible()
   expect(page.url()).toBe('callum://app/')
   const bridge = await page.evaluate(async () => ({
@@ -180,6 +183,8 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'copyMessage',
     'openWebLink',
     'getModelCatalog',
+    'getGeneralSettings',
+    'updateGeneralSettings',
     'getExecutionSettings',
     'updateExecutionSettings',
     'saveModelProvider',
@@ -212,7 +217,12 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'previewAttachment',
     'saveAttachment',
     'previewDraftAttachment',
+    'listFollowUps',
+    'addFollowUp',
+    'changeFollowUp',
+    'startFollowUp',
     'sendMessage',
+    'continueConversation',
     'compactConversation',
     'resendMessage',
     'cancelRun',
@@ -571,6 +581,422 @@ testOnMacOS('macOS 关闭窗口后激活可重新打开，IPC 仍然有效', asy
   })
   const reopened = await nextWindow
   await expect(reopened.getByText('v0.1.0', { exact: true })).toBeVisible()
+})
+
+test.describe('后续消息', () => {
+  test.describe.configure({ timeout: 90_000 })
+  test.use({ withModel: true })
+  test.skip(!supportedBackend, '需要随附的原生服务')
+
+  test('排队、单条引导和自动续发使用实际 Go 服务', async ({ desktop, modelEndpoint }, testInfo) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    async function openGeneral(): Promise<void> {
+      await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 50_000 })
+      await page.getByRole('button', { name: '常规', exact: true }).click()
+    }
+    const readSettings = () => page.evaluate(() => window.callum.getGeneralSettings())
+    const legacy = 'callum:follow-up-mode'
+    const queueSetting = page.getByRole('radio', { name: '排队', exact: true })
+    const steerSetting = page.getByRole('radio', { name: '引导', exact: true })
+    await openGeneral()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 1, followUpMode: 'queue' },
+    })
+    await page.evaluate((key) => localStorage.setItem(key, 'steer'), legacy)
+    await page.reload()
+    await openGeneral()
+    await expect(steerSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 2, followUpMode: 'steer' },
+    })
+    expect(await page.evaluate((key) => localStorage.getItem(key), legacy)).toBeNull()
+
+    await page.getByText('排队', { exact: true }).click()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 3, followUpMode: 'queue' },
+    })
+    await page.evaluate((key) => localStorage.setItem(key, 'steer'), legacy)
+    await page.reload()
+    await openGeneral()
+    await expect(queueSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 3, followUpMode: 'queue' },
+    })
+    expect(await page.evaluate((key) => localStorage.getItem(key), legacy)).toBeNull()
+
+    await queueSetting.press('ArrowRight')
+    await expect(steerSetting).toBeChecked()
+    expect(await readSettings()).toEqual({
+      ok: true,
+      value: { revision: 4, followUpMode: 'steer' },
+    })
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('详细分析原始问题')
+    await input.press('Enter')
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(stop).toBeEnabled()
+    const overview = page.getByRole('region', { name: '过程概述', exact: true }).first()
+    const oldReasoning = '按原要求分析，已收到第一段资料。'
+    const oldDraft = '这是切换前已输出的草稿。'
+    await expect(overview.getByText(oldReasoning, { exact: true })).toBeVisible()
+    await expect(page.getByText(oldDraft, { exact: true })).toBeVisible()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((item) => item.stream && item.text === '详细分析原始问题'),
+      )
+      .toBe(true)
+
+    const alternate = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter'
+    for (const message of ['把回答改成三条风险', '任务完成后发送', '应从队列删除']) {
+      await input.fill(message)
+      await input.press(alternate)
+      await expect(input).toHaveValue('')
+    }
+    const openLatest = async (): Promise<void> => {
+      const recent = page.getByRole('region', { name: '最近', exact: true })
+      await recent.getByRole('button', { name: '详细分析原始问题', exact: true }).click()
+    }
+    const frame = page.locator('[data-composer-frame]')
+    const queue = frame.getByRole('list', { name: '后续消息队列' })
+    const first = queue.getByRole('listitem').filter({ hasText: '把回答改成三条风险' })
+    await expect(queue.getByRole('listitem')).toHaveCount(3)
+    const button = first.getByRole('button', { name: '排队消息操作' })
+    await button.press('Enter')
+    await expect(page.getByRole('menuitem', { name: '编辑' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await queue
+      .getByRole('listitem')
+      .filter({ hasText: '应从队列删除' })
+      .getByRole('button', { name: '删除排队消息' })
+      .click()
+    await expect(queue.getByRole('listitem')).toHaveCount(2)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    const position = await frame.boundingBox()
+    const controls = await first.getByRole('button', { name: '排队消息操作' }).boundingBox()
+    expect(position).not.toBeNull()
+    expect(controls).not.toBeNull()
+    expect(controls!.x + controls!.width).toBeLessThanOrEqual(position!.x + position!.width)
+    await frame.screenshot({ path: testInfo.outputPath('queue-tray.png') })
+
+    await first.getByRole('button', { name: '引导', exact: true }).click()
+    const bubble = overview
+      .locator('[data-steering-message]')
+      .filter({ hasText: '把回答改成三条风险' })
+    await expect(first).toHaveCount(0)
+    await expect(bubble.locator('[data-user-message-text]')).toHaveText('把回答改成三条风险')
+    await expect(bubble.getByRole('status')).toHaveCount(0)
+    await bubble.screenshot({ path: testInfo.outputPath('steering-bubble.png') })
+    await expect.poll(() => modelEndpoint.cancelled).toBe(1)
+    await expect.poll(() => modelEndpoint.requests.filter((item) => item.stream).length).toBe(2)
+    await expect(stop).toBeEnabled()
+    await expect(overview.getByRole('button', { name: '思考过程', exact: true })).toHaveText(
+      '已按引导切换',
+    )
+    const resumedReasoning = overview.getByText('收到引导，正在核对三条风险。', { exact: true })
+    await expect(resumedReasoning).toBeVisible()
+    await expect(page.getByText(oldDraft, { exact: true })).toHaveCount(0)
+    const oldStep = overview.locator('[data-step-id]').filter({
+      has: page.getByRole('button', { name: '思考过程', exact: true }),
+    })
+    expect(
+      await oldStep.evaluate((node) => {
+        const bubble = node.parentElement?.querySelector('[data-steering-message]')
+        const newReasoning = bubble?.nextElementSibling
+        return !!(
+          bubble &&
+          newReasoning?.textContent?.includes('收到引导，正在核对三条风险。') &&
+          node.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING
+        )
+      }),
+    ).toBe(true)
+    await overview.getByRole('button', { name: '思考过程', exact: true }).click()
+    await expect(overview.getByText(oldReasoning, { exact: true })).toBeVisible()
+    await expect(overview.getByText(/执行未完成/)).toHaveCount(0)
+    await overview.screenshot({ path: testInfo.outputPath('steering-in-timeline.png') })
+    expect(modelEndpoint.requests.filter((item) => item.stream)[1]?.text).toContain(
+      '把回答改成三条风险',
+    )
+    await expect(queue.getByText('任务完成后发送')).toBeVisible()
+
+    await page.reload()
+    await openLatest()
+    await expect(bubble).toHaveCount(1)
+    await expect(bubble.getByRole('status')).toHaveCount(0)
+    modelEndpoint.finishSteeredAnswer()
+    await expect(
+      page.getByText('按引导调整为三条风险：范围、成本、交付。', { exact: true }),
+    ).toBeVisible()
+    const originalAnswer = page
+      .getByRole('article', { name: 'Callum 的回答', exact: true })
+      .filter({
+        hasText: '按引导调整为三条风险：范围、成本、交付。',
+      })
+    const toggle = originalAnswer.getByRole('button', { name: '调用过程', exact: true })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(0)
+    await toggle.click()
+    await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(1)
+    await expect(originalAnswer.locator('[data-steering-message]').getByRole('status')).toHaveCount(
+      0,
+    )
+    await toggle.click()
+    await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(0)
+    await expect
+      .poll(() => modelEndpoint.requests.filter((item) => item.stream).at(-1)?.text)
+      .toBe('任务完成后发送')
+    await expect(queue).toHaveCount(0)
+    await page.reload()
+    await openLatest()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(1)
+    await expect(
+      page.getByText('按引导调整为三条风险：范围、成本、交付。', { exact: true }),
+    ).toBeVisible()
+  })
+
+  test('命令期间发送的引导排在对应回复之前，展开和刷新后顺序一致', async ({
+    desktop,
+    profile,
+  }, testInfo) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const question = '核对目录后告诉我结果'
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('边运行命令边接收引导')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const overview = answer.getByRole('region', { name: '过程概述', exact: true })
+    await expect(
+      overview.getByRole('button', { name: /工具详情：(正在运行|命令已运行)/ }),
+    ).toBeVisible()
+
+    await input.fill(question)
+    await input.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+    const bubble = overview.locator('[data-steering-message]')
+    await expect(bubble.locator('[data-user-message-text]')).toHaveText(question)
+    await expect(bubble.getByRole('status')).toHaveCount(0)
+    await writeFile(join(profile, 'release-steering-command'), 'release')
+
+    const result = answer.getByText('按新问题核对完毕，目录可以访问。', { exact: true })
+    await expect(result).toBeVisible()
+    const toggle = answer.getByRole('button', { name: '调用过程', exact: true })
+    const verifyOrder = async (): Promise<void> => {
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await toggle.click()
+      await expect(bubble.locator('[data-user-message-text]')).toHaveText(question)
+      await expect(bubble.getByRole('status')).toHaveCount(0)
+      await expect(overview.getByText('收到问题，我先查看目录。', { exact: true })).toBeVisible()
+      await expect(overview.getByRole('button', { name: /工具详情：已查看目录/ })).toBeVisible()
+      expect(
+        await overview.evaluate((section) => {
+          const rows = [...section.querySelectorAll('.activity-rows > *')]
+          const before = rows.findIndex((row) =>
+            row.querySelector('[aria-label^="工具详情：已在 "], [aria-label^="工具详情：已运行"]'),
+          )
+          const questionRow = rows.findIndex((row) => row.matches('[data-steering-message]'))
+          const skipped = rows.findIndex((row) => row.textContent?.includes('读取文件失败'))
+          const commentary = rows.findIndex((row) =>
+            row.textContent?.includes('收到问题，我先查看目录。'),
+          )
+          const directory = rows.findIndex((row) =>
+            row.querySelector('[aria-label^="工具详情：已查看目录"]'),
+          )
+          return (
+            before >= 0 &&
+            before < questionRow &&
+            questionRow < skipped &&
+            skipped < commentary &&
+            commentary < directory
+          )
+        }),
+      ).toBe(true)
+      expect(
+        await result.evaluate((message) => {
+          const question = message.closest('article')?.querySelector('[data-steering-message]')
+          return (
+            !!question &&
+            !!(question.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+          )
+        }),
+      ).toBe(true)
+    }
+    await verifyOrder()
+    await answer.screenshot({
+      path: testInfo.outputPath('question-before-reply.png'),
+      animations: 'disabled',
+    })
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '边运行命令边接收引导', exact: true })
+      .click()
+    await expect(result).toBeVisible()
+    await verifyOrder()
+  })
+
+  test('模型无法处理引导时提示并退回待发区', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('详细分析原始问题')
+    await input.press('Enter')
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
+    await expect.poll(() => modelEndpoint.requests.some((item) => item.stream)).toBe(true)
+
+    await input.fill('引导失败后保留这条消息')
+    await input.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+    const tray = page.getByRole('region', { name: '后续消息', exact: true })
+    await expect(tray.getByRole('alert')).toContainText('消息已退回待发区')
+    await expect(tray.getByText('引导失败后保留这条消息', { exact: true })).toBeVisible()
+    await expect(page.locator('[data-steering-message]')).toHaveCount(0)
+  })
+
+  test('队列编辑回到输入框且旧内容不会随上一轮结束自动发送', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(stop).toBeEnabled()
+    await expect.poll(() => modelEndpoint.requests.some((item) => item.stream)).toBe(true)
+
+    for (const text of ['取出前的队首正文', '其余队列继续发送']) {
+      await input.fill(text)
+      await input.press('Enter')
+      await expect(input).toHaveValue('')
+    }
+    const queue = page.getByRole('list', { name: '后续消息队列' })
+    const first = queue.getByRole('listitem').filter({ hasText: '取出前的队首正文' })
+    await input.fill('原先输入框的草稿')
+    await first.getByRole('button', { name: '排队消息操作' }).click()
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
+    await expect(input).toHaveValue('取出前的队首正文')
+    await expect(input).toBeFocused()
+    await expect(first).toHaveCount(0)
+    await input.fill('编辑完成手动发送')
+
+    modelEndpoint.finishStream()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((item) => item.stream && item.text === '其余队列继续发送'),
+      )
+      .toBe(true)
+    await expect(stop).toHaveCount(0)
+    await expect(input).toHaveValue('编辑完成手动发送')
+    expect(
+      modelEndpoint.requests.some(
+        (item) => item.text === '取出前的队首正文' || item.text === '编辑完成手动发送',
+      ),
+    ).toBe(false)
+
+    await input.press('Enter')
+    await expect
+      .poll(
+        () =>
+          modelEndpoint.requests.filter((item) => item.stream && item.text === '编辑完成手动发送')
+            .length,
+      )
+      .toBe(1)
+    await expect(input).toHaveValue('原先输入框的草稿')
+    expect(modelEndpoint.requests.some((item) => item.text === '取出前的队首正文')).toBe(false)
+  })
+
+  test('单一输入按钮切换发送与停止，重载后通过三角继续原任务', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const frame = page.locator('[data-composer-frame]')
+    const primary = frame.locator('[data-composer-primary]')
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('先读取文件再核对')
+    await expect(primary).toHaveAccessibleName('发送消息')
+    await input.press('Enter')
+    await expect(page.getByText('文件已读取，正在核对。', { exact: true })).toBeVisible()
+    await expect(primary).toHaveAccessibleName('停止生成')
+
+    await input.fill('核对结束后继续发出的队列')
+    await expect(primary).toHaveAccessibleName('排队发送')
+    await expect(frame.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    await primary.click()
+    await expect(
+      page.getByRole('list', { name: '后续消息队列' }).getByText('核对结束后继续发出的队列'),
+    ).toBeVisible()
+    await expect(primary).toHaveAccessibleName('停止生成')
+
+    await input.fill('稍后发送的输入草稿')
+    const timeline = page.getByRole('region', { name: '调用过程', exact: true }).last()
+    await timeline.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(primary).toHaveAccessibleName('发送消息')
+    await expect(input).toHaveValue('稍后发送的输入草稿')
+    await input.fill('')
+    await expect(primary).toHaveAccessibleName('继续任务')
+
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '先读取文件再核对', exact: true })
+      .click()
+    await expect(primary).toHaveAccessibleName('继续任务')
+    await expect(primary.locator('svg.lucide-play')).toHaveCount(1)
+    await primary.press('Enter')
+    await expect(page.getByText('已根据原有读取结果完成剩余核对。', { exact: true })).toBeVisible()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some(
+          (item) => item.stream && item.text === '核对结束后继续发出的队列',
+        ),
+      )
+      .toBe(true)
+    expect(
+      modelEndpoint.requests.filter((item) => item.stream && item.text === '继续任务'),
+    ).toHaveLength(1)
+    expect(modelEndpoint.requests.some((item) => item.text === '稍后发送的输入草稿')).toBe(false)
+  })
+
+  test('停止后保留待发消息并允许手动续发', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('思考等待')
+    await input.press('Enter')
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(stop).toBeEnabled()
+    await input.fill('手动继续的任务')
+    await input.press('Enter')
+    const queue = page.getByRole('list', { name: '后续消息队列' })
+    await expect(queue.getByText('手动继续的任务')).toBeVisible()
+    await stop.click()
+    await expect(stop).toHaveCount(0)
+    expect(modelEndpoint.requests.some((item) => item.text === '手动继续的任务')).toBe(false)
+    await queue.getByRole('button', { name: '发送队列', exact: true }).click()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((item) => item.stream && item.text === '手动继续的任务'),
+      )
+      .toBe(true)
+    await expect(queue).toHaveCount(0)
+  })
 })
 
 test.describe('Office 文件附件', () => {

@@ -1,3 +1,4 @@
+import { compareMessages } from '../../../shared/chat.ts'
 import type { ChatResult, ChatMessage } from '../../../shared/chat.ts'
 export function unwrap<T>(result: ChatResult<T>): T {
   if (!result.ok) throw new Error(result.error)
@@ -8,7 +9,7 @@ export function upsert<T extends { id: string }>(items: T[], item: T): T[] {
 }
 /** 界面保留有界的消息窗口；更早内容仍通过后端分页读取。 */
 export function boundMessages(messages: ChatMessage[]): ChatMessage[] {
-  const sorted = messages.toSorted((a, b) => a.sequence - b.sequence)
+  const sorted = messages.toSorted(compareMessages)
   const sizes = new Map<string, { chars: number; count: number }>()
   for (const message of sorted) {
     const value = sizes.get(message.runId) ?? { chars: 0, count: 0 }

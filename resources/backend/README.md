@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `1eeefb4045939aa021f94b237313f39dea9b3cbb7a9c27240de1e839cd318eac`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `790331a3ea2c4d84afcc99efc78d0fe17f2f6a6b1e854e5a2d71adcadc05f486`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `d0f9cdb89d8791e7e7e85bf79b3fefc63adcef8a2e65597a31e1c2b1e00aab35` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `f1b1a884ad354d8ea2788213a665ebb80f00b76b7fb8297baf4363c148f5bf3a` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `86330d0f453e20a1bb943ed900ff189f95a126e37585d0230925a67581a73f22` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `b0f646a73224ea3be969592e13668120901c8c373a5042f197e33a07015306a4` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `8c0ef18158107342c255d7869ebd1e47fda44a7a6582c2c885312ddabaf9e14d` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `95ba046ab871b75b6847b8111707c63249cc4147e4f239b2751707b99c3326e4` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `7f0b71c8cdcbd06dc4a70349570660f3a63bc24ad0d803ec891e2e96b2853343` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `f34c5143976b5c4c48c9e8e42c2ee9cbaeae4c47e7324c14d10ea3a6dab1d316` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -39,7 +39,9 @@ resources/backend/
 
 单项工具参数超过 16 KiB 时保留明确的工具名和已接收字节数，流式读取及时关闭；确认整批尚未执行且没有取消、传输或保存错误后，反馈模型拆分小补丁或使用脚本生成大文件。相同超限参数无进展时结束，不执行部分批次。`apply_patch` 定义版本为 `2`，同步提示单次参数容量；不提高资源边界、不重放已完成操作。
 
-当前随附程序使用数据库结构版本 `4`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1`、`2` 和 `3` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
+当前随附程序使用数据库结构版本 `6`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。版本 `5` 的旧队列表会被拒绝，原数据库文件保留。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
+
+随附服务为后续消息提供持久队列、附件保管和当前执行引导。支持 `conversation.continue` 显式继续最新停止或中断的任务，恢复原需求和已经保存的工具结果。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
 
 | 接入能力     | 随附程序基线与客户端约束                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -53,7 +55,7 @@ resources/backend/
 
 四平台程序支持托管图片、保留原图重发、按消息索引预览和草稿图片用量估算。会话图片保存在数据目录的 `attachments/` 下。
 
-图片输入由用户选择的 `models.model_type` 包含 `image` 启用，`models.capabilities.image_input` 只记录模型拥有的能力；未选中图片类型时不启用图片发送，普通文件选择和发送仍可用。客户端“输入类型”多选组固定保留文本，图片可选，保存时保留能力对象和未展示的其他类型。表结构版本保持 `4`，启动时不自动改写既有模型选择。
+图片输入由用户选择的 `models.model_type` 包含 `image` 启用，`models.capabilities.image_input` 只记录模型拥有的能力；未选中图片类型时不启用图片发送，普通文件选择和发送仍可用。客户端“输入类型”多选组固定保留文本，图片可选，保存时保留能力对象和未展示的其他类型。启动时保留既有模型选择。
 
 Go 的模块拆分、GORM 查询、压缩算法、审批判定及 ACL 回收细节由后端仓库 `docs/architecture.md`、`docs/storage.md`、`docs/context-compaction.md`、`docs/tools-and-approvals.md` 和 `docs/design/conversations.md` 维护；请求及通知以其 `docs/jsonrpc.md` 为准。客户端接入与平台验收边界见 [Go 服务接入](../../docs/backend-integration.md#联调与验证边界)。
 

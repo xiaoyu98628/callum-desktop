@@ -1,3 +1,11 @@
+import { compareMessages } from '../../shared/chat.ts'
+import { followUpFromRpc } from '../../shared/follow-up.ts'
+import type {
+  FollowUpInput,
+  FollowUpItem,
+  FollowUpChange,
+  FollowUpStart,
+} from '../../shared/follow-up.ts'
 import { access, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -55,6 +63,7 @@ import type {
   ResendMessageInput,
   ResendMessageResult,
   CompactConversationInput,
+  ContinueConversationInput,
 } from '../../shared/chat.ts'
 import {
   appendDelta,
@@ -80,6 +89,8 @@ import {
 import { StepOutput, readStepDetails } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
+import { generalSettingsFromRpc } from '../../shared/general-settings.ts'
+import type { GeneralSettings } from '../../shared/general-settings.ts'
 import { isManualCompactionStep } from '../../shared/manual-compaction.ts'
 import { ConversationHistoryReader } from './conversation-history.ts'
 import { WorkspaceCatalog } from './workspace-catalog.ts'
@@ -379,6 +390,20 @@ export class ChatService {
       revision: this.revision,
     }
   }
+  async generalSettings(): Promise<GeneralSettings> {
+    return generalSettingsFromRpc(await this.request('settings.get', { key: 'general' }))
+  }
+  async updateGeneralSettings(input: GeneralSettings): Promise<GeneralSettings> {
+    return this.gate.run('general-settings', async () =>
+      generalSettingsFromRpc(
+        await this.request('settings.update', {
+          key: 'general',
+          revision: input.revision,
+          value: { follow_up_mode: input.followUpMode },
+        }),
+      ),
+    )
+  }
   async executionSettings(): Promise<ExecutionSettings> {
     return executionSettingsFromRpc(await this.request('settings.get', { key: 'execution' }))
   }
@@ -612,7 +637,7 @@ export class ChatService {
     for (const message of this.messages.values())
       if (message.conversationId === conversationId)
         result.messages = upsert(result.messages, message)
-    result.messages.sort((a, b) => a.sequence - b.sequence)
+    result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     result.revision = this.revision
     return result
@@ -701,11 +726,17 @@ export class ChatService {
     const result = await this.historyReader.page(conversationId, beforeRunId)
     for (const { change } of this.since(start)) {
       if (change.kind === 'service') throw new Error(change.error)
-      if (
-        change.kind === 'messages-removed' &&
-        change.value.messageIds.some((id) => result.messages.some((message) => message.id === id))
-      )
-        throw new Error('历史已被编辑，请回到最新消息后重新读取。')
+      if (change.kind === 'messages-removed') {
+        if (change.value.steeringRequeued) {
+          result.messages = result.messages.filter(
+            (message) => !change.value.messageIds.includes(message.id),
+          )
+        } else if (
+          change.value.messageIds.some((id) => result.messages.some((message) => message.id === id))
+        ) {
+          throw new Error('历史已被编辑，请回到最新消息后重新读取。')
+        }
+      }
       if (change.kind === 'message') {
         if (
           result.messages.some(
@@ -719,7 +750,7 @@ export class ChatService {
       if (change.kind === 'run' && result.runs.some((run) => run.id === change.value.id))
         result.runs = upsert(result.runs, change.value)
     }
-    result.messages.sort((a, b) => a.sequence - b.sequence)
+    result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.id.localeCompare(b.id))
     result.revision = this.revision
     return result
@@ -884,6 +915,88 @@ export class ChatService {
     )
     return { conversationId: id(value.conversation_id), runId: id(value.run_id) }
   }
+  async followUps(conversationId: string): Promise<FollowUpItem[]> {
+    const items = array(
+      await this.request('conversation.follow_ups', { conversation_id: conversationId }),
+      followUpFromRpc,
+    )
+    if (items.length > 32 || items.some((item) => item.conversationId !== conversationId))
+      throw new Error('后续消息列表数据无效')
+    return items
+  }
+  async addFollowUp(input: FollowUpInput): Promise<FollowUpItem> {
+    const item = await this.withMessageContent(input, (content) =>
+      this.request('conversation.follow_up_add', {
+        conversation_id: input.conversationId,
+        model_id: input.modelId,
+        expected_run_id: input.expectedRunId,
+        mode: input.mode,
+        content,
+      }),
+    ).then(followUpFromRpc)
+    if (item.conversationId !== input.conversationId) throw new Error('后续消息归属不匹配')
+    return item
+  }
+  async changeFollowUp(input: FollowUpChange): Promise<FollowUpItem> {
+    const item = followUpFromRpc(
+      await this.request('conversation.follow_up_change', {
+        conversation_id: input.conversationId,
+        id: input.id,
+        revision: input.revision,
+        action: input.action,
+        expected_run_id: input.expectedRunId,
+        text: input.text,
+        model_id: input.modelId,
+      }),
+    )
+    if (item.conversationId !== input.conversationId || item.id !== input.id)
+      throw new Error('后续消息归属不匹配')
+    return item
+  }
+  async startFollowUp(input: FollowUpStart, afterRunId?: string): Promise<SendMessageResult> {
+    const value = record(
+      await this.request('conversation.follow_up_start', {
+        conversation_id: input.conversationId,
+        id: input.id,
+        revision: input.revision,
+        after_run_id: afterRunId,
+        text: input.text,
+        model_id: input.modelId,
+      }),
+    )
+    if (id(value.conversation_id) !== input.conversationId) throw new Error('后续执行归属不匹配')
+    return { conversationId: input.conversationId, runId: id(value.run_id) }
+  }
+  private async dispatchFollowUp(run: ChatRun): Promise<void> {
+    const connection = this.ready
+    try {
+      const attempted = new Set<string>()
+      while (connection === this.ready && attempted.size < 32) {
+        const item = (await this.followUps(run.conversationId)).find(
+          (item) => item.state === 'queued',
+        )
+        if (!item || connection !== this.ready || attempted.has(item.id)) return
+        attempted.add(item.id)
+        try {
+          await this.startFollowUp(
+            { id: item.id, conversationId: item.conversationId, revision: item.revision },
+            run.id,
+          )
+          return
+        } catch (error) {
+          // 取出和出队之间的事务冲突允许重新核对队首，避免让其余消息停在队列。
+          if (!(error instanceof RpcError) || error.code !== 1003) throw error
+        }
+      }
+    } catch {
+      // 受理冲突、容量不足或连接变化时，Go 事务仍保留队列。
+      if (connection === this.ready)
+        this.publish({
+          kind: 'follow-ups',
+          value: { id: run.conversationId, conversationId: run.conversationId },
+        })
+    }
+  }
   async compact(input: CompactConversationInput): Promise<SendMessageResult> {
     const parsed = parseCompactInput(input)
     return this.gate.run(`compact:${parsed.conversationId}`, async () => {
@@ -896,6 +1009,20 @@ export class ChatService {
       const conversationId = id(value.conversation_id)
       if (conversationId !== parsed.conversationId) throw new Error('压缩结果会话归属不匹配')
       return { conversationId, runId: id(value.run_id) }
+    })
+  }
+  async continueConversation(input: ContinueConversationInput): Promise<SendMessageResult> {
+    return this.gate.run(`continue:${input.conversationId}`, async () => {
+      const value = record(
+        await this.request('conversation.continue', {
+          conversation_id: input.conversationId,
+          run_id: input.runId,
+          model_id: input.modelId,
+        }),
+      )
+      if (id(value.conversation_id) !== input.conversationId)
+        throw new Error('继续任务的受理结果归属不匹配。')
+      return { conversationId: input.conversationId, runId: id(value.run_id) }
     })
   }
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {
@@ -998,7 +1125,20 @@ export class ChatService {
   }
   private receive(method: string, value: unknown): void {
     const p = record(value)
-    if (method === 'conversation.context_usage.updated') {
+    if (method === 'conversation.steering_requeued') {
+      this.publish({
+        kind: 'messages-removed',
+        value: {
+          id: id(p.run_id),
+          conversationId: id(p.conversation_id),
+          messageIds: array(p.removed_message_ids, id),
+          steeringRequeued: true,
+        },
+      })
+    } else if (method === 'conversation.follow_ups_updated') {
+      const conversationId = id(p.conversation_id)
+      this.publish({ kind: 'follow-ups', value: { id: conversationId, conversationId } })
+    } else if (method === 'conversation.context_usage.updated') {
       const value = contextUsageFromRpc(p.context_usage)
       if (value.conversationId !== id(p.conversation_id) || value.runId !== id(p.run_id))
         throw new Error('上下文占用通知归属不匹配')
@@ -1008,8 +1148,10 @@ export class ChatService {
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)
       this.checkOwner(p, message)
-      this.messages.set(message.id, message)
-      this.dirty.delete(message.id)
+      if (message.steeringOrder === undefined) {
+        this.messages.set(message.id, message)
+        this.dirty.delete(message.id)
+      }
       this.publish({ kind: 'message', value: message })
     } else if (method === 'step.created' || method === 'step.updated') {
       let step = stepFromRpc(p.step)
@@ -1133,6 +1275,12 @@ export class ChatService {
       this.flush()
       this.publish({ kind: 'run', value: run, persisted: p.persisted !== false })
       if (!isActiveRun(run)) {
+        this.publish({
+          kind: 'follow-ups',
+          value: { id: run.conversationId, conversationId: run.conversationId },
+        })
+        if (method === 'run.completed' && p.persisted !== false && run.status === 'completed')
+          void this.dispatchFollowUp(run)
         for (const [key, message] of this.messages)
           if (message.runId === run.id) this.messages.delete(key)
         this.runs.delete(run.id)

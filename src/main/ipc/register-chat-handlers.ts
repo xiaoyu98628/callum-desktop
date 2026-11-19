@@ -1,3 +1,4 @@
+import { parseFollowUpInput, parseFollowUpChange, parseFollowUpStart } from '../../shared/follow-up'
 import { dialog, ipcMain } from 'electron'
 import { basename } from 'node:path'
 import { dirname, join } from 'node:path'
@@ -12,6 +13,7 @@ import {
   parseSendInput,
   parseResendInput,
   parseCompactInput,
+  parseContinueInput,
   parseWorkspaceInput,
   parseWorkspaceChange,
   parseUserInputAnswer,
@@ -28,6 +30,7 @@ import { isTrustedRendererUrl } from '../security/renderer-policy'
 import { ChatEventDelivery } from './chat-event-delivery'
 import { parseModelInput, parseProviderInput } from '../../shared/models'
 import { parseExecutionSettings } from '../../shared/execution'
+import { parseGeneralSettings } from '../../shared/general-settings'
 import { parseContextUsageInput } from '../../shared/context-usage'
 
 export function registerChatHandlers(
@@ -237,6 +240,10 @@ export function registerChatHandlers(
     service.archivedConversations(pageOffset(offset)),
   )
   handle(IPC_CHANNELS.getModelCatalog, 0, () => service.catalog.list())
+  handle(IPC_CHANNELS.getGeneralSettings, 0, () => service.generalSettings())
+  handle(IPC_CHANNELS.updateGeneralSettings, 1, (input) =>
+    service.updateGeneralSettings(parseGeneralSettings(input)),
+  )
   handle(IPC_CHANNELS.getExecutionSettings, 0, () => service.executionSettings())
   handle(IPC_CHANNELS.updateExecutionSettings, 1, (input) =>
     service.updateExecutionSettings(parseExecutionSettings(input)),
@@ -323,6 +330,12 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.previewDraftAttachment, 1, (input) =>
     service.previewDraftAttachment(parseAttachments([input])[0]!),
   )
+  handle(IPC_CHANNELS.listFollowUps, 1, (conversationId) => service.followUps(id(conversationId)))
+  handle(IPC_CHANNELS.addFollowUp, 1, (input) => service.addFollowUp(parseFollowUpInput(input)))
+  handle(IPC_CHANNELS.changeFollowUp, 1, (input) =>
+    service.changeFollowUp(parseFollowUpChange(input)),
+  )
+  handle(IPC_CHANNELS.startFollowUp, 1, (input) => service.startFollowUp(parseFollowUpStart(input)))
   handle(IPC_CHANNELS.sendMessage, 1, (input) => service.send(parseSendInput(input)))
   handle(IPC_CHANNELS.getContextUsage, 1, (input) =>
     service.contextUsage(parseContextUsageInput(input)),
@@ -330,6 +343,9 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.listSkills, 0, () => service.listSkills())
   handle(IPC_CHANNELS.resendMessage, 1, (input) => service.resend(parseResendInput(input)))
   handle(IPC_CHANNELS.compactConversation, 1, (input) => service.compact(parseCompactInput(input)))
+  handle(IPC_CHANNELS.continueConversation, 1, (input) =>
+    service.continueConversation(parseContinueInput(input)),
+  )
   handle(IPC_CHANNELS.cancelRun, 1, (runId) => service.cancel(id(runId)))
   handle(IPC_CHANNELS.submitUserInput, 3, (inputId, runId, answer) =>
     service.submitUserInput(id(inputId), id(runId), parseUserInputAnswer(answer)),

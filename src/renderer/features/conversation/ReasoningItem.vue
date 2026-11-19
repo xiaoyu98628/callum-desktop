@@ -86,7 +86,13 @@ onScopeDispose(() => {
   >
     <template #label>
       <span :class="inProgress && connected ? 'activity-shimmer' : ''">{{
-        inProgress ? (connected ? '思考中' : '思考状态待核对') : '已思考'
+        inProgress
+          ? connected
+            ? '思考中'
+            : '思考状态待核对'
+          : step.steered
+            ? '已按引导切换'
+            : '已思考'
       }}</span>
     </template>
     <div
@@ -114,7 +120,10 @@ onScopeDispose(() => {
     <p v-if="step.reasoningTruncated" class="reasoning-notice">
       思考内容较长，展示已截取；完整记录保留在服务中。
     </p>
-    <p v-if="['cancelled', 'interrupted', 'failed'].includes(step.status)" class="reasoning-notice">
+    <p
+      v-if="!step.steered && ['cancelled', 'interrupted', 'failed'].includes(step.status)"
+      class="reasoning-notice"
+    >
       执行未完成，以上为已收到的部分思考内容。
     </p>
     <p v-if="inProgress && !connected" class="reasoning-notice">连接已断开，思考状态待核对。</p>

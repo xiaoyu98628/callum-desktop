@@ -1,3 +1,4 @@
+import type { FollowUpInput, FollowUpItem, FollowUpChange, FollowUpStart } from './follow-up.ts'
 import type {
   ChatEvent,
   StepPage,
@@ -24,6 +25,7 @@ import type {
   ResendMessageInput,
   ResendMessageResult,
   CompactConversationInput,
+  ContinueConversationInput,
 } from './chat'
 import type {
   AttachmentInput,
@@ -33,6 +35,7 @@ import type {
 } from './attachments'
 import type { ModelCatalog, ModelInput, ProviderInput } from './models'
 import type { ExecutionSettings } from './execution'
+import type { GeneralSettings } from './general-settings'
 import type { ContextUsage, ContextUsageInput } from './context-usage'
 import type { Skill } from './skills'
 
@@ -61,6 +64,8 @@ export interface DesktopApi {
   copyCode(text: string): Promise<ChatResult<boolean>>
   copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
+  getGeneralSettings(): Promise<ChatResult<GeneralSettings>>
+  updateGeneralSettings(input: GeneralSettings): Promise<ChatResult<GeneralSettings>>
   getExecutionSettings(): Promise<ChatResult<ExecutionSettings>>
   updateExecutionSettings(input: ExecutionSettings): Promise<ChatResult<ExecutionSettings>>
   getModelCatalog(): Promise<ChatResult<ModelCatalog>>
@@ -118,7 +123,12 @@ export interface DesktopApi {
   previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
   saveAttachment(input: AttachmentSaveInput): Promise<ChatResult<boolean>>
   previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>
+  listFollowUps(conversationId: string): Promise<ChatResult<FollowUpItem[]>>
+  addFollowUp(input: FollowUpInput): Promise<ChatResult<FollowUpItem>>
+  changeFollowUp(input: FollowUpChange): Promise<ChatResult<FollowUpItem>>
+  startFollowUp(input: FollowUpStart): Promise<ChatResult<SendMessageResult>>
   sendMessage(input: SendMessageInput): Promise<ChatResult<SendMessageResult>>
+  continueConversation(input: ContinueConversationInput): Promise<ChatResult<SendMessageResult>>
   resendMessage(input: ResendMessageInput): Promise<ChatResult<ResendMessageResult>>
   compactConversation(input: CompactConversationInput): Promise<ChatResult<SendMessageResult>>
   cancelRun(runId: string): Promise<ChatResult<boolean>>

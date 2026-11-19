@@ -30,6 +30,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
   const approvalContinuations = new Set<() => void>()
   const processContinuations = new Set<() => void>()
   const streamingResponses = new Set<ServerResponse>()
+  const steeredResponses = new Set<ServerResponse>()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
@@ -229,6 +230,121 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
           ],
         })
         finish(response, 'tool_calls')
+        return
+      }
+      if (text === '详细分析原始问题') {
+        emit(response, { reasoning_content: '按原要求分析，已收到第一段资料。' })
+        emit(response, { content: '这是切换前已输出的草稿。' })
+        response.once('close', () => {
+          cancelled++
+        })
+        return
+      }
+      if (text === '继续任务') {
+        if (
+          !messages.some((item) => item.role === 'user' && item.content === '先读取文件再核对') ||
+          !messages.some(
+            (item) =>
+              item.role === 'tool' &&
+              typeof item.content === 'string' &&
+              item.content.includes('controlled-file'),
+          )
+        )
+          throw new Error('续跑请求没有恢复原要求和读取结果')
+        emit(response, { content: '已根据原有读取结果完成剩余核对。' })
+        finish(response)
+        return
+      }
+      if (text === '先读取文件再核对') {
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'continue-read',
+              type: 'function',
+              function: {
+                name: 'read_file',
+                arguments: JSON.stringify({ path: fixturePath }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (role === 'tool' && last.tool_call_id === 'continue-read') {
+        emit(response, { content: '文件已读取，正在核对。' })
+        return
+      }
+      if (text === '边运行命令边接收引导') {
+        emit(response, { content: '先完成原本的检查命令。' })
+        const calls = [
+          {
+            name: 'run_command',
+            arguments: {
+              command: [
+                process.execPath,
+                '-e',
+                "const fs = require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0) }, 25); setTimeout(() => process.exit(1), 30000)",
+                join(dirname(fixturePath), 'release-steering-command'),
+              ],
+              cwd: dirname(fixturePath),
+            },
+          },
+          { name: 'read_file', arguments: { path: fixturePath } },
+        ]
+        emit(response, {
+          tool_calls: calls.map((call, index) => ({
+            index,
+            id: `steering-before-${index}`,
+            type: 'function',
+            function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+          })),
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (text.endsWith('核对目录后告诉我结果') && text.includes('较新的明确要求')) {
+        if (
+          messages.some(
+            (item) => item.role === 'tool' && item.tool_call_id === 'steering-directory',
+          )
+        ) {
+          emit(response, { content: '按新问题核对完毕，目录可以访问。' })
+          finish(response)
+          return
+        }
+        emit(response, { content: '收到问题，我先查看目录。' })
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'steering-directory',
+              type: 'function',
+              function: {
+                name: 'list_directory',
+                arguments: JSON.stringify({ path: dirname(fixturePath) }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (text.endsWith('把回答改成三条风险') && text.includes('较新的明确要求')) {
+        if (
+          !messages.some(
+            (message) => message.role === 'user' && message.content === '详细分析原始问题',
+          )
+        ) {
+          response.destroy()
+          return
+        }
+        steeredResponses.add(response)
+        emit(response, { reasoning_content: '收到引导，正在核对三条风险。' })
+        response.once('close', () => {
+          steeredResponses.delete(response)
+        })
         return
       }
       if (text === '思考等待' || text === '思考长内容') {
@@ -751,6 +867,13 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     finishStream() {
       for (const response of streamingResponses) finish(response)
       streamingResponses.clear()
+    },
+    finishSteeredAnswer() {
+      for (const response of steeredResponses) {
+        emit(response, { content: '按引导调整为三条风险：范围、成本、交付。' })
+        finish(response)
+      }
+      steeredResponses.clear()
     },
     finishMarkdown() {
       for (const continuation of [...markdownContinuations]) continuation()

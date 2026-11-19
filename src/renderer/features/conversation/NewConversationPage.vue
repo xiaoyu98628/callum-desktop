@@ -6,6 +6,7 @@ import {
   BoxIcon,
   LaptopIcon,
   LoaderCircleIcon,
+  PlayIcon,
   SparklesIcon,
   SquareIcon,
   XIcon,
@@ -43,7 +44,14 @@ import ComposerCommands from './ComposerCommands.vue'
 import { compactCommandId, useComposerCommands } from './useComposerCommands'
 import type { ContextUsageInput } from '@shared/context-usage'
 import ManualCompactionStatus from './ManualCompactionStatus.vue'
+import type { AppInfo } from '@shared/desktop-api'
+import { useFollowUpPreference } from '@/features/settings/useFollowUpPreference'
+import FollowUpQueue from './FollowUpQueue.vue'
+import type { FollowUpChange, FollowUpItem } from '@shared/follow-up'
+
+const props = defineProps<{ platform?: AppInfo['platform'] | undefined }>()
 defineEmits<{ configureModels: [] }>()
+const { mode } = useFollowUpPreference()
 
 const {
   state,
@@ -59,6 +67,13 @@ const {
   removeAttachment,
   workspace,
   activeRun,
+  followUps,
+  followUpDraft,
+  continuableRun,
+  continueTask,
+  followUpError,
+  followUpBusy,
+  actOnFollowUp,
   compactUnavailable,
   compact,
   lastUserMessage,
@@ -119,9 +134,17 @@ watch(
   { flush: 'sync' },
 )
 onScopeDispose(() => previews.close())
-const draftItems = computed<AttachmentItem[]>(() =>
-  draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
-)
+const draftItems = computed<AttachmentItem[]>(() => {
+  const item = followUpDraft.value?.item
+  if (item)
+    return (item.retained ?? []).map((block) => ({
+      label: block.name,
+      kind: block.kind,
+      ...(block.size === undefined ? {} : { size: block.size }),
+      source: { conversationId: item.conversationId, messageId: item.id, index: block.index },
+    }))
+  return draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file }))
+})
 function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
   const block = item.content[index]!
   return {
@@ -156,11 +179,21 @@ const editItems = computed<AttachmentItem[]>(() => {
     ...edit.files.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
   ]
 })
+const steeringByRun = computed(() => {
+  const result = new Map<string, ChatMessage[]>()
+  for (const message of messages.value) {
+    if (message.steeringOrder === undefined) continue
+    const entries = result.get(message.runId)
+    if (entries) entries.push(message)
+    else result.set(message.runId, [message])
+  }
+  return result
+})
 const messageTimeline = computed(() => {
   const runs = state.detail?.runs ?? []
   const ids = runs.map((run) => run.id).toSorted()
   const timeline = messageCompactions(
-    messages.value,
+    messages.value.filter((message) => message.steeringOrder === undefined),
     runs,
     ids.length ? { oldestRunId: ids[0]!, newestRunId: ids.at(-1)! } : undefined,
   )
@@ -252,10 +285,10 @@ const messageInput = ref<HTMLTextAreaElement | null>(null)
 const hasDraftAttachments = computed(() => draftItems.value.length > 0)
 const {
   focused: commandInputFocused,
-  open: commandsOpen,
+  open: composerCommandsOpen,
   showCompact,
   activeId: activeCommandId,
-  requestingCompact,
+  requestingCompact: composerRequestingCompact,
   matchingSkills,
   loading: skillsLoading,
   failed: skillsFailed,
@@ -266,8 +299,10 @@ const {
 } = useComposerCommands(
   draft,
   hasDraftAttachments,
-  computed(() => !state.serviceError),
+  computed(() => !state.serviceError && !followUpDraft.value),
 )
+const commandsOpen = computed(() => !followUpDraft.value && composerCommandsOpen.value)
+const requestingCompact = computed(() => !followUpDraft.value && composerRequestingCompact.value)
 const usageInput = computed<ContextUsageInput | null>(() =>
   state.loading || state.modelsLoading || !state.modelId
     ? null
@@ -344,6 +379,7 @@ const composerNotice = computed(() =>
 )
 const attachmentBusy = computed(
   () =>
+    !!followUpDraft.value ||
     state.loading ||
     state.sending ||
     state.resending ||
@@ -362,11 +398,11 @@ const canSend = computed(
     !state.loading &&
     !state.loadingList &&
     !state.executionSettingsSaving &&
+    !followUpBusy.value &&
     !state.sending &&
     !state.resending &&
     !state.compacting &&
     !state.editing &&
-    !activeRun.value &&
     !currentInteraction.value &&
     !state.serviceError &&
     !state.modelsLoading &&
@@ -375,6 +411,84 @@ const canSend = computed(
     (!requestingCompact.value || !compactUnavailable.value) &&
     (!!draftItems.value.length || !!draft.value.trim()) &&
     (!draftItems.value.some(isImageAttachment) || imageInput.value),
+)
+const canSteer = computed(
+  () =>
+    activeRun.value?.status === 'running' &&
+    !activeRun.value.compaction &&
+    !currentInteraction.value,
+)
+const sendLabel = computed(() =>
+  requestingCompact.value
+    ? '压缩上下文'
+    : activeRun.value
+      ? mode.value === 'queue'
+        ? '排队发送'
+        : '引导当前任务'
+      : '发送消息',
+)
+const hasComposerDraft = computed(
+  () =>
+    !!draft.value.trim() ||
+    !!draftItems.value.length ||
+    !!draftSkill.value ||
+    !!followUpDraft.value,
+)
+const composerAction = computed(() => {
+  if (
+    activeRun.value &&
+    (!hasComposerDraft.value || !!currentInteraction.value || compactingRun.value)
+  )
+    return 'stop'
+  if (!hasComposerDraft.value && continuableRun.value) return 'continue'
+  return 'send'
+})
+const canStop = computed(
+  () =>
+    !!activeRun.value &&
+    !state.cancelling &&
+    !state.deciding &&
+    !state.replying &&
+    !state.serviceError,
+)
+const canContinue = computed(
+  () =>
+    !!continuableRun.value &&
+    availableModel.value &&
+    !state.loading &&
+    !state.loadingList &&
+    !state.sending &&
+    !state.resending &&
+    !state.compacting &&
+    !state.editing &&
+    !followUpBusy.value &&
+    !state.executionSettingsSaving &&
+    !state.serviceError &&
+    !state.modelsLoading &&
+    !state.modelError,
+)
+const primaryLabel = computed(() =>
+  composerAction.value === 'stop'
+    ? stopLabel.value
+    : composerAction.value === 'continue'
+      ? '继续任务'
+      : sendLabel.value,
+)
+const primaryEnabled = computed(() =>
+  composerAction.value === 'stop'
+    ? canStop.value
+    : composerAction.value === 'continue'
+      ? canContinue.value
+      : canSend.value,
+)
+const primaryBusy = computed(() =>
+  composerAction.value === 'stop' ? state.cancelling : state.sending,
+)
+const showProcessStop = computed(() => !!activeRun.value && composerAction.value === 'send')
+const activeTimelineVisible = computed(
+  () =>
+    !!activeRun.value &&
+    [...messageRuns.value.values()].some((run) => run.id === activeRun.value?.id),
 )
 const runLabels = {
   pending: '正在准备回答…',
@@ -408,6 +522,7 @@ function keydown(event: KeyboardEvent): void {
   const input = messageInput.value
   if (
     event.key === 'Backspace' &&
+    !followUpDraft.value &&
     !event.altKey &&
     !event.ctrlKey &&
     !event.metaKey &&
@@ -448,7 +563,7 @@ function keydown(event: KeyboardEvent): void {
   }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
-    submitMessage()
+    submitMessage(props.platform === 'darwin' ? event.metaKey : event.ctrlKey)
   }
 }
 function selectComposerOption(id: string): void {
@@ -465,13 +580,35 @@ function removeComposerSkill(): void {
   removeDraftSkill()
   messageInput.value?.focus({ preventScroll: true })
 }
-function submitMessage(): void {
+async function changeQueuedMessage(
+  item: FollowUpItem,
+  action: FollowUpChange['action'],
+): Promise<void> {
+  if ((await actOnFollowUp(item, action)) && action === 'withdraw') {
+    await nextTick()
+    messageInput.value?.focus({ preventScroll: true })
+  }
+}
+function submitMessage(alternate = false): void {
   if (!canSend.value) return
   if (requestingCompact.value) void compact(true)
   else {
     if (!awayFromLatest.value) follow.value = true
-    void send()
+    const method = alternate ? (mode.value === 'queue' ? 'steer' : 'queue') : mode.value
+    if (activeRun.value && method === 'steer' && !canSteer.value) {
+      state.error = '当前任务暂时无法接受引导，可以将消息加入队列。'
+      return
+    }
+    void send(method)
   }
+}
+function activateComposer(): void {
+  if (!primaryEnabled.value) return
+  if (composerAction.value === 'stop') void cancel()
+  else if (composerAction.value === 'continue') {
+    if (!awayFromLatest.value) follow.value = true
+    void continueTask()
+  } else submitMessage()
 }
 function updateDistance(): void {
   const element = scroller.value
@@ -796,10 +933,81 @@ onScopeDispose(() => {
                 :connected="!state.serviceError"
                 :expanded="expandedRunId === item.runId"
                 :active="activeRun?.id === item.runId"
+                :steering="steeringByRun.get(item.runId) ?? []"
                 @expand="expandedRunId = $event ? item.runId : null"
                 @inspect="pauseFollowing"
                 @changed="followRunLayout(item.runId)"
-              />
+              >
+                <template #actions>
+                  <Button
+                    v-if="showProcessStop && activeRun?.id === item.runId"
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 gap-1.5 px-2 text-xs"
+                    :disabled="!canStop"
+                    :aria-busy="state.cancelling"
+                    @click="cancel"
+                  >
+                    <LoaderCircleIcon
+                      v-if="state.cancelling"
+                      class="size-3 animate-spin"
+                      aria-hidden="true"
+                    />
+                    <SquareIcon v-else class="size-3 fill-current" aria-hidden="true" />
+                    {{ stopLabel }}
+                  </Button>
+                </template>
+                <template #steering="{ message }">
+                  <article
+                    class="group/message ml-auto w-fit max-w-[88%]"
+                    :data-message-id="message.id"
+                    data-steering-message
+                    aria-label="你的引导"
+                  >
+                    <div class="flex max-w-full flex-col items-end gap-1">
+                      <AttachmentList
+                        :items="historyImages.get(message.id) ?? []"
+                        class="justify-end"
+                        downloadable
+                        :saving="savingAttachment"
+                        @save="saveAttachment"
+                        @changed="nextTick(() => followRunLayout(message.runId))"
+                      />
+                      <div
+                        v-if="
+                          message.content.some((block) => ['text', 'skill'].includes(block.type))
+                        "
+                        data-user-message-text
+                        class="w-fit max-w-full rounded-2xl border bg-muted/60 px-3 py-2 text-sm leading-6"
+                      >
+                        <template v-for="(block, index) in message.content" :key="index">
+                          <p
+                            v-if="block.type === 'text'"
+                            class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                          >
+                            {{ block.text }}
+                          </p>
+                          <span
+                            v-else-if="block.type === 'skill'"
+                            class="inline-flex items-center gap-1"
+                          >
+                            <BoxIcon class="size-3.5 shrink-0" aria-hidden="true" />{{ block.name }}
+                          </span>
+                        </template>
+                      </div>
+                    </div>
+                    <MessageActions
+                      :message="message"
+                      :now="messageTimeNow"
+                      :editable="false"
+                      :edit-disabled="false"
+                      :always-show-copy="false"
+                      class="justify-end"
+                    />
+                  </article>
+                </template>
+              </RunTimeline>
               <div v-if="item.role === 'assistant'">
                 <MarkdownMessage
                   :content="item.content.filter((block) => !['image', 'file'].includes(block.type))"
@@ -1045,177 +1253,216 @@ onScopeDispose(() => {
           <LaptopIcon class="size-3.5" aria-hidden="true" />此计算机
         </span>
       </div>
-      <form
-        ref="composerForm"
-        class="relative mx-auto max-w-3xl rounded-2xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-foreground/30"
-        @submit.prevent="submitMessage"
-        @dragover="dragFiles"
-        @drop="dropFiles($event, receiveFiles)"
-        @paste="pasteFiles($event, receiveFiles)"
+      <div
+        v-if="showProcessStop && !activeTimelineVisible"
+        class="mx-auto mb-1 flex max-w-3xl justify-end"
       >
-        <ComposerCommands
-          v-if="commandsOpen"
-          :active-id="activeCommandId"
-          :show-compact="showCompact"
-          :disabled-reason="compactUnavailable"
-          :busy="!!state.compacting"
-          :usage="displayedUsage"
-          :skills="matchingSkills"
-          :skills-loading="skillsLoading"
-          :skills-failed="skillsFailed"
-          @select="selectComposerOption"
+        <Button type="button" variant="ghost" size="sm" :disabled="!canStop" @click="cancel">
+          {{ stopLabel }}
+        </Button>
+      </div>
+      <div
+        data-composer-frame
+        class="mx-auto max-w-3xl rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-foreground/30"
+      >
+        <FollowUpQueue
+          :key="state.selectedId ?? 'new'"
+          :items="followUps"
+          :active="!!activeRun"
+          :can-steer="canSteer"
+          :busy="followUpBusy || state.sending || !!state.serviceError"
+          :error="followUpError"
+          :editing="!!followUpDraft || !!state.editing"
+          @change="changeQueuedMessage"
+          @start="actOnFollowUp($event, 'start')"
         />
-        <AttachmentList
-          :items="draftItems"
-          removable
-          :disabled="state.sending"
-          @remove="removeAttachment"
-        />
-        <p
-          v-if="draftItems.some(isImageAttachment) && !imageInput"
-          class="mb-1 text-xs text-muted-foreground"
+        <form
+          ref="composerForm"
+          class="relative px-3 py-2 transition-colors"
+          @submit.prevent="submitMessage()"
+          @dragover="dragFiles"
+          @drop="dropFiles($event, receiveFiles)"
+          @paste="pasteFiles($event, receiveFiles)"
         >
-          当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
-        </p>
-        <div class="flex min-w-0 items-start gap-1.5">
-          <div
-            v-if="draftSkill"
-            data-draft-skill
-            class="group flex h-6 max-w-[40%] shrink-0 items-center gap-1 text-blue-600 dark:text-blue-400"
-          >
-            <button
-              type="button"
-              class="inline-grid size-4 shrink-0 place-items-center rounded-sm text-current outline-none enabled:hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
-              :disabled="attachmentBusy"
-              :aria-label="`移除技能 ${draftSkill.name}`"
-              title="移除技能"
-              @click="removeComposerSkill"
-            >
-              <BoxIcon
-                class="col-start-1 row-start-1 size-3.5"
-                :class="{ 'group-hover:opacity-0 group-focus-within:opacity-0': !attachmentBusy }"
-                aria-hidden="true"
-              />
-              <XIcon
-                v-if="!attachmentBusy"
-                class="col-start-1 row-start-1 size-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                aria-hidden="true"
-              />
-            </button>
-            <span
-              class="min-w-0 truncate text-[13px] leading-5"
-              :title="draftSkill.path ?? draftSkill.name"
-            >
-              {{ draftSkill.name }}
-            </span>
-          </div>
-          <label for="new-message" class="sr-only">消息</label>
-          <textarea
-            id="new-message"
-            ref="messageInput"
-            v-model="draft"
-            :rows="hasDraftAttachments ? 1 : 2"
-            :maxlength="draftTextLimit"
-            :disabled="
-              !!currentInteraction ||
-              state.loading ||
-              state.sending ||
-              state.resending ||
-              !!state.compacting ||
-              !!state.editing ||
-              state.modelsLoading ||
-              !!state.modelError ||
-              !!state.serviceError ||
-              !availableModel
-            "
-            :placeholder="draftSkill ? undefined : '你想聊些什么？'"
-            aria-describedby="conversation-hint"
-            aria-autocomplete="list"
-            :aria-controls="commandsOpen ? 'composer-commands' : undefined"
-            :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
-            class="block max-h-48 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
-            :class="hasDraftAttachments ? 'min-h-6' : 'min-h-12'"
-            @input="resizeMessageInput"
-            @focus="focusCommands"
-            @blur="commandInputFocused = false"
-            @keydown="keydown"
-          ></textarea>
-        </div>
-        <div class="mt-2 flex items-center gap-2">
-          <AttachmentPicker
-            :menu-anchor="composerForm"
-            :disabled="attachmentBusy"
-            @files="receiveFiles"
+          <ComposerCommands
+            v-if="commandsOpen"
+            :active-id="activeCommandId"
+            :show-compact="showCompact"
+            :disabled-reason="compactUnavailable"
+            :busy="!!state.compacting"
+            :usage="displayedUsage"
+            :skills="matchingSkills"
+            :skills-loading="skillsLoading"
+            :skills-failed="skillsFailed"
+            @select="selectComposerOption"
           />
-          <ApprovalModeSelector class="mr-auto" />
-          <div class="flex min-w-0 items-center gap-2">
-            <ContextUsageControl
-              :usage="displayedUsage"
-              :error="contextUsageError"
-              :loading="contextUsageLoading"
-              :configured="!!usageInput"
-              :service-error="state.serviceError"
-              @update:open="usageHintOpen = $event"
-            />
-
-            <Button
-              v-if="!state.models.length"
-              type="button"
-              variant="ghost"
-              size="sm"
-              class="h-7"
-              :disabled="state.loadingList || state.modelsLoading || !!state.serviceError"
-              @click="$emit('configureModels')"
-              >{{ state.loadingList || state.modelsLoading ? '正在读取模型…' : '配置模型' }}</Button
+          <AttachmentList
+            :items="draftItems"
+            :removable="!followUpDraft"
+            :disabled="state.sending"
+            @remove="removeAttachment"
+          />
+          <p
+            v-if="draftItems.some(isImageAttachment) && !imageInput"
+            class="mb-1 text-xs text-muted-foreground"
+          >
+            {{
+              followUpDraft
+                ? '当前模型未启用图片输入，请切换模型或在设置中启用。'
+                : '当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。'
+            }}
+          </p>
+          <div class="flex min-w-0 items-start gap-1.5">
+            <div
+              v-if="draftSkill"
+              data-draft-skill
+              class="group flex h-6 max-w-[40%] shrink-0 items-center gap-1 text-blue-600 dark:text-blue-400"
             >
-            <ModelSelector
-              v-else
-              v-model="state.modelId"
-              :models="state.models"
+              <button
+                type="button"
+                class="inline-grid size-4 shrink-0 place-items-center rounded-sm text-current outline-none enabled:hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
+                :disabled="attachmentBusy"
+                :aria-label="`移除技能 ${draftSkill.name}`"
+                title="移除技能"
+                @click="removeComposerSkill"
+              >
+                <BoxIcon
+                  class="col-start-1 row-start-1 size-3.5"
+                  :class="{ 'group-hover:opacity-0 group-focus-within:opacity-0': !attachmentBusy }"
+                  aria-hidden="true"
+                />
+                <XIcon
+                  v-if="!attachmentBusy"
+                  class="col-start-1 row-start-1 size-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  aria-hidden="true"
+                />
+              </button>
+              <span
+                class="min-w-0 truncate text-[13px] leading-5"
+                :title="draftSkill.path ?? draftSkill.name"
+              >
+                {{ draftSkill.name }}
+              </span>
+            </div>
+            <label for="new-message" class="sr-only">消息</label>
+            <textarea
+              id="new-message"
+              ref="messageInput"
+              v-model="draft"
+              :rows="hasDraftAttachments ? 1 : 2"
+              :maxlength="draftTextLimit"
               :disabled="
-                !!activeRun ||
-                state.loadingList ||
-                state.modelsLoading ||
+                !!currentInteraction ||
+                state.loading ||
                 state.sending ||
                 state.resending ||
                 !!state.compacting ||
-                !!state.serviceError
+                !!state.editing ||
+                state.modelsLoading ||
+                !!state.modelError ||
+                !!state.serviceError ||
+                !availableModel
               "
-            />
+              :placeholder="draftSkill ? undefined : '你想聊些什么？'"
+              aria-describedby="conversation-hint"
+              aria-autocomplete="list"
+              :aria-controls="commandsOpen ? 'composer-commands' : undefined"
+              :aria-activedescendant="commandsOpen ? (activeCommandId ?? undefined) : undefined"
+              class="block max-h-48 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-0 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
+              :class="hasDraftAttachments ? 'min-h-6' : 'min-h-12'"
+              @input="resizeMessageInput"
+              @focus="focusCommands"
+              @blur="commandInputFocused = false"
+              @keydown="keydown"
+            ></textarea>
           </div>
-          <Button
-            v-if="activeRun"
-            type="button"
-            variant="ghost"
-            size="icon"
-            class="size-7 shrink-0 rounded-full border bg-background text-foreground hover:bg-muted"
-            :aria-label="stopLabel"
-            :title="state.cancelling ? '正在停止…' : stopLabel"
-            :aria-busy="state.cancelling"
-            :disabled="
-              state.cancelling || !!state.deciding || !!state.replying || !!state.serviceError
-            "
-            @click="cancel"
-            ><LoaderCircleIcon
-              v-if="state.cancelling"
-              class="size-3.5 animate-spin"
-              aria-hidden="true" />
-            <SquareIcon v-else class="size-3 fill-current" aria-hidden="true"
-          /></Button>
-          <Button
-            v-else
-            type="submit"
-            size="icon"
-            class="size-7 shrink-0 rounded-full bg-foreground text-background hover:bg-foreground/90"
-            :disabled="!canSend"
-            :aria-label="requestingCompact ? '压缩上下文' : '发送消息'"
-            ><LoaderCircleIcon
-              v-if="state.sending"
-              class="size-4 animate-spin"
-              aria-hidden="true" /><ArrowUpIcon v-else class="size-4" aria-hidden="true"
-          /></Button>
-        </div>
-      </form>
+          <div class="mt-2 flex items-center gap-2">
+            <AttachmentPicker
+              :menu-anchor="composerForm"
+              :disabled="attachmentBusy"
+              @files="receiveFiles"
+            />
+            <ApprovalModeSelector class="mr-auto" />
+            <Button
+              v-if="followUpDraft"
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-7 shrink-0 text-xs"
+              :disabled="followUpBusy || state.sending || !!state.serviceError"
+              title="取消编辑并将原消息放回队列"
+              @click="actOnFollowUp(followUpDraft.item, 'restore_draft')"
+              >放回队列</Button
+            >
+            <div class="flex min-w-0 items-center gap-2">
+              <ContextUsageControl
+                :usage="displayedUsage"
+                :error="contextUsageError"
+                :loading="contextUsageLoading"
+                :configured="!!usageInput"
+                :service-error="state.serviceError"
+                @update:open="usageHintOpen = $event"
+              />
+
+              <Button
+                v-if="!state.models.length"
+                type="button"
+                variant="ghost"
+                size="sm"
+                class="h-7"
+                :disabled="state.loadingList || state.modelsLoading || !!state.serviceError"
+                @click="$emit('configureModels')"
+                >{{
+                  state.loadingList || state.modelsLoading ? '正在读取模型…' : '配置模型'
+                }}</Button
+              >
+              <ModelSelector
+                v-else
+                v-model="state.modelId"
+                :models="state.models"
+                :disabled="
+                  !!activeRun ||
+                  state.loadingList ||
+                  state.modelsLoading ||
+                  state.sending ||
+                  state.resending ||
+                  !!state.compacting ||
+                  !!state.serviceError
+                "
+              />
+            </div>
+            <Button
+              type="button"
+              size="icon"
+              class="size-7 shrink-0 rounded-full"
+              :class="
+                composerAction === 'stop'
+                  ? 'border bg-background text-foreground hover:bg-muted'
+                  : 'bg-foreground text-background hover:bg-foreground/90'
+              "
+              :disabled="!primaryEnabled"
+              :aria-label="primaryLabel"
+              :title="composerAction === 'stop' && state.cancelling ? '正在停止…' : primaryLabel"
+              :aria-busy="primaryBusy"
+              data-composer-primary
+              @click="activateComposer"
+            >
+              <LoaderCircleIcon v-if="primaryBusy" class="size-4 animate-spin" aria-hidden="true" />
+              <SquareIcon
+                v-else-if="composerAction === 'stop'"
+                class="size-3 fill-current"
+                aria-hidden="true"
+              />
+              <PlayIcon
+                v-else-if="composerAction === 'continue'"
+                class="size-3.5 fill-current"
+                aria-hidden="true"
+              />
+              <ArrowUpIcon v-else class="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+        </form>
+      </div>
       <p
         v-if="reviewing && !state.serviceError"
         role="status"

@@ -1,2 +1,2 @@
 export type AppPage = 'conversation' | 'settings'
-export type SettingsSection = 'appearance' | 'models'
+export type SettingsSection = 'general' | 'appearance' | 'models'

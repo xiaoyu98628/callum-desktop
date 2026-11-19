@@ -1,4 +1,4 @@
-import { computed, inject, onMounted, onScopeDispose, provide, watch } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide, reactive, ref, watch } from 'vue'
 import { createConversationState } from './state'
 import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
@@ -26,6 +26,8 @@ import { MAX_ATTACHMENT_BATCH_BYTES } from '@shared/attachments'
 import { addAttachmentFiles, attachmentInputs, isImageFile } from './attachment-files'
 import { getDesktopApi } from '@/lib/desktop'
 import { availableModels } from '@shared/models'
+
+import type { FollowUpChange, FollowUpItem, FollowUpMode } from '@shared/follow-up'
 
 const IMAGE_INPUT_REQUIRED = '当前模型未启用图片输入，请在模型设置中启用或切换模型。'
 
@@ -56,6 +58,10 @@ function createConversations() {
   const hiddenWorkspaces = new Set<string>()
   const draftWorkspaces = new Map<string, string | null>()
   const draftKey = () => state.selectedId ?? `new:${state.workspaceId ?? 'unbound'}`
+  const withdrawn = reactive(new Map<string, { item: FollowUpItem; text: string }>())
+  const followUpDraft = computed(() =>
+    state.selectedId ? withdrawn.get(state.selectedId) : undefined,
+  )
   function releaseEmptyDraft(key: string): void {
     if (!state.drafts[key] && !state.draftAttachments[key]?.length && !state.draftSkills[key])
       draftWorkspaces.delete(key)
@@ -67,8 +73,12 @@ function createConversations() {
     draftWorkspaces.delete(key)
   }
   const draft = computed({
-    get: () => state.drafts[draftKey()] ?? '',
+    get: () => followUpDraft.value?.text ?? state.drafts[draftKey()] ?? '',
     set: (value: string) => {
+      if (followUpDraft.value) {
+        followUpDraft.value.text = value
+        return
+      }
       const key = draftKey()
       if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
         state.error = '草稿数量已达上限，请发送或清空已有草稿。'
@@ -83,8 +93,14 @@ function createConversations() {
       }
     },
   })
-  const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
-  const draftSkill = computed(() => state.draftSkills[draftKey()] ?? null)
+  const draftAttachments = computed(() =>
+    followUpDraft.value ? [] : (state.draftAttachments[draftKey()] ?? []),
+  )
+  const draftSkill = computed(() => {
+    const item = followUpDraft.value?.item
+    if (item) return item.skill ? { name: item.skill, path: '' } : null
+    return state.draftSkills[draftKey()] ?? null
+  })
   const draftSkillPrefix = computed(() =>
     draftSkill.value ? formatSkillPrefix(draftSkill.value) : '',
   )
@@ -97,6 +113,7 @@ function createConversations() {
   })
   const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
   function selectDraftSkill(skill: DraftSkill): void {
+    if (followUpDraft.value) return
     const key = draftKey()
     if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
       state.error = '草稿数量已达上限，请发送或清空已有草稿。'
@@ -108,7 +125,7 @@ function createConversations() {
     delete state.drafts[key]
   }
   function removeDraftSkill(): void {
-    if (state.sending || state.resending || state.compacting) return
+    if (followUpDraft.value || state.sending || state.resending || state.compacting) return
     const key = draftKey()
     delete state.draftSkills[key]
     releaseEmptyDraft(key)
@@ -128,10 +145,101 @@ function createConversations() {
       state.detail?.runs.find(isActiveRun) ??
       null,
   )
+  const continuableRun = computed(() => {
+    if (state.historical || activeRun.value) return null
+    const run = state.detail?.runs.findLast((item) => !item.compaction)
+    return run && (run.status === 'cancelled' || run.status === 'interrupted') ? run : null
+  })
+  const followUps = ref<FollowUpItem[]>([])
+  const followUpError = ref('')
+  const followUpBusy = ref(false)
+  let followUpRequest = 0
+  function rememberFollowUpDraft(item: FollowUpItem): void {
+    const previous = withdrawn.get(item.conversationId)
+    if (previous?.item.id !== item.id || previous.item.revision !== item.revision)
+      withdrawn.set(item.conversationId, { item, text: item.text })
+  }
+
+  async function loadFollowUps(): Promise<void> {
+    const id = state.selectedId
+    const request = ++followUpRequest
+    if (!id || state.serviceError) return
+    try {
+      const items = unwrap(await getDesktopApi().listFollowUps(id))
+      if (!disposed && request === followUpRequest) {
+        followUps.value = items.filter((item) => item.state === 'queued')
+        const item = items.find((item) => item.state === 'draft')
+        if (item) rememberFollowUpDraft(item)
+        else withdrawn.delete(id)
+      }
+    } catch (error) {
+      if (!disposed && request === followUpRequest) followUpError.value = message(error)
+    }
+  }
+
+  watch(
+    () => [state.selectedId, state.serviceError],
+    () => {
+      followUps.value = []
+      followUpError.value = ''
+      void loadFollowUps()
+    },
+    { flush: 'sync' },
+  )
+
+  async function actOnFollowUp(
+    item: FollowUpItem,
+    action: FollowUpChange['action'] | 'start',
+  ): Promise<boolean> {
+    if (followUpBusy.value || state.selectedId !== item.conversationId || state.serviceError)
+      return false
+    if (action === 'withdraw' && (followUpDraft.value || state.editing)) return false
+    const run = activeRun.value
+    if (action === 'steer' && (!run || run.status !== 'running' || run.compaction)) return false
+    if (action === 'start' && run) return false
+    const token = selection
+    followUpBusy.value = true
+    followUpError.value = ''
+    try {
+      const api = getDesktopApi()
+      const input = { id: item.id, conversationId: item.conversationId, revision: item.revision }
+      if (action === 'start') {
+        unwrap(await api.startFollowUp(input))
+      } else {
+        const updated = unwrap(
+          await api.changeFollowUp({
+            ...input,
+            action,
+            ...((action === 'steer' || action === 'restore_draft') && run
+              ? { expectedRunId: run.id }
+              : {}),
+          }),
+        )
+        if (updated.state === 'draft') {
+          // 废弃受理前的列表读取，避免快照在同一会话里撤销刚取出的草稿。
+          rememberFollowUpDraft(updated)
+          if (token === selection) {
+            ++followUpRequest
+            followUps.value = followUps.value.filter((row) => row.id !== updated.id)
+          }
+        } else if (action === 'restore_draft') withdrawn.delete(item.conversationId)
+      }
+      return token === selection
+    } catch (error) {
+      if (token === selection) followUpError.value = message(error)
+      return false
+    } finally {
+      if (token === selection) await loadFollowUps()
+      followUpBusy.value = false
+    }
+  }
+
   const lastUserMessage = computed(() =>
     state.historical
       ? null
-      : (state.detail?.messages.findLast((item) => item.role === 'user') ?? null),
+      : (state.detail?.messages.findLast(
+          (item) => item.role === 'user' && item.steeringOrder === undefined,
+        ) ?? null),
   )
   const editUnavailable = computed(
     () =>
@@ -395,6 +503,10 @@ function createConversations() {
       state.detail.messages = state.detail.messages.filter(
         (item) => !change.value.messageIds.includes(item.id),
       )
+      if (change.value.steeringRequeued) {
+        followUpError.value = '本轮引导未完成，消息已退回待发区。'
+        void loadFollowUps()
+      }
       return
     }
     if (
@@ -446,6 +558,10 @@ function createConversations() {
   }
   function receive(event: ChatEvent): void {
     const change = event.change
+    if (change.kind === 'follow-ups') {
+      if (change.value.conversationId === state.selectedId) void loadFollowUps()
+      return
+    }
     if ((change.kind === 'conversation' || change.kind === 'workspace') && state.archivesLoading) {
       archiveEvents.set(`${change.kind}:${change.value.id}`, event)
       if (archiveEvents.size > 500) {
@@ -911,7 +1027,8 @@ function createConversations() {
     }
   }
   function addAttachments(files: File[], editing = false): void {
-    if (!files.length || state.sending || state.resending) return
+    if (!files.length || state.sending || state.resending || (!editing && followUpDraft.value))
+      return
     const edit = editing ? state.editing : null
     const errorTarget = edit ?? state
     errorTarget.error = ''
@@ -943,7 +1060,7 @@ function createConversations() {
     }
   }
   function removeAttachment(index: number, editing = false): void {
-    if (state.sending || state.resending) return
+    if (state.sending || state.resending || (!editing && followUpDraft.value)) return
     if (editing) {
       const edit = state.editing
       if (!edit) return
@@ -958,9 +1075,10 @@ function createConversations() {
       }
     }
   }
-  async function send(): Promise<void> {
-    if (state.executionSettingsSaving) return
-    if (!draftAttachments.value.length && isCompactCommand(draft.value)) {
+  async function send(mode: FollowUpMode = 'queue'): Promise<void> {
+    if (state.executionSettingsSaving || followUpBusy.value) return
+    const editingFollowUp = followUpDraft.value
+    if (!editingFollowUp && !draftAttachments.value.length && isCompactCommand(draft.value)) {
       await compact(true)
       return
     }
@@ -970,12 +1088,18 @@ function createConversations() {
       state.compacting ||
       state.editing ||
       state.loading ||
-      activeRun.value ||
+      (activeRun.value &&
+        mode === 'steer' &&
+        (activeRun.value.status !== 'running' || activeRun.value.compaction)) ||
       state.serviceError ||
       state.modelsLoading ||
       state.modelError ||
-      (!draft.value.trim() && !draftAttachments.value.length) ||
+      (!draft.value.trim() &&
+        !draftAttachments.value.length &&
+        !editingFollowUp?.item.attachments.length) ||
       (draftAttachments.value.some(isImageFile) && !imageInput.value) ||
+      (editingFollowUp?.item.retained?.some((attachment) => attachment.kind === 'image') &&
+        !imageInput.value) ||
       !state.modelId
     )
       return
@@ -988,20 +1112,57 @@ function createConversations() {
       token = selection
     const key = draftKey()
     const workspaceId = conversationId ? null : state.workspaceId
+    const run = activeRun.value
+    const modelId = state.modelId
     try {
-      const result = unwrap(
-        await getDesktopApi().sendMessage({
-          conversationId,
-          workspaceId,
-          text: body,
-          ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
-          modelId: state.modelId,
-          ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
-        }),
+      const api = getDesktopApi()
+      if (editingFollowUp && conversationId) {
+        const { id, revision } = editingFollowUp.item
+        const input = { id, conversationId, revision, text: body }
+        if (run) {
+          unwrap(
+            await api.changeFollowUp({
+              ...input,
+              action: mode === 'steer' ? 'steer_draft' : 'queue_draft',
+              expectedRunId: run.id,
+              ...(mode === 'queue' ? { modelId } : {}),
+            }),
+          )
+        } else {
+          unwrap(await api.startFollowUp({ ...input, modelId }))
+        }
+        withdrawn.delete(conversationId)
+        if (token === selection && !disposed) {
+          if (run) await loadFollowUps()
+          else await openConversation(conversationId, true)
+        }
+        return
+      }
+      const input = {
+        conversationId,
+        workspaceId,
+        text: body,
+        ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
+        modelId,
+        ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
+      }
+      let acceptedId = conversationId
+      if (run && conversationId) {
+        unwrap(await api.addFollowUp({ ...input, conversationId, expectedRunId: run.id, mode }))
+      } else {
+        acceptedId = unwrap(await api.sendMessage(input)).conversationId
+      }
+      if (
+        (state.drafts[key] ?? '') === body &&
+        (state.draftSkills[key] ?? null) === skill &&
+        (state.draftAttachments[key]?.length ?? 0) === files.length &&
+        files.every((file, index) => state.draftAttachments[key]?.[index] === file)
       )
-      if ((state.drafts[key] ?? '') === body && (state.draftSkills[key] ?? null) === skill)
         clearDraft(key)
-      if (token === selection && !disposed) await openConversation(result.conversationId, true)
+      if (token === selection && !disposed && acceptedId) {
+        if (run) await loadFollowUps()
+        else await openConversation(acceptedId, true)
+      }
       // 受理响应不等于完成；执行状态完全由后端事件及查询决定。
     } catch (error) {
       if (token === selection) state.error = message(error)
@@ -1036,6 +1197,46 @@ function createConversations() {
       if (!disposed && token === selection) state.error = message(error)
     } finally {
       if (state.compacting === conversationId) state.compacting = ''
+    }
+  }
+  async function continueTask(): Promise<void> {
+    const run = continuableRun.value
+    const modelId = state.modelId
+    if (
+      !run ||
+      run.conversationId !== state.selectedId ||
+      !modelId ||
+      state.loading ||
+      state.sending ||
+      state.resending ||
+      state.compacting ||
+      state.editing ||
+      state.executionSettingsSaving ||
+      state.serviceError ||
+      state.modelsLoading ||
+      state.modelError ||
+      draft.value.trim() ||
+      draftAttachments.value.length ||
+      draftSkill.value ||
+      followUpDraft.value
+    )
+      return
+    const token = selection
+    state.sending = true
+    state.error = ''
+    try {
+      unwrap(
+        await getDesktopApi().continueConversation({
+          conversationId: run.conversationId,
+          runId: run.id,
+          modelId,
+        }),
+      )
+      if (!disposed && token === selection) await openConversation(run.conversationId, true)
+    } catch (error) {
+      if (!disposed && token === selection) state.error = message(error)
+    } finally {
+      state.sending = false
     }
   }
   function startEditing(messageId: string): void {
@@ -1180,6 +1381,13 @@ function createConversations() {
   return {
     initialize,
     state,
+    followUps,
+    followUpDraft,
+    continuableRun,
+    continueTask,
+    followUpError,
+    followUpBusy,
+    actOnFollowUp,
     draft,
     draftAttachments,
     draftSkill,

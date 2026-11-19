@@ -1,4 +1,4 @@
-import type { ChatStep, RunStatus } from './chat.ts'
+import type { ChatMessage, ChatStep, RunStatus } from './chat.ts'
 import type { TimelineStep } from './timeline-window.ts'
 
 export interface OperationGroup {
@@ -14,12 +14,25 @@ export interface CompactionGroup {
 }
 
 export type TimelineItem =
-  { kind: 'model'; id: string; step: TimelineStep } | OperationGroup | CompactionGroup
+  | { kind: 'model'; id: string; step: TimelineStep }
+  | { kind: 'steering'; id: string; message: ChatMessage }
+  | OperationGroup
+  | CompactionGroup
 
-/** 思考与说明保持原顺序；其间连续操作形成可展开的组，不跨过压缩记录。 */
-export function groupTimeline(steps: TimelineStep[]): TimelineItem[] {
+/** 按步骤顺序插入引导消息，连续操作在压缩或引导处结束分组。 */
+export function groupTimeline(steps: TimelineStep[], steering: ChatMessage[] = []): TimelineItem[] {
   const items: TimelineItem[] = []
+  let next = 0
+  function insertSteering(beforeSequence: number): void {
+    while (next < steering.length) {
+      const message = steering[next]!
+      if ((message.steeringAfterStep ?? Number.MAX_SAFE_INTEGER) >= beforeSequence) break
+      items.push({ kind: 'steering', id: message.id, message })
+      next++
+    }
+  }
   for (const step of steps) {
+    insertSteering(step.sequence)
     if (step.type === 'model_call') {
       items.push({ kind: 'model', id: step.id, step })
       continue
@@ -35,10 +48,11 @@ export function groupTimeline(steps: TimelineStep[]): TimelineItem[] {
       items.push({
         kind: 'operations',
         // 连续操作沿用父步骤身份，避免窗口更新重新挂载仍在查看的单条详情。
-        id: `operations:${step.parentStepId ?? step.id}${previous?.kind === 'compaction' ? `:after:${previous.id}` : ''}`,
+        id: `operations:${step.parentStepId ?? step.id}${previous?.kind === 'compaction' || previous?.kind === 'steering' ? `:after:${previous.id}` : ''}`,
         steps: [step],
       })
   }
+  insertSteering(Infinity)
   return items
 }
 

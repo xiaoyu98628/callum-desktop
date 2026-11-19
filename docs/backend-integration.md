@@ -82,6 +82,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 `protocol-mapper.ts` 将 Go 字段转换为界面需要的类型，不传递厂商配置。`chat-service.ts` 负责调用固定方法、拼接文本增量、处理归属并构造一致快照：
 
 - `conversation.send` 首次提问创建会话；历史上下文、模型调用和标题均由 Go 管理。
+- `continueConversation` 是固定 IPC 入口，通过 `conversation.continue` 传入会话、来源执行及当前模型 ID。Go 在事务内校验来源仍为最新的已停止或中断任务，追加新执行并恢复保存的工具轨迹。桌面端将受理结果合入同一会话，沿用事件和历史恢复流程。原任务待发送的队列仍等待新执行成功。
 - `conversation.resend` 使用固定会话、用户消息及模型 ID，Go 校验最后一条提问和活动执行。适配层校验受理结果及 `removed_message_ids`，排空旧增量、清理内存旧回答，并发布按新执行标识关联的 `messages-removed` 客户端通知；通知参与同一有界队列和快照回放，查询期间的旧回答不能覆盖已移除状态。旧执行步骤及审计仍由 Go 保存。协议及 Go 服务实现保持现有契约。
 - `message.delta` 追加到指定消息和内容块，`message.updated` 使用完整消息替换本地内容，工具调用前的中间文本可以被清空。
 - 消息的 `created_at`、`completed_at` 经查询和完整消息事件分别映射为 `createdAt`、`completedAt`，以毫秒时间戳传递并校验；缺失或空值保留为未知，不用 `updated_at` 或客户端当前时间补造完成时间。
@@ -93,6 +94,10 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 补充输入的 `user_input.requested/updated` 事件映射为 `ChatUserInput`，校验会话、执行、步骤和问题标识；`user_input.list` 恢复等待快照，回复通过固定 `submitUserInput` IPC 提交。问题与回答由 Go 保存在 `user_input` 步骤中，等待不持有模型调用槽位或数据库事务；服务重启只恢复中断状态，不自动继续。
 
 界面的编辑表单、审批与补充输入卡片见 [对话交互与卡片](architecture.md#对话交互与卡片)。
+
+「常规」通过固定 IPC 读写 `settings.get` 和 `settings.update` 的 `general` 组，由 Go 持久化到 `app_settings`。客户端携带读取到的 revision 保存，冲突后重新读取。桌面只在数据库记录仍为版本 1 的默认排队时迁入旧的本地引导偏好，成功后清理旧键。
+
+主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。「编辑」通过版本校验将待发记录取出为持久草稿，主进程只从待发记录自动续发。竞态导致队首失效时，重新查询当前队首。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按受理时的 `steering_after_step` 插入所属调用过程，后续步骤不会改变气泡位置。同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
 
 ## 步骤查询与输出
 

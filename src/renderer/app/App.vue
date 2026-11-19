@@ -9,10 +9,12 @@ import NewConversationPage from '@/features/conversation/NewConversationPage.vue
 import { provideConversations } from '@/features/conversation/useConversations'
 import { provideMarkdownRenderer } from '@/features/conversation/markdown/useMarkdownRenderer'
 import SettingsPage from '@/features/settings/SettingsPage.vue'
+import { provideFollowUpPreference } from '@/features/settings/useFollowUpPreference'
 import { getDesktopApi } from '@/lib/desktop'
 import type { AppPage, SettingsSection } from './navigation'
 
 provideAppearance()
+const generalSettings = provideFollowUpPreference()
 provideMarkdownRenderer()
 const conversations = provideConversations()
 
@@ -25,7 +27,7 @@ const serviceState = ref<ServiceState | null>(null)
 const desktopError = ref<string | null>(null)
 const restarting = ref(false)
 const retryError = ref('')
-let initializationTask: Promise<void> | null = null
+let initializationTask: Promise<unknown> | null = null
 let stateVersion = 0
 let unsubscribeState: (() => void) | undefined
 let disposed = false
@@ -47,9 +49,16 @@ const startupFailure = computed(() =>
 watch(
   () => serviceState.value?.status,
   (status) => {
-    if ((status !== 'ready' && status !== 'failed') || initialized.value || initializationTask)
+    if (status !== 'ready' && status !== 'failed') return
+    if (initialized.value) {
+      if (status === 'ready') void generalSettings.refresh()
       return
-    initializationTask = conversations.initialize().finally(() => {
+    }
+    if (initializationTask) return
+    initializationTask = Promise.all([
+      conversations.initialize(),
+      status === 'ready' ? generalSettings.refresh() : undefined,
+    ]).finally(() => {
       if (!disposed) initialized.value = true
       initializationTask = null
     })
@@ -137,10 +146,15 @@ onScopeDispose(() => {
     @navigate="navigate"
     @retry="loadAppInfo"
   >
-    <NewConversationPage v-if="activePage === 'conversation'" @configure-models="configureModels" />
+    <NewConversationPage
+      v-if="activePage === 'conversation'"
+      :platform="appInfo?.platform"
+      @configure-models="configureModels"
+    />
     <SettingsPage
       v-else
       v-model:section="settingsSection"
+      :platform="appInfo?.platform"
       @models-updated="conversations.setModels"
       @models-invalidated="conversations.refreshModels"
     />
