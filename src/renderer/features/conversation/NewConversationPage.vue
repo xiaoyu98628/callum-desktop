@@ -275,6 +275,7 @@ const messageRuns = computed(() => {
   return result
 })
 const scroller = ref<HTMLElement | null>(null)
+const conversationPage = ref<HTMLElement | null>(null)
 const messageTimeNow = ref(Date.now())
 let messageTimeTimer: number | undefined
 const composer = ref<HTMLElement | null>(null)
@@ -484,12 +485,54 @@ const primaryEnabled = computed(() =>
 const primaryBusy = computed(() =>
   composerAction.value === 'stop' ? state.cancelling : state.sending,
 )
-const showProcessStop = computed(() => !!activeRun.value && composerAction.value === 'send')
-const activeTimelineVisible = computed(
-  () =>
-    !!activeRun.value &&
-    [...messageRuns.value.values()].some((run) => run.id === activeRun.value?.id),
-)
+const stopShortcutRunId = computed(() => {
+  const run = activeRun.value
+  return run &&
+    run.conversationId === state.selectedId &&
+    composerAction.value === 'send' &&
+    canStop.value &&
+    !state.loading &&
+    !state.sending &&
+    !state.editing
+    ? run.id
+    : null
+})
+const stopEscapeWindowMs = 2000
+let firstStopEscape: number | undefined
+function resetStopShortcut(): void {
+  firstStopEscape = undefined
+}
+watch(stopShortcutRunId, resetStopShortcut, { flush: 'sync' })
+function stopWithEscape(event: KeyboardEvent): void {
+  const target = event.target
+  if (
+    event.key !== 'Escape' ||
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    !stopShortcutRunId.value ||
+    usageHintOpen.value ||
+    commandsOpen.value ||
+    !(target instanceof Node) ||
+    (target !== document.body && !conversationPage.value?.contains(target))
+  ) {
+    resetStopShortcut()
+    return
+  }
+  // 长按产生的重复事件不能确认停止。
+  if (event.repeat) return
+  event.preventDefault()
+  if (firstStopEscape !== undefined && event.timeStamp - firstStopEscape <= stopEscapeWindowMs) {
+    resetStopShortcut()
+    void cancel()
+  } else {
+    firstStopEscape = event.timeStamp
+  }
+}
 const runLabels = {
   pending: '正在准备回答…',
   running: '正在回答…',
@@ -810,6 +853,7 @@ watch(
   },
 )
 onMounted(() => {
+  window.addEventListener('keydown', stopWithEscape)
   messageTimeTimer = window.setInterval(() => {
     messageTimeNow.value = Date.now()
   }, 60_000)
@@ -836,6 +880,7 @@ onMounted(() => {
   }
 })
 onScopeDispose(() => {
+  window.removeEventListener('keydown', stopWithEscape)
   window.clearInterval(messageTimeTimer)
   window.clearTimeout(scrollbarTimer)
   cancelScrollAnimation()
@@ -847,8 +892,11 @@ onScopeDispose(() => {
 
 <template>
   <section
+    ref="conversationPage"
     class="conversation-page relative flex h-full min-h-0 flex-col justify-end"
     aria-label="对话内容"
+    @focusout="resetStopShortcut"
+    @pointerdown="resetStopShortcut"
   >
     <div
       ref="scroller"
@@ -938,26 +986,6 @@ onScopeDispose(() => {
                 @inspect="pauseFollowing"
                 @changed="followRunLayout(item.runId)"
               >
-                <template #actions>
-                  <Button
-                    v-if="showProcessStop && activeRun?.id === item.runId"
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    class="h-6 gap-1.5 px-2 text-xs"
-                    :disabled="!canStop"
-                    :aria-busy="state.cancelling"
-                    @click="cancel"
-                  >
-                    <LoaderCircleIcon
-                      v-if="state.cancelling"
-                      class="size-3 animate-spin"
-                      aria-hidden="true"
-                    />
-                    <SquareIcon v-else class="size-3 fill-current" aria-hidden="true" />
-                    {{ stopLabel }}
-                  </Button>
-                </template>
                 <template #steering="{ message }">
                   <article
                     class="group/message ml-auto w-fit max-w-[88%]"
@@ -1252,14 +1280,6 @@ onScopeDispose(() => {
         <span class="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
           <LaptopIcon class="size-3.5" aria-hidden="true" />此计算机
         </span>
-      </div>
-      <div
-        v-if="showProcessStop && !activeTimelineVisible"
-        class="mx-auto mb-1 flex max-w-3xl justify-end"
-      >
-        <Button type="button" variant="ghost" size="sm" :disabled="!canStop" @click="cancel">
-          {{ stopLabel }}
-        </Button>
       </div>
       <div
         data-composer-frame

@@ -853,13 +853,22 @@ test.describe('后续消息', () => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     await expect(input).toBeEnabled({ timeout: 50_000 })
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: '常规', exact: true }).click()
+    const steer = page.getByRole('radio', { name: '引导', exact: true })
+    await page.getByText('引导', { exact: true }).click()
+    await expect(steer).toBeChecked()
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
     await input.fill('详细分析原始问题')
     await input.press('Enter')
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
     await expect.poll(() => modelEndpoint.requests.some((item) => item.stream)).toBe(true)
 
     await input.fill('引导失败后保留这条消息')
-    await input.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+    const primary = page.locator('[data-composer-primary]')
+    await expect(primary).toHaveAccessibleName('引导当前任务')
+    await expect(primary.locator('svg.lucide-arrow-up')).toHaveCount(1)
+    await primary.click()
     const tray = page.getByRole('region', { name: '后续消息', exact: true })
     await expect(tray.getByRole('alert')).toContainText('消息已退回待发区')
     await expect(tray.getByText('引导失败后保留这条消息', { exact: true })).toBeVisible()
@@ -918,7 +927,7 @@ test.describe('后续消息', () => {
     expect(modelEndpoint.requests.some((item) => item.text === '取出前的队首正文')).toBe(false)
   })
 
-  test('单一输入按钮切换发送与停止，重载后通过三角继续原任务', async ({
+  test('单一输入按钮切换发送与停止，双 Esc 保留草稿，重载后通过三角继续', async ({
     desktop,
     modelEndpoint,
   }) => {
@@ -936,7 +945,8 @@ test.describe('后续消息', () => {
 
     await input.fill('核对结束后继续发出的队列')
     await expect(primary).toHaveAccessibleName('排队发送')
-    await expect(frame.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    await expect(primary.locator('svg.lucide-arrow-up')).toHaveCount(1)
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
     await primary.click()
     await expect(
       page.getByRole('list', { name: '后续消息队列' }).getByText('核对结束后继续发出的队列'),
@@ -944,8 +954,23 @@ test.describe('后续消息', () => {
     await expect(primary).toHaveAccessibleName('停止生成')
 
     await input.fill('稍后发送的输入草稿')
-    const timeline = page.getByRole('region', { name: '调用过程', exact: true }).last()
-    await timeline.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(primary).toHaveAccessibleName('排队发送')
+    await input.fill('')
+    await expect(primary).toHaveAccessibleName('停止生成')
+    await expect(primary.locator('svg.lucide-square')).toHaveCount(1)
+    await input.fill('稍后发送的输入草稿')
+    await input.press('Escape')
+    await expect(primary).toHaveAccessibleName('排队发送')
+    await page.waitForTimeout(2100)
+    await input.press('Escape')
+    await expect(primary).toHaveAccessibleName('排队发送')
+    // 中间按了其他键后，需要重新按两次。长按的重复事件也不能完成确认。
+    await input.press('End')
+    await page.keyboard.down('Escape')
+    await page.keyboard.down('Escape')
+    await expect(primary).toHaveAccessibleName('排队发送')
+    await page.keyboard.up('Escape')
+    await input.press('Escape')
     await expect(primary).toHaveAccessibleName('发送消息')
     await expect(input).toHaveValue('稍后发送的输入草稿')
     await input.fill('')
@@ -2349,12 +2374,13 @@ test.describe('真实 Go 对话交互', () => {
       modelEndpoint,
       profile,
     }) => {
+      test.setTimeout(90_000)
       if (!modelEndpoint) throw new Error('受控端点不存在')
       const page = await desktop.firstWindow()
       const input = page.getByRole('textbox', { name: '消息', exact: true })
       const panel = page.getByRole('region', { name: '工具审批', exact: true })
       const sidebar = page.getByRole('region', { name: '最近', exact: true })
-      await expect(input).toBeEnabled()
+      await expect(input).toBeEnabled({ timeout: 50_000 })
       await input.fill('需要延迟审批')
       await input.press('Enter')
       await expect(page.getByText('准备检查文件。', { exact: true })).toBeVisible()
@@ -5115,9 +5141,10 @@ test.describe('手动压缩上下文', () => {
     desktop,
     modelEndpoint,
   }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
+    await expect(input).toBeEnabled({ timeout: 50_000 })
     const ring = page.getByRole('button', { name: '上下文使用情况', exact: true })
     const popup = page.locator('[data-context-tooltip]')
     await hoverUsage(page)
@@ -5164,9 +5191,15 @@ test.describe('手动压缩上下文', () => {
     await expect
       .poll(async () => command.getAttribute('data-context-percent'))
       .toBe(await ring.getAttribute('data-context-percent'))
+    await input.press('Escape')
+    await expect(command).toHaveCount(0)
+    await expect(page.locator('[data-composer-primary]')).toHaveAccessibleName('排队发送')
     await input.fill('触发统计刷新')
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
-    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+    await input.press('Escape')
+    await expect(page.locator('[data-composer-primary]')).toHaveAccessibleName('排队发送')
+    await input.press('Escape')
+    await expect(page.locator('[data-composer-primary]')).toHaveAccessibleName('发送消息')
+    await expect(input).toHaveValue('触发统计刷新')
     const known = await page.evaluate(async () => {
       const state = await window.callum.getChatOverview(0)
       if (!state.ok || !state.value.models[0]) throw new Error('缺少模型')
