@@ -687,7 +687,7 @@ test.describe('后续消息', () => {
       .filter({ hasText: '把回答改成三条风险' })
     await expect(first).toHaveCount(0)
     await expect(bubble.locator('[data-user-message-text]')).toHaveText('把回答改成三条风险')
-    await expect(bubble.getByRole('status')).toHaveText('引导已接收')
+    await expect(bubble.getByRole('status')).toHaveCount(0)
     await bubble.screenshot({ path: testInfo.outputPath('steering-bubble.png') })
     await expect.poll(() => modelEndpoint.cancelled).toBe(1)
     await expect.poll(() => modelEndpoint.requests.filter((item) => item.stream).length).toBe(2)
@@ -724,7 +724,7 @@ test.describe('后续消息', () => {
     await page.reload()
     await openLatest()
     await expect(bubble).toHaveCount(1)
-    await expect(bubble.getByRole('status')).toHaveText('引导已接收')
+    await expect(bubble.getByRole('status')).toHaveCount(0)
     modelEndpoint.finishSteeredAnswer()
     await expect(
       page.getByText('按引导调整为三条风险：范围、成本、交付。', { exact: true }),
@@ -738,8 +738,9 @@ test.describe('后续消息', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(0)
     await toggle.click()
-    await expect(originalAnswer.locator('[data-steering-message]').getByRole('status')).toHaveText(
-      '引导',
+    await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(1)
+    await expect(originalAnswer.locator('[data-steering-message]').getByRole('status')).toHaveCount(
+      0,
     )
     await toggle.click()
     await expect(originalAnswer.locator('[data-steering-message]')).toHaveCount(0)
@@ -755,6 +756,86 @@ test.describe('后续消息', () => {
     await expect(
       page.getByText('按引导调整为三条风险：范围、成本、交付。', { exact: true }),
     ).toBeVisible()
+  })
+
+  test('命令期间发送的引导排在对应回复之前，展开和刷新后顺序一致', async ({
+    desktop,
+    profile,
+  }, testInfo) => {
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const question = '核对目录后告诉我结果'
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('边运行命令边接收引导')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const overview = answer.getByRole('region', { name: '过程概述', exact: true })
+    await expect(
+      overview.getByRole('button', { name: /工具详情：(正在运行|命令已运行)/ }),
+    ).toBeVisible()
+
+    await input.fill(question)
+    await input.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+    const bubble = overview.locator('[data-steering-message]')
+    await expect(bubble.locator('[data-user-message-text]')).toHaveText(question)
+    await expect(bubble.getByRole('status')).toHaveCount(0)
+    await writeFile(join(profile, 'release-steering-command'), 'release')
+
+    const result = answer.getByText('按新问题核对完毕，目录可以访问。', { exact: true })
+    await expect(result).toBeVisible()
+    const toggle = answer.getByRole('button', { name: '调用过程', exact: true })
+    const verifyOrder = async (): Promise<void> => {
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await toggle.click()
+      await expect(bubble.locator('[data-user-message-text]')).toHaveText(question)
+      await expect(bubble.getByRole('status')).toHaveCount(0)
+      await expect(overview.getByText('收到问题，我先查看目录。', { exact: true })).toBeVisible()
+      await expect(overview.getByRole('button', { name: /工具详情：已查看目录/ })).toBeVisible()
+      expect(
+        await overview.evaluate((section) => {
+          const rows = [...section.querySelectorAll('.activity-rows > *')]
+          const before = rows.findIndex((row) =>
+            row.querySelector('[aria-label^="工具详情：已在 "], [aria-label^="工具详情：已运行"]'),
+          )
+          const questionRow = rows.findIndex((row) => row.matches('[data-steering-message]'))
+          const skipped = rows.findIndex((row) => row.textContent?.includes('读取文件失败'))
+          const commentary = rows.findIndex((row) =>
+            row.textContent?.includes('收到问题，我先查看目录。'),
+          )
+          const directory = rows.findIndex((row) =>
+            row.querySelector('[aria-label^="工具详情：已查看目录"]'),
+          )
+          return (
+            before >= 0 &&
+            before < questionRow &&
+            questionRow < skipped &&
+            skipped < commentary &&
+            commentary < directory
+          )
+        }),
+      ).toBe(true)
+      expect(
+        await result.evaluate((message) => {
+          const question = message.closest('article')?.querySelector('[data-steering-message]')
+          return (
+            !!question &&
+            !!(question.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+          )
+        }),
+      ).toBe(true)
+    }
+    await verifyOrder()
+    await answer.screenshot({
+      path: testInfo.outputPath('question-before-reply.png'),
+      animations: 'disabled',
+    })
+    await page.reload()
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '边运行命令边接收引导', exact: true })
+      .click()
+    await expect(result).toBeVisible()
+    await verifyOrder()
   })
 
   test('模型无法处理引导时提示并退回待发区', async ({ desktop, modelEndpoint }) => {

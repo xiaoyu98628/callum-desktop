@@ -878,9 +878,6 @@ onScopeDispose(() => {
                           </span>
                         </template>
                       </div>
-                      <p class="text-xs text-muted-foreground" role="status">
-                        {{ message.status === 'running' ? '引导已接收' : '引导' }}
-                      </p>
                     </div>
                     <MessageActions
                       :message="message"

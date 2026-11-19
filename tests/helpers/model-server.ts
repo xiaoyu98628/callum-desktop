@@ -240,6 +240,61 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         })
         return
       }
+      if (text === '边运行命令边接收引导') {
+        emit(response, { content: '先完成原本的检查命令。' })
+        const calls = [
+          {
+            name: 'run_command',
+            arguments: {
+              command: [
+                process.execPath,
+                '-e',
+                "const fs = require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0) }, 25); setTimeout(() => process.exit(1), 30000)",
+                join(dirname(fixturePath), 'release-steering-command'),
+              ],
+              cwd: dirname(fixturePath),
+            },
+          },
+          { name: 'read_file', arguments: { path: fixturePath } },
+        ]
+        emit(response, {
+          tool_calls: calls.map((call, index) => ({
+            index,
+            id: `steering-before-${index}`,
+            type: 'function',
+            function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+          })),
+        })
+        finish(response, 'tool_calls')
+        return
+      }
+      if (text.endsWith('核对目录后告诉我结果') && text.includes('较新的明确要求')) {
+        if (
+          messages.some(
+            (item) => item.role === 'tool' && item.tool_call_id === 'steering-directory',
+          )
+        ) {
+          emit(response, { content: '按新问题核对完毕，目录可以访问。' })
+          finish(response)
+          return
+        }
+        emit(response, { content: '收到问题，我先查看目录。' })
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'steering-directory',
+              type: 'function',
+              function: {
+                name: 'list_directory',
+                arguments: JSON.stringify({ path: dirname(fixturePath) }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       if (text.endsWith('把回答改成三条风险') && text.includes('较新的明确要求')) {
         if (
           !messages.some(
