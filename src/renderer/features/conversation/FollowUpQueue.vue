@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -16,7 +15,6 @@ import {
   DropdownMenuTrigger,
 } from 'reka-ui'
 import type { FollowUpChange, FollowUpItem } from '@shared/follow-up'
-import { MAX_MESSAGE_LENGTH } from '@shared/chat'
 
 const props = defineProps<{
   items: FollowUpItem[]
@@ -24,36 +22,13 @@ const props = defineProps<{
   canSteer: boolean
   busy: boolean
   error: string
+  editing: boolean
 }>()
-const emit = defineEmits<{
-  change: [item: FollowUpItem, action: FollowUpChange['action'], text?: string]
+defineEmits<{
+  change: [item: FollowUpItem, action: FollowUpChange['action']]
   start: [item: FollowUpItem]
 }>()
-const edit = ref<FollowUpItem | null>(null)
-const text = ref('')
-const queued = () => props.items.filter((item) => item.state === 'queued')
-
-watch(
-  () => props.items,
-  (items) => {
-    if (
-      edit.value &&
-      !items.some((item) => item.id === edit.value?.id && item.revision === edit.value?.revision)
-    )
-      edit.value = null
-  },
-)
-
-function act(item: FollowUpItem, action: FollowUpChange['action']): void {
-  if (action === 'edit') {
-    edit.value = item
-    text.value = item.text
-  } else emit('change', item, action)
-}
-
-function save(): void {
-  if (edit.value) emit('change', edit.value, 'edit', text.value)
-}
+const queued = () => props.items
 </script>
 
 <template>
@@ -68,27 +43,7 @@ function save(): void {
       aria-label="后续消息队列"
     >
       <li v-for="item in items" :key="item.id" class="px-1.5 py-0.5">
-        <form v-if="edit?.id === item.id" class="space-y-2 py-2" @submit.prevent="save">
-          <textarea
-            v-model="text"
-            aria-label="编辑排队消息"
-            :maxlength="MAX_MESSAGE_LENGTH"
-            class="w-full resize-y rounded-md border bg-background p-2 text-sm"
-            :disabled="busy"
-          />
-          <div class="flex justify-end gap-2">
-            <Button type="button" size="sm" variant="ghost" :disabled="busy" @click="edit = null"
-              >取消</Button
-            >
-            <Button
-              type="submit"
-              size="sm"
-              :disabled="busy || (!text.trim() && !item.attachments.length)"
-              >保存</Button
-            >
-          </div>
-        </form>
-        <div v-else class="flex min-h-8 min-w-0 items-center gap-1.5">
+        <div class="flex min-h-8 min-w-0 items-center gap-1.5">
           <CornerDownRightIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm" :title="item.text || item.attachments.join('、')">
@@ -106,7 +61,7 @@ function save(): void {
             variant="ghost"
             class="h-7 shrink-0 gap-1.5 px-2 text-xs font-medium"
             :disabled="busy"
-            @click="act(item, 'steer')"
+            @click="$emit('change', item, 'steer')"
           >
             <CornerDownRightIcon class="size-3.5" aria-hidden="true" />
             引导
@@ -129,7 +84,7 @@ function save(): void {
             aria-label="删除排队消息"
             title="删除排队消息"
             :disabled="busy"
-            @click="act(item, 'remove')"
+            @click="$emit('change', item, 'remove')"
           >
             <Trash2Icon class="size-3.5" aria-hidden="true" />
           </Button>
@@ -155,19 +110,20 @@ function save(): void {
               >
                 <DropdownMenuItem
                   class="cursor-default rounded-md px-2 py-1.5 outline-none data-[highlighted]:bg-accent"
-                  @select="act(item, 'edit')"
+                  :disabled="editing"
+                  @select="$emit('change', item, 'withdraw')"
                   >编辑</DropdownMenuItem
                 >
                 <DropdownMenuItem
                   class="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 outline-none data-[disabled]:opacity-40 data-[highlighted]:bg-accent"
                   :disabled="queued()[0]?.id === item.id"
-                  @select="act(item, 'up')"
+                  @select="$emit('change', item, 'up')"
                   ><ArrowUpIcon class="size-3.5" aria-hidden="true" />上移</DropdownMenuItem
                 >
                 <DropdownMenuItem
                   class="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 outline-none data-[disabled]:opacity-40 data-[highlighted]:bg-accent"
                   :disabled="queued().at(-1)?.id === item.id"
-                  @select="act(item, 'down')"
+                  @select="$emit('change', item, 'down')"
                   ><ArrowDownIcon class="size-3.5" aria-hidden="true" />下移</DropdownMenuItem
                 >
               </DropdownMenuContent>

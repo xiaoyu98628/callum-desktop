@@ -1,4 +1,4 @@
-import { computed, inject, onMounted, onScopeDispose, provide, ref, watch } from 'vue'
+import { computed, inject, onMounted, onScopeDispose, provide, reactive, ref, watch } from 'vue'
 import { createConversationState } from './state'
 import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
@@ -58,6 +58,10 @@ function createConversations() {
   const hiddenWorkspaces = new Set<string>()
   const draftWorkspaces = new Map<string, string | null>()
   const draftKey = () => state.selectedId ?? `new:${state.workspaceId ?? 'unbound'}`
+  const withdrawn = reactive(new Map<string, { item: FollowUpItem; text: string }>())
+  const followUpDraft = computed(() =>
+    state.selectedId ? withdrawn.get(state.selectedId) : undefined,
+  )
   function releaseEmptyDraft(key: string): void {
     if (!state.drafts[key] && !state.draftAttachments[key]?.length && !state.draftSkills[key])
       draftWorkspaces.delete(key)
@@ -69,8 +73,12 @@ function createConversations() {
     draftWorkspaces.delete(key)
   }
   const draft = computed({
-    get: () => state.drafts[draftKey()] ?? '',
+    get: () => followUpDraft.value?.text ?? state.drafts[draftKey()] ?? '',
     set: (value: string) => {
+      if (followUpDraft.value) {
+        followUpDraft.value.text = value
+        return
+      }
       const key = draftKey()
       if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
         state.error = '草稿数量已达上限，请发送或清空已有草稿。'
@@ -85,8 +93,14 @@ function createConversations() {
       }
     },
   })
-  const draftAttachments = computed(() => state.draftAttachments[draftKey()] ?? [])
-  const draftSkill = computed(() => state.draftSkills[draftKey()] ?? null)
+  const draftAttachments = computed(() =>
+    followUpDraft.value ? [] : (state.draftAttachments[draftKey()] ?? []),
+  )
+  const draftSkill = computed(() => {
+    const item = followUpDraft.value?.item
+    if (item) return item.skill ? { name: item.skill, path: '' } : null
+    return state.draftSkills[draftKey()] ?? null
+  })
   const draftSkillPrefix = computed(() =>
     draftSkill.value ? formatSkillPrefix(draftSkill.value) : '',
   )
@@ -99,6 +113,7 @@ function createConversations() {
   })
   const draftTextLimit = computed(() => MAX_MESSAGE_LENGTH - draftSkillPrefix.value.length)
   function selectDraftSkill(skill: DraftSkill): void {
+    if (followUpDraft.value) return
     const key = draftKey()
     if (!draftWorkspaces.has(key) && draftWorkspaces.size >= 100) {
       state.error = '草稿数量已达上限，请发送或清空已有草稿。'
@@ -110,7 +125,7 @@ function createConversations() {
     delete state.drafts[key]
   }
   function removeDraftSkill(): void {
-    if (state.sending || state.resending || state.compacting) return
+    if (followUpDraft.value || state.sending || state.resending || state.compacting) return
     const key = draftKey()
     delete state.draftSkills[key]
     releaseEmptyDraft(key)
@@ -134,6 +149,11 @@ function createConversations() {
   const followUpError = ref('')
   const followUpBusy = ref(false)
   let followUpRequest = 0
+  function rememberFollowUpDraft(item: FollowUpItem): void {
+    const previous = withdrawn.get(item.conversationId)
+    if (previous?.item.id !== item.id || previous.item.revision !== item.revision)
+      withdrawn.set(item.conversationId, { item, text: item.text })
+  }
 
   async function loadFollowUps(): Promise<void> {
     const id = state.selectedId
@@ -141,7 +161,12 @@ function createConversations() {
     if (!id || state.serviceError) return
     try {
       const items = unwrap(await getDesktopApi().listFollowUps(id))
-      if (!disposed && request === followUpRequest) followUps.value = items
+      if (!disposed && request === followUpRequest) {
+        followUps.value = items.filter((item) => item.state === 'queued')
+        const item = items.find((item) => item.state === 'draft')
+        if (item) rememberFollowUpDraft(item)
+        else withdrawn.delete(id)
+      }
     } catch (error) {
       if (!disposed && request === followUpRequest) followUpError.value = message(error)
     }
@@ -160,12 +185,13 @@ function createConversations() {
   async function actOnFollowUp(
     item: FollowUpItem,
     action: FollowUpChange['action'] | 'start',
-    text?: string,
-  ): Promise<void> {
-    if (followUpBusy.value || state.selectedId !== item.conversationId || state.serviceError) return
+  ): Promise<boolean> {
+    if (followUpBusy.value || state.selectedId !== item.conversationId || state.serviceError)
+      return false
+    if (action === 'withdraw' && (followUpDraft.value || state.editing)) return false
     const run = activeRun.value
-    if (action === 'steer' && (!run || run.status !== 'running' || run.compaction)) return
-    if (action === 'start' && run) return
+    if (action === 'steer' && (!run || run.status !== 'running' || run.compaction)) return false
+    if (action === 'start' && run) return false
     const token = selection
     followUpBusy.value = true
     followUpError.value = ''
@@ -175,17 +201,28 @@ function createConversations() {
       if (action === 'start') {
         unwrap(await api.startFollowUp(input))
       } else {
-        unwrap(
+        const updated = unwrap(
           await api.changeFollowUp({
             ...input,
             action,
-            ...(action === 'edit' && text !== undefined ? { text } : {}),
-            ...(action === 'steer' && run ? { expectedRunId: run.id } : {}),
+            ...((action === 'steer' || action === 'restore_draft') && run
+              ? { expectedRunId: run.id }
+              : {}),
           }),
         )
+        if (updated.state === 'draft') {
+          // 废弃受理前的列表读取，避免快照在同一会话里撤销刚取出的草稿。
+          rememberFollowUpDraft(updated)
+          if (token === selection) {
+            ++followUpRequest
+            followUps.value = followUps.value.filter((row) => row.id !== updated.id)
+          }
+        } else if (action === 'restore_draft') withdrawn.delete(item.conversationId)
       }
+      return token === selection
     } catch (error) {
       if (token === selection) followUpError.value = message(error)
+      return false
     } finally {
       if (token === selection) await loadFollowUps()
       followUpBusy.value = false
@@ -985,7 +1022,8 @@ function createConversations() {
     }
   }
   function addAttachments(files: File[], editing = false): void {
-    if (!files.length || state.sending || state.resending) return
+    if (!files.length || state.sending || state.resending || (!editing && followUpDraft.value))
+      return
     const edit = editing ? state.editing : null
     const errorTarget = edit ?? state
     errorTarget.error = ''
@@ -1017,7 +1055,7 @@ function createConversations() {
     }
   }
   function removeAttachment(index: number, editing = false): void {
-    if (state.sending || state.resending) return
+    if (state.sending || state.resending || (!editing && followUpDraft.value)) return
     if (editing) {
       const edit = state.editing
       if (!edit) return
@@ -1033,8 +1071,9 @@ function createConversations() {
     }
   }
   async function send(mode: FollowUpMode = 'queue'): Promise<void> {
-    if (state.executionSettingsSaving) return
-    if (!draftAttachments.value.length && isCompactCommand(draft.value)) {
+    if (state.executionSettingsSaving || followUpBusy.value) return
+    const editingFollowUp = followUpDraft.value
+    if (!editingFollowUp && !draftAttachments.value.length && isCompactCommand(draft.value)) {
       await compact(true)
       return
     }
@@ -1050,8 +1089,12 @@ function createConversations() {
       state.serviceError ||
       state.modelsLoading ||
       state.modelError ||
-      (!draft.value.trim() && !draftAttachments.value.length) ||
+      (!draft.value.trim() &&
+        !draftAttachments.value.length &&
+        !editingFollowUp?.item.attachments.length) ||
       (draftAttachments.value.some(isImageFile) && !imageInput.value) ||
+      (editingFollowUp?.item.retained?.some((attachment) => attachment.kind === 'image') &&
+        !imageInput.value) ||
       !state.modelId
     )
       return
@@ -1067,6 +1110,29 @@ function createConversations() {
     const run = activeRun.value
     const modelId = state.modelId
     try {
+      const api = getDesktopApi()
+      if (editingFollowUp && conversationId) {
+        const { id, revision } = editingFollowUp.item
+        const input = { id, conversationId, revision, text: body }
+        if (run) {
+          unwrap(
+            await api.changeFollowUp({
+              ...input,
+              action: mode === 'steer' ? 'steer_draft' : 'queue_draft',
+              expectedRunId: run.id,
+              ...(mode === 'queue' ? { modelId } : {}),
+            }),
+          )
+        } else {
+          unwrap(await api.startFollowUp({ ...input, modelId }))
+        }
+        withdrawn.delete(conversationId)
+        if (token === selection && !disposed) {
+          if (run) await loadFollowUps()
+          else await openConversation(conversationId, true)
+        }
+        return
+      }
       const input = {
         conversationId,
         workspaceId,
@@ -1075,7 +1141,6 @@ function createConversations() {
         modelId,
         ...(files.length ? { attachments: await attachmentInputs(files) } : {}),
       }
-      const api = getDesktopApi()
       let acceptedId = conversationId
       if (run && conversationId) {
         unwrap(await api.addFollowUp({ ...input, conversationId, expectedRunId: run.id, mode }))
@@ -1272,6 +1337,7 @@ function createConversations() {
     initialize,
     state,
     followUps,
+    followUpDraft,
     followUpError,
     followUpBusy,
     actOnFollowUp,

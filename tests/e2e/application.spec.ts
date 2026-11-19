@@ -856,6 +856,58 @@ test.describe('后续消息', () => {
     await expect(page.locator('[data-steering-message]')).toHaveCount(0)
   })
 
+  test('队列编辑回到输入框且旧内容不会随上一轮结束自动发送', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少模型模拟端点')
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('思考等待')
+    await input.press('Enter')
+    await expect(stop).toBeEnabled()
+    await expect.poll(() => modelEndpoint.requests.some((item) => item.stream)).toBe(true)
+
+    for (const text of ['取出前的队首正文', '其余队列继续发送']) {
+      await input.fill(text)
+      await input.press('Enter')
+      await expect(input).toHaveValue('')
+    }
+    const queue = page.getByRole('list', { name: '后续消息队列' })
+    const first = queue.getByRole('listitem').filter({ hasText: '取出前的队首正文' })
+    await input.fill('原先输入框的草稿')
+    await first.getByRole('button', { name: '排队消息操作' }).click()
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
+    await expect(input).toHaveValue('取出前的队首正文')
+    await expect(input).toBeFocused()
+    await expect(first).toHaveCount(0)
+    await input.fill('编辑完成手动发送')
+
+    modelEndpoint.finishStream()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((item) => item.stream && item.text === '其余队列继续发送'),
+      )
+      .toBe(true)
+    await expect(stop).toHaveCount(0)
+    await expect(input).toHaveValue('编辑完成手动发送')
+    expect(
+      modelEndpoint.requests.some(
+        (item) => item.text === '取出前的队首正文' || item.text === '编辑完成手动发送',
+      ),
+    ).toBe(false)
+
+    await input.press('Enter')
+    await expect
+      .poll(
+        () =>
+          modelEndpoint.requests.filter((item) => item.stream && item.text === '编辑完成手动发送')
+            .length,
+      )
+      .toBe(1)
+    await expect(input).toHaveValue('原先输入框的草稿')
+    expect(modelEndpoint.requests.some((item) => item.text === '取出前的队首正文')).toBe(false)
+  })
+
   test('停止后保留待发消息并允许手动续发', async ({ desktop, modelEndpoint }) => {
     if (!modelEndpoint) throw new Error('缺少模型模拟端点')
     const page = await desktop.firstWindow()

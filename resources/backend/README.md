@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `4f0a7a3aea09cfe4a1837861f57a82f00e359ab069aecef6bae7f369613ce7c2`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `0525188d11539d17498592932c17fb737f8c07eb753bee0429ea398944562ce5`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `1ed8653b7ae098c3719561126537006ad99f4871d4339e84f3dc1da139f83792` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `668f769f59de7e03779d019c249a43cbf3d277ca2be29973cf00b06d123863bb` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `c59f45f86998006e808a72af0391c50216a3651c8a2800bc806948da03caafae` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `3d26e6ee58741a01c120614732fdc85137cecf492188305e55fddefe2106bc86` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `3c53cd9fab6cdcd7d64ea7234e781b1be39b8ec437e67626c9c3b6a23f56b1af` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `6007d993706f887d03225509cfce9f95c52e1e70c47ebcc9b168d034245bed77` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `b73788fcd4076f08af3d21bcacda7a4bc4c3c9a2e3ed29de65a4a9d5b232c1c7` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `dc615163664a15924c6407a564b083c591f957344f78cb7f4bceb6161940a9a7` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -39,9 +39,9 @@ resources/backend/
 
 单项工具参数超过 16 KiB 时保留明确的工具名和已接收字节数，流式读取及时关闭；确认整批尚未执行且没有取消、传输或保存错误后，反馈模型拆分小补丁或使用脚本生成大文件。相同超限参数无进展时结束，不执行部分批次。`apply_patch` 定义版本为 `2`，同步提示单次参数容量；不提高资源边界、不重放已完成操作。
 
-当前随附程序使用数据库结构版本 `5`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
+当前随附程序使用数据库结构版本 `6`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。版本 `5` 的旧队列表会被拒绝，原数据库文件保留。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
 
-随附服务为后续消息提供持久队列、附件保管和当前执行引导。版本 `5` 新增 `conversation_followups`，符合纯文本摘要约束的旧库可自动保留数据升级。常规偏好保存到 `app_settings` 的 `general` 组，已使用版本 `5` 的库在下次启动时补齐此记录。
+随附服务为后续消息提供持久队列、附件保管和当前执行引导。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
 
 | 接入能力     | 随附程序基线与客户端约束                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

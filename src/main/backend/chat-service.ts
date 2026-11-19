@@ -945,6 +945,7 @@ export class ChatService {
         action: input.action,
         expected_run_id: input.expectedRunId,
         text: input.text,
+        model_id: input.modelId,
       }),
     )
     if (item.conversationId !== input.conversationId || item.id !== input.id)
@@ -958,6 +959,8 @@ export class ChatService {
         id: input.id,
         revision: input.revision,
         after_run_id: afterRunId,
+        text: input.text,
+        model_id: input.modelId,
       }),
     )
     if (id(value.conversation_id) !== input.conversationId) throw new Error('后续执行归属不匹配')
@@ -966,9 +969,24 @@ export class ChatService {
   private async dispatchFollowUp(run: ChatRun): Promise<void> {
     const connection = this.ready
     try {
-      const items = await this.followUps(run.conversationId)
-      const item = items.find((item) => item.state === 'queued')
-      if (item && connection === this.ready) await this.startFollowUp(item, run.id)
+      const attempted = new Set<string>()
+      while (connection === this.ready && attempted.size < 32) {
+        const item = (await this.followUps(run.conversationId)).find(
+          (item) => item.state === 'queued',
+        )
+        if (!item || connection !== this.ready || attempted.has(item.id)) return
+        attempted.add(item.id)
+        try {
+          await this.startFollowUp(
+            { id: item.id, conversationId: item.conversationId, revision: item.revision },
+            run.id,
+          )
+          return
+        } catch (error) {
+          // 取出和出队之间的事务冲突允许重新核对队首，避免让其余消息停在队列。
+          if (!(error instanceof RpcError) || error.code !== 1003) throw error
+        }
+      }
     } catch {
       // 受理冲突、容量不足或连接变化时，Go 事务仍保留队列。
       if (connection === this.ready)

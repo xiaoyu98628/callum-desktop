@@ -46,6 +46,7 @@ import ManualCompactionStatus from './ManualCompactionStatus.vue'
 import type { AppInfo } from '@shared/desktop-api'
 import { useFollowUpPreference } from '@/features/settings/useFollowUpPreference'
 import FollowUpQueue from './FollowUpQueue.vue'
+import type { FollowUpChange, FollowUpItem } from '@shared/follow-up'
 
 const props = defineProps<{ platform?: AppInfo['platform'] | undefined }>()
 defineEmits<{ configureModels: [] }>()
@@ -66,6 +67,7 @@ const {
   workspace,
   activeRun,
   followUps,
+  followUpDraft,
   followUpError,
   followUpBusy,
   actOnFollowUp,
@@ -129,9 +131,17 @@ watch(
   { flush: 'sync' },
 )
 onScopeDispose(() => previews.close())
-const draftItems = computed<AttachmentItem[]>(() =>
-  draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file })),
-)
+const draftItems = computed<AttachmentItem[]>(() => {
+  const item = followUpDraft.value?.item
+  if (item)
+    return (item.retained ?? []).map((block) => ({
+      label: block.name,
+      kind: block.kind,
+      ...(block.size === undefined ? {} : { size: block.size }),
+      source: { conversationId: item.conversationId, messageId: item.id, index: block.index },
+    }))
+  return draftAttachments.value.map((file) => ({ label: file.name || '粘贴的图片', source: file }))
+})
 function historyAttachment(item: ChatMessage, index: number): AttachmentItem {
   const block = item.content[index]!
   return {
@@ -272,10 +282,10 @@ const messageInput = ref<HTMLTextAreaElement | null>(null)
 const hasDraftAttachments = computed(() => draftItems.value.length > 0)
 const {
   focused: commandInputFocused,
-  open: commandsOpen,
+  open: composerCommandsOpen,
   showCompact,
   activeId: activeCommandId,
-  requestingCompact,
+  requestingCompact: composerRequestingCompact,
   matchingSkills,
   loading: skillsLoading,
   failed: skillsFailed,
@@ -286,8 +296,10 @@ const {
 } = useComposerCommands(
   draft,
   hasDraftAttachments,
-  computed(() => !state.serviceError),
+  computed(() => !state.serviceError && !followUpDraft.value),
 )
+const commandsOpen = computed(() => !followUpDraft.value && composerCommandsOpen.value)
+const requestingCompact = computed(() => !followUpDraft.value && composerRequestingCompact.value)
 const usageInput = computed<ContextUsageInput | null>(() =>
   state.loading || state.modelsLoading || !state.modelId
     ? null
@@ -364,6 +376,7 @@ const composerNotice = computed(() =>
 )
 const attachmentBusy = computed(
   () =>
+    !!followUpDraft.value ||
     state.loading ||
     state.sending ||
     state.resending ||
@@ -382,6 +395,7 @@ const canSend = computed(
     !state.loading &&
     !state.loadingList &&
     !state.executionSettingsSaving &&
+    !followUpBusy.value &&
     !state.sending &&
     !state.resending &&
     !state.compacting &&
@@ -442,6 +456,7 @@ function keydown(event: KeyboardEvent): void {
   const input = messageInput.value
   if (
     event.key === 'Backspace' &&
+    !followUpDraft.value &&
     !event.altKey &&
     !event.ctrlKey &&
     !event.metaKey &&
@@ -498,6 +513,15 @@ function selectComposerOption(id: string): void {
 function removeComposerSkill(): void {
   removeDraftSkill()
   messageInput.value?.focus({ preventScroll: true })
+}
+async function changeQueuedMessage(
+  item: FollowUpItem,
+  action: FollowUpChange['action'],
+): Promise<void> {
+  if ((await actOnFollowUp(item, action)) && action === 'withdraw') {
+    await nextTick()
+    messageInput.value?.focus({ preventScroll: true })
+  }
 }
 function submitMessage(alternate = false): void {
   if (!canSend.value) return
@@ -1146,7 +1170,8 @@ onScopeDispose(() => {
           :can-steer="canSteer"
           :busy="followUpBusy || state.sending || !!state.serviceError"
           :error="followUpError"
-          @change="actOnFollowUp"
+          :editing="!!followUpDraft || !!state.editing"
+          @change="changeQueuedMessage"
           @start="actOnFollowUp($event, 'start')"
         />
         <form
@@ -1171,7 +1196,7 @@ onScopeDispose(() => {
           />
           <AttachmentList
             :items="draftItems"
-            removable
+            :removable="!followUpDraft"
             :disabled="state.sending"
             @remove="removeAttachment"
           />
@@ -1179,7 +1204,11 @@ onScopeDispose(() => {
             v-if="draftItems.some(isImageAttachment) && !imageInput"
             class="mb-1 text-xs text-muted-foreground"
           >
-            当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。
+            {{
+              followUpDraft
+                ? '当前模型未启用图片输入，请切换模型或在设置中启用。'
+                : '当前模型未启用图片输入，请在模型设置中启用、切换模型，或移除图片。'
+            }}
           </p>
           <div class="flex min-w-0 items-start gap-1.5">
             <div
@@ -1252,6 +1281,17 @@ onScopeDispose(() => {
               @files="receiveFiles"
             />
             <ApprovalModeSelector class="mr-auto" />
+            <Button
+              v-if="followUpDraft"
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-7 shrink-0 text-xs"
+              :disabled="followUpBusy || state.sending || !!state.serviceError"
+              title="取消编辑并将原消息放回队列"
+              @click="actOnFollowUp(followUpDraft.item, 'restore_draft')"
+              >放回队列</Button
+            >
             <div class="flex min-w-0 items-center gap-2">
               <ContextUsageControl
                 :usage="displayedUsage"
