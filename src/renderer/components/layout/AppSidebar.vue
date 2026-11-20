@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onScopeDispose, ref } from 'vue'
+import { onScopeDispose, reactive, ref } from 'vue'
 import {
   ArchiveIcon,
   ChevronRightIcon,
@@ -16,6 +16,7 @@ import type { Conversation, Workspace, WorkspaceInput, WorkspaceChange } from '@
 import type { AppPage } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import { useConversations } from '@/features/conversation/useConversations'
+import type { ConversationGroup } from '@/features/conversation/state'
 import ConversationList from './ConversationList.vue'
 import SidebarHoverCard from './SidebarHoverCard.vue'
 import SidebarItemMenu from './SidebarItemMenu.vue'
@@ -78,7 +79,18 @@ function trackSidebarScroll(): void {
   }, 700)
 }
 onScopeDispose(() => window.clearTimeout(scrollbarTimer))
-let workspaceClick: { id: string; expanded: boolean } | null = null
+const expandedWorkspaceLists = reactive(new WeakSet<ConversationGroup>())
+let workspaceClick: { id: string; expanded: boolean; listExpanded: boolean } | null = null
+function workspaceListExpanded(workspaceId: string): boolean {
+  const group = state.workspaceGroups[workspaceId]
+  return !!group && expandedWorkspaceLists.has(group)
+}
+function setWorkspaceListExpanded(workspaceId: string, expanded: boolean): void {
+  const group = state.workspaceGroups[workspaceId]
+  if (!group) return
+  if (expanded) expandedWorkspaceLists.add(group)
+  else expandedWorkspaceLists.delete(group)
+}
 function startConversation(workspaceId: string | null = null): void {
   if (workspaceId) expandWorkspace(workspaceId)
   newConversation(workspaceId)
@@ -94,17 +106,21 @@ function selectWorkspace(item: Workspace, event: MouseEvent): void {
     startConversation(item.id)
     return
   }
-  workspaceClick = { id: item.id, expanded: !!state.workspaceGroups[item.id]?.expanded }
+  const expanded = !!state.workspaceGroups[item.id]?.expanded
+  workspaceClick = { id: item.id, expanded, listExpanded: workspaceListExpanded(item.id) }
+  if (expanded) setWorkspaceListExpanded(item.id, false)
   toggleWorkspace(item.id)
 }
 function editWorkspace(item: Workspace, event: MouseEvent): void {
   if (props.collapsed || state.managing || state.serviceError) return
-  // 单击立即展开；双击编辑时恢复此前状态，不让编辑动作改变分组展示。
+  // 双击编辑时恢复单击前的项目与会话列表状态。
   if (
     workspaceClick?.id === item.id &&
     workspaceClick.expanded !== !!state.workspaceGroups[item.id]?.expanded
-  )
+  ) {
     toggleWorkspace(item.id)
+    setWorkspaceListExpanded(item.id, workspaceClick.listExpanded)
+  }
   workspaceClick = null
   manageWorkspace(
     item,
@@ -494,6 +510,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                     <div v-if="state.workspaceGroups[workspace.id]" class="ml-6 pt-0.5">
                       <ConversationList
                         :items="state.workspaceGroups[workspace.id]?.items ?? []"
+                        :expanded="workspaceListExpanded(workspace.id)"
                         :has-more="state.workspaceGroups[workspace.id]?.hasMore ?? false"
                         :loading="state.workspaceGroups[workspace.id]?.loading ?? false"
                         :workspace-name="workspace.name"
@@ -508,6 +525,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                         :active="activePage === 'conversation'"
                         :collapsed="false"
                         :disabled="state.managing || !!state.serviceError"
+                        @update:expanded="setWorkspaceListExpanded(workspace.id, $event)"
                         @select="selectConversation"
                         @rename="(item, trigger) => manageConversation(item, false, trigger)"
                         @delete="(item, trigger) => manageConversation(item, true, trigger)"
@@ -751,7 +769,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
   background-color: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
 }
 
-.sidebar-disclosure {
+#app-sidebar :deep(.sidebar-disclosure) {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
@@ -762,14 +780,14 @@ async function restoreConversation(item: Conversation): Promise<void> {
     visibility 0s linear 220ms;
 }
 
-.sidebar-disclosure[data-open] {
+#app-sidebar :deep(.sidebar-disclosure[data-open]) {
   grid-template-rows: 1fr;
   opacity: 1;
   visibility: visible;
   transition-delay: 0s;
 }
 
-.sidebar-disclosure-clip {
+#app-sidebar :deep(.sidebar-disclosure-clip) {
   min-width: 0;
   min-height: 0;
   overflow: clip;

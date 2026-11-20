@@ -2930,6 +2930,7 @@ test.describe('会话与项目管理', () => {
   test('侧栏超过五条显示展开入口，各列表独立收放并保留当前会话', async ({ desktop }) => {
     test.setTimeout(90_000)
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled({
@@ -2960,9 +2961,8 @@ test.describe('会话与项目管理', () => {
     await expect(recentCollapse).toBeFocused()
     await expect(recentCollapse).toHaveAttribute('aria-expanded', 'true')
     const controlledId = await recentCollapse.getAttribute('aria-controls')
-    await expect(
-      page.locator(`[id="${controlledId}"]`).locator('button[data-conversation-id]'),
-    ).toHaveCount(6)
+    const recentOverflow = page.locator(`[id="${controlledId}"]`)
+    await expect(recentOverflow.locator('button[data-conversation-id]')).toHaveCount(1)
 
     const created = await page.evaluate(() =>
       window.callum.createWorkspace({ name: '五条折叠项目', rootPath: '' }, ''),
@@ -2979,14 +2979,59 @@ test.describe('会话与项目管理', () => {
     await createSidebarConversations(page, created.value.id, 1, '项目新增')
     await expect(projectRows).toHaveCount(5)
     await expect(recentRows).toHaveCount(6)
-    await project.getByRole('button', { name: '展开显示', exact: true }).press('Space')
+    const projectExpand = project.getByRole('button', { name: '展开显示', exact: true })
+    const projectCollapse = project.getByRole('button', { name: '收起显示', exact: true })
+    await projectExpand.press('Space')
     await expect(projectRows).toHaveCount(6)
+    const motion = await projectCollapse.evaluate(async (button: HTMLButtonElement) => {
+      const panel = document.getElementById(button.getAttribute('aria-controls') ?? '')
+      const projectPanel = panel?.closest('[id^="workspace-conversations-"]')
+      if (!panel || !projectPanel) throw new Error('缺少项目会话列表')
+      await Promise.all(panel.getAnimations().map((animation) => animation.finished))
+      const fullHeight = panel.getBoundingClientRect().height
+      const sameTransition =
+        getComputedStyle(panel).transition === getComputedStyle(projectPanel).transition
+      button.click()
+      await Promise.resolve()
+      const transition = panel
+        .getAnimations()
+        .find(
+          (item) =>
+            item instanceof CSSTransition && item.transitionProperty === 'grid-template-rows',
+        )
+      if (!transition?.effect) throw new Error('额外会话没有高度过渡')
+      transition.currentTime = Number(transition.effect.getTiming().duration) / 2
+      const midHeight = panel.getBoundingClientRect().height
+      const inert = panel.inert
+      button.click()
+      await Promise.resolve()
+      return {
+        fullHeight,
+        midHeight,
+        inert,
+        sameTransition,
+        reversedHeight: panel.getBoundingClientRect().height,
+      }
+    })
+    expect(motion.midHeight).toBeGreaterThan(0)
+    expect(motion.midHeight).toBeLessThan(motion.fullHeight)
+    expect(Math.abs(motion.reversedHeight - motion.midHeight)).toBeLessThan(2)
+    expect(motion.inert).toBe(true)
+    expect(motion.sameTransition).toBe(true)
     await recentCollapse.press('Space')
     await expect(recentRows).toHaveCount(5)
     await expect(projectRows).toHaveCount(6)
-    await projectToggle.click()
-    await projectToggle.click()
+    await projectToggle.dblclick()
+    const edit = page.getByRole('dialog', { name: '编辑项目', exact: true })
+    await edit.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(projectCollapse).toHaveAttribute('aria-expanded', 'true')
     await expect(projectRows).toHaveCount(6)
+    await projectToggle.click()
+    await expect(projectToggle).toHaveAttribute('aria-expanded', 'false')
+    await projectToggle.click()
+    await expect(projectRows).toHaveCount(5)
+    await expect(projectExpand).toHaveAttribute('aria-expanded', 'false')
+    await projectExpand.click()
 
     const oldest = project.getByRole('button', { name: '分页-项目-1', exact: true })
     await oldest.click()
@@ -3021,6 +3066,7 @@ test.describe('会话与项目管理', () => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await recentExpand.press('Space')
     await expect(recentRows).toHaveCount(6)
+    await expect(recentOverflow).toHaveCSS('transition-duration', '0s')
     await recentCollapse.press('Enter')
     await expect(recentRows).toHaveCount(5)
     await expect(recentExpand).toBeFocused()
