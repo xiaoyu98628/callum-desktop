@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, ref, useId } from 'vue'
 import {
   ArchiveIcon,
   MessageSquareIcon,
@@ -28,6 +28,8 @@ const props = defineProps<{
   disabled: boolean
   workspaceName?: string
   previewSuspended?: boolean
+  hasMore?: boolean
+  loading?: boolean
 }>()
 const emit = defineEmits<{
   select: [id: string]
@@ -35,14 +37,27 @@ const emit = defineEmits<{
   delete: [item: Conversation, trigger: HTMLElement | null]
   pin: [item: Conversation]
   archive: [item: Conversation]
+  loadMore: []
 }>()
 
 const list = ref<HTMLElement | null>(null)
+const listId = useId()
+const expanded = ref(false)
+const visibleItems = computed(() =>
+  expanded.value || props.collapsed ? props.items : props.items.slice(0, 5),
+)
+const canExpand = computed(() => props.items.length > 5 || props.hasMore)
 const openMenuId = ref<string | null>(null)
 let dialogItemId: string | null = null
 let titleObserver: ResizeObserver | undefined
 const menuItemClass =
   'flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
+
+function toggleExpanded(): void {
+  titleObserver?.disconnect()
+  openMenuId.value = null
+  expanded.value = !expanded.value
+}
 
 function rowButton(id: string): HTMLButtonElement | null {
   return list.value?.querySelector(`button[data-conversation-id="${CSS.escape(id)}"]`) ?? null
@@ -104,121 +119,146 @@ onScopeDispose(() => titleObserver?.disconnect())
 </script>
 
 <template>
-  <div ref="list">
-    <ContextMenuRoot
-      v-for="item in items"
-      :key="item.id"
-      :open="openMenuId === item.id"
-      @update:open="setMenuOpen(item.id, $event)"
-    >
-      <div
-        class="group conversation-row relative flex min-w-0 items-center rounded-lg"
-        :class="active && selectedId === item.id ? 'bg-secondary' : 'hover:bg-accent/70'"
-        @mouseenter="startTitleScroll"
-        @mouseleave="stopTitleScroll"
+  <div>
+    <div :id="listId" ref="list">
+      <ContextMenuRoot
+        v-for="item in visibleItems"
+        :key="item.id"
+        :open="openMenuId === item.id"
+        @update:open="setMenuOpen(item.id, $event)"
       >
-        <SidebarHoverCard
-          v-slot="{ triggerEvents }"
-          :item="item"
-          :workspace-name="workspaceName ?? ''"
-          :disabled="disabled"
-          :suspended="previewSuspended || openMenuId !== null"
+        <div
+          class="group conversation-row relative flex min-w-0 items-center rounded-lg"
+          :class="active && selectedId === item.id ? 'bg-secondary' : 'hover:bg-accent/70'"
+          @mouseenter="startTitleScroll"
+          @mouseleave="stopTitleScroll"
         >
-          <ContextMenuTrigger as-child :disabled="disabled">
+          <SidebarHoverCard
+            v-slot="{ triggerEvents }"
+            :item="item"
+            :workspace-name="workspaceName ?? ''"
+            :disabled="disabled"
+            :suspended="previewSuspended || openMenuId !== null"
+          >
+            <ContextMenuTrigger as-child :disabled="disabled">
+              <Button
+                variant="ghost"
+                class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
+                :class="
+                  collapsed
+                    ? 'justify-center px-0'
+                    : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
+                "
+                :data-conversation-id="item.id"
+                :aria-current="active && selectedId === item.id ? 'page' : undefined"
+                :aria-haspopup="disabled ? undefined : 'menu'"
+                :aria-expanded="disabled ? undefined : openMenuId === item.id"
+                :aria-keyshortcuts="disabled ? 'ArrowRight' : 'Shift+F10 ArrowRight'"
+                v-on="triggerEvents"
+                @click="$event.detail < 2 && emit('select', item.id)"
+                @dblclick="rename(item, $event)"
+                @keydown="handleMenuKey(item.id, $event)"
+                @contextmenu="disabled && $event.preventDefault()"
+              >
+                <MessageSquareIcon
+                  v-if="collapsed"
+                  class="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span v-if="collapsed" class="sr-only">{{ item.title }}</span>
+                <span v-else class="conversation-title min-w-0 truncate">
+                  <span class="conversation-title-text">{{ item.title }}</span>
+                </span>
+              </Button>
+            </ContextMenuTrigger>
+          </SidebarHoverCard>
+          <div v-if="!collapsed" class="absolute right-1 flex items-center">
             <Button
+              type="button"
               variant="ghost"
-              class="h-7 min-w-0 flex-1 justify-start gap-2 py-1 text-[13px] font-normal hover:bg-transparent"
-              :class="
-                collapsed
-                  ? 'justify-center px-0'
-                  : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
-              "
-              :data-conversation-id="item.id"
-              :aria-current="active && selectedId === item.id ? 'page' : undefined"
-              :aria-haspopup="disabled ? undefined : 'menu'"
-              :aria-expanded="disabled ? undefined : openMenuId === item.id"
-              :aria-keyshortcuts="disabled ? 'ArrowRight' : 'Shift+F10 ArrowRight'"
-              v-on="triggerEvents"
-              @click="$event.detail < 2 && emit('select', item.id)"
-              @dblclick="rename(item, $event)"
-              @keydown="handleMenuKey(item.id, $event)"
-              @contextmenu="disabled && $event.preventDefault()"
-            >
-              <MessageSquareIcon
-                v-if="collapsed"
-                class="size-3.5 shrink-0 text-muted-foreground"
-                aria-hidden="true"
-              />
-              <span v-if="collapsed" class="sr-only">{{ item.title }}</span>
-              <span v-else class="conversation-title min-w-0 truncate">
-                <span class="conversation-title-text">{{ item.title }}</span>
-              </span>
+              size="icon"
+              class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+              :aria-label="`${item.pinnedAt === null ? '置顶' : '取消置顶'}${item.title}`"
+              :title="item.pinnedAt === null ? '置顶聊天' : '取消置顶'"
+              :aria-pressed="item.pinnedAt !== null"
+              :disabled="disabled"
+              @click="emit('pin', item)"
+              ><PinIcon v-if="item.pinnedAt === null" class="size-3.5" aria-hidden="true" />
+              <PinOffIcon v-else class="size-3.5" aria-hidden="true" />
             </Button>
-          </ContextMenuTrigger>
-        </SidebarHoverCard>
-        <div v-if="!collapsed" class="absolute right-1 flex items-center">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-            :aria-label="`${item.pinnedAt === null ? '置顶' : '取消置顶'}${item.title}`"
-            :title="item.pinnedAt === null ? '置顶聊天' : '取消置顶'"
-            :aria-pressed="item.pinnedAt !== null"
-            :disabled="disabled"
-            @click="emit('pin', item)"
-            ><PinIcon v-if="item.pinnedAt === null" class="size-3.5" aria-hidden="true" />
-            <PinOffIcon v-else class="size-3.5" aria-hidden="true" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-            :aria-label="`归档${item.title}`"
-            title="归档聊天"
-            :disabled="disabled"
-            @click="emit('archive', item)"
-            ><ArchiveIcon class="size-3.5" aria-hidden="true"
-          /></Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+              :aria-label="`归档${item.title}`"
+              title="归档聊天"
+              :disabled="disabled"
+              @click="emit('archive', item)"
+              ><ArchiveIcon class="size-3.5" aria-hidden="true"
+            /></Button>
+          </div>
         </div>
-      </div>
-      <ContextMenuPortal>
-        <ContextMenuContent
-          :collision-padding="8"
-          class="z-40 w-40 rounded-2xl border bg-popover p-1 text-popover-foreground shadow-lg"
-          @close-auto-focus="restoreMenuFocus(item.id, $event)"
-        >
-          <ContextMenuItem :class="menuItemClass" :disabled="disabled" @select="emit('pin', item)">
-            <PinIcon v-if="item.pinnedAt === null" class="size-3.5" aria-hidden="true" />
-            <PinOffIcon v-else class="size-3.5" aria-hidden="true" />
-            {{ item.pinnedAt === null ? '置顶' : '取消置顶' }}
-          </ContextMenuItem>
-          <ContextMenuItem
-            :class="menuItemClass"
-            :disabled="disabled"
-            @select="chooseDialog('rename', item)"
+        <ContextMenuPortal>
+          <ContextMenuContent
+            :collision-padding="8"
+            class="z-40 w-40 rounded-2xl border bg-popover p-1 text-popover-foreground shadow-lg"
+            @close-auto-focus="restoreMenuFocus(item.id, $event)"
           >
-            <PencilIcon class="size-3.5" aria-hidden="true" />重命名
-          </ContextMenuItem>
-          <ContextMenuItem
-            :class="menuItemClass"
-            :disabled="disabled"
-            @select="emit('archive', item)"
-          >
-            <ArchiveIcon class="size-3.5" aria-hidden="true" />归档聊天
-          </ContextMenuItem>
-          <ContextMenuSeparator class="my-1 border-t" />
-          <ContextMenuItem
-            :class="[menuItemClass, 'text-destructive focus:text-destructive']"
-            :disabled="disabled"
-            @select="chooseDialog('delete', item)"
-          >
-            <Trash2Icon class="size-3.5" aria-hidden="true" />删除会话
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenuPortal>
-    </ContextMenuRoot>
+            <ContextMenuItem
+              :class="menuItemClass"
+              :disabled="disabled"
+              @select="emit('pin', item)"
+            >
+              <PinIcon v-if="item.pinnedAt === null" class="size-3.5" aria-hidden="true" />
+              <PinOffIcon v-else class="size-3.5" aria-hidden="true" />
+              {{ item.pinnedAt === null ? '置顶' : '取消置顶' }}
+            </ContextMenuItem>
+            <ContextMenuItem
+              :class="menuItemClass"
+              :disabled="disabled"
+              @select="chooseDialog('rename', item)"
+            >
+              <PencilIcon class="size-3.5" aria-hidden="true" />重命名
+            </ContextMenuItem>
+            <ContextMenuItem
+              :class="menuItemClass"
+              :disabled="disabled"
+              @select="emit('archive', item)"
+            >
+              <ArchiveIcon class="size-3.5" aria-hidden="true" />归档聊天
+            </ContextMenuItem>
+            <ContextMenuSeparator class="my-1 border-t" />
+            <ContextMenuItem
+              :class="[menuItemClass, 'text-destructive focus:text-destructive']"
+              :disabled="disabled"
+              @select="chooseDialog('delete', item)"
+            >
+              <Trash2Icon class="size-3.5" aria-hidden="true" />删除会话
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenuPortal>
+      </ContextMenuRoot>
+    </div>
+    <Button
+      v-if="!collapsed && expanded && hasMore"
+      type="button"
+      variant="ghost"
+      class="h-7 w-full justify-start rounded-lg px-3 py-1 text-[13px] font-normal text-muted-foreground"
+      :disabled="disabled || loading"
+      @click="emit('loadMore')"
+      >加载更多对话</Button
+    >
+    <Button
+      v-if="!collapsed && canExpand"
+      type="button"
+      variant="ghost"
+      class="h-7 w-full justify-start rounded-lg px-3 py-1 text-[13px] font-normal text-muted-foreground"
+      :aria-expanded="expanded"
+      :aria-controls="listId"
+      @click="toggleExpanded"
+      >{{ expanded ? '收起显示' : '展开显示' }}</Button
+    >
   </div>
 </template>
 

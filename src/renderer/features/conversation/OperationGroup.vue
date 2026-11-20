@@ -4,15 +4,19 @@ import { BookOpenIcon, PencilIcon, SquareTerminalIcon } from '@lucide/vue'
 import { operationSummary } from '@shared/timeline-groups'
 import type { OperationGroup } from '@shared/timeline-groups'
 import ActivityDisclosure from './ActivityDisclosure.vue'
+import { activityFade } from './activity-fade'
 
 const props = defineProps<{
   group: OperationGroup
   current: boolean
   connected: boolean
   partial: boolean
+  fadeAt?: number | undefined
 }>()
 const emit = defineEmits<{ inspect: []; changed: []; closing: [] }>()
+const vActivityFade = activityFade()
 const manual = ref<boolean | null>(null)
+const manualOpenAt = ref(0)
 const summary = computed(() => operationSummary(props.group.steps, props.connected))
 const grouped = computed(() => props.partial || props.group.steps.length > 1)
 const expanded = computed(
@@ -24,6 +28,10 @@ const notice = computed(() =>
   props.partial ? summary.value.notice.replace(/\d+ 项/g, '') : summary.value.notice,
 )
 const label = computed(() => [title.value, notice.value].filter(Boolean).join(' · '))
+const headerFade = ref(props.fadeAt)
+watch([grouped, label], () => {
+  headerFade.value = props.fadeAt
+})
 const running = computed(
   () =>
     props.current &&
@@ -37,6 +45,7 @@ const icon = computed(() => {
     : SquareTerminalIcon
 })
 function toggle(): void {
+  if (!expanded.value) manualOpenAt.value = performance.now()
   manual.value = !expanded.value
   emit('inspect')
 }
@@ -71,12 +80,17 @@ watch(expanded, (value) => {
     @changed="emit('changed')"
   >
     <template #label>
-      <span class="activity-tool-label activity-group-label">
+      <span
+        v-activity-fade="{ id: group.id, at: headerFade, part: 'label' }"
+        class="activity-tool-label activity-group-label"
+      >
         <component :is="icon" aria-hidden="true" />
         <span :class="{ 'activity-shimmer': running }">{{ title }}</span>
         <span v-if="notice" :class="summary.danger ? 'text-destructive' : ''">· {{ notice }}</span>
       </span>
     </template>
-    <div :class="{ 'activity-group-operations': grouped }"><slot /></div>
+    <div :class="{ 'activity-group-operations': grouped }">
+      <slot :animate-after="manualOpenAt" />
+    </div>
   </ActivityDisclosure>
 </template>

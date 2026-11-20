@@ -2888,9 +2888,235 @@ async function addTestWorkspace(
   await expect(page.getByRole('region', { name, exact: true })).toBeVisible()
 }
 
+async function createSidebarConversations(
+  page: Page,
+  workspaceId: string | null,
+  count: number,
+  prefix: string,
+): Promise<void> {
+  await page.evaluate(
+    async ({ workspaceId, count, prefix }) => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.models[0]) throw new Error('侧栏测试模型不存在')
+      for (let index = 0; index < count; index++) {
+        const accepted = await window.callum.sendMessage({
+          conversationId: null,
+          workspaceId,
+          modelId: overview.value.models[0].id,
+          text: `分页-${prefix}-${index + 1}`,
+        })
+        if (!accepted.ok) throw new Error(accepted.error)
+        const deadline = Date.now() + 5000
+        while (true) {
+          const detail = await window.callum.getConversation(accepted.value.conversationId)
+          if (!detail.ok) throw new Error(detail.error)
+          if (
+            detail.value.runs.find((run) => run.id === accepted.value.runId)?.status === 'completed'
+          )
+            break
+          if (Date.now() > deadline) throw new Error('侧栏测试会话生成超时')
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+      }
+    },
+    { workspaceId, count, prefix },
+  )
+}
+
 test.describe('会话与项目管理', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+
+  test('侧栏超过五条显示展开入口，各列表独立收放并保留当前会话', async ({ desktop }) => {
+    test.setTimeout(90_000)
+    const page = await desktop.firstWindow()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled({
+      timeout: 50_000,
+    })
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    const recentRows = recent.locator('button[data-conversation-id]')
+    await expect(recent.getByRole('button', { name: '展开显示', exact: true })).toHaveCount(0)
+    await createSidebarConversations(page, null, 5, '最近')
+    await expect(recentRows).toHaveCount(5)
+    await expect(recent.getByRole('button', { name: '展开显示', exact: true })).toHaveCount(0)
+    await createSidebarConversations(page, null, 1, '最近新增')
+    await expect(recentRows).toHaveCount(5)
+    const recentExpand = recent.getByRole('button', { name: '展开显示', exact: true })
+    await expect(recentExpand).toBeVisible()
+    await expect(recentExpand).toHaveAttribute('aria-expanded', 'false')
+    await expect(recentExpand).toHaveCSS('justify-content', 'flex-start')
+    await expect(recentExpand).toHaveCSS('font-size', '13px')
+    const order = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok) throw new Error(overview.error)
+      return overview.value.conversations.map((item) => item.title)
+    })
+    await expect(recentRows).toHaveText(order.slice(0, 5))
+    await recentExpand.press('Enter')
+    await expect(recentRows).toHaveText(order)
+    const recentCollapse = recent.getByRole('button', { name: '收起显示', exact: true })
+    await expect(recentCollapse).toBeFocused()
+    await expect(recentCollapse).toHaveAttribute('aria-expanded', 'true')
+    const controlledId = await recentCollapse.getAttribute('aria-controls')
+    await expect(
+      page.locator(`[id="${controlledId}"]`).locator('button[data-conversation-id]'),
+    ).toHaveCount(6)
+
+    const created = await page.evaluate(() =>
+      window.callum.createWorkspace({ name: '五条折叠项目', rootPath: '' }, ''),
+    )
+    if (!created.ok) throw new Error(created.error)
+    const project = page.getByRole('region', { name: '五条折叠项目', exact: true })
+    const projectToggle = project.getByRole('button', { name: '五条折叠项目', exact: true })
+    await projectToggle.click()
+    const projectRows = project.locator('button[data-conversation-id]')
+    await expect(project.getByText('暂无聊天', { exact: true })).toBeVisible()
+    await createSidebarConversations(page, created.value.id, 5, '项目')
+    await expect(projectRows).toHaveCount(5)
+    await expect(project.getByRole('button', { name: '展开显示', exact: true })).toHaveCount(0)
+    await createSidebarConversations(page, created.value.id, 1, '项目新增')
+    await expect(projectRows).toHaveCount(5)
+    await expect(recentRows).toHaveCount(6)
+    await project.getByRole('button', { name: '展开显示', exact: true }).press('Space')
+    await expect(projectRows).toHaveCount(6)
+    await recentCollapse.press('Space')
+    await expect(recentRows).toHaveCount(5)
+    await expect(projectRows).toHaveCount(6)
+    await projectToggle.click()
+    await projectToggle.click()
+    await expect(projectRows).toHaveCount(6)
+
+    const oldest = project.getByRole('button', { name: '分页-项目-1', exact: true })
+    await oldest.click()
+    await expect(oldest).toHaveAttribute('aria-current', 'page')
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+      '分页-项目-1',
+    )
+    await project.getByRole('button', { name: '收起显示', exact: true }).click()
+    await expect(projectRows).toHaveCount(5)
+    await expect(oldest).toHaveCount(0)
+    await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+      '分页-项目-1',
+    )
+    await mkdir('.artifacts/screenshots', { recursive: true })
+    await page.screenshot({ path: '.artifacts/screenshots/sidebar-five-light.png' })
+    await project.getByRole('button', { name: '展开显示', exact: true }).click()
+    await expect(oldest).toHaveAttribute('aria-current', 'page')
+    await oldest.focus()
+    await page.keyboard.press('Shift+F10')
+    await page.getByRole('menuitem', { name: '置顶', exact: true }).click()
+    await expect(projectRows.first()).toHaveText('分页-项目-1')
+    await project.getByRole('button', { name: '归档分页-项目-1', exact: true }).click()
+    await expect(projectRows).toHaveCount(5)
+    await expect(project.getByRole('button', { name: '收起显示', exact: true })).toHaveCount(0)
+    await expect(project.getByRole('button', { name: '展开显示', exact: true })).toHaveCount(0)
+    await expect(recentRows).toHaveCount(5)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByText('深色', { exact: true }).click()
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await recentExpand.press('Space')
+    await expect(recentRows).toHaveCount(6)
+    await recentCollapse.press('Enter')
+    await expect(recentRows).toHaveCount(5)
+    await expect(recentExpand).toBeFocused()
+    await page.screenshot({ path: '.artifacts/screenshots/sidebar-five-dark-small.png' })
+    expect(errors).toEqual([])
+  })
+
+  for (const inProject of [false, true]) {
+    test(`五条折叠${inProject ? '项目' : '最近'}列表展开后可分页，收起保留已加载记录`, async ({
+      desktop,
+    }) => {
+      test.setTimeout(90_000)
+      const page = await desktop.firstWindow()
+      await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled({
+        timeout: 50_000,
+      })
+      let workspaceId: string | null = null
+      if (inProject) {
+        const created = await page.evaluate(() =>
+          window.callum.createWorkspace({ name: '分页折叠项目', rootPath: '' }, ''),
+        )
+        if (!created.ok) throw new Error(created.error)
+        workspaceId = created.value.id
+      }
+      await createSidebarConversations(page, workspaceId, 51, '侧栏分页')
+      const pages = await page.evaluate(async (workspaceId) => {
+        const load = (offset: number) =>
+          workspaceId
+            ? window.callum.getWorkspaceConversations(workspaceId, offset)
+            : window.callum.getChatOverview(offset)
+        return { first: await load(0), second: await load(50) }
+      }, workspaceId)
+      expect(pages.first.ok && pages.first.value.hasMore).toBe(true)
+      expect(pages.second.ok && pages.second.value.conversations).toHaveLength(1)
+      await desktop.evaluate(
+        ({ ipcMain }, { channel, pages, inProject }) => {
+          let requests = 0
+          Reflect.set(globalThis, 'sidebarPageOffsets', [])
+          ipcMain.removeHandler(channel)
+          ipcMain.handle(channel, (_event, ...args) => {
+            const offset = Number(args.at(-1))
+            Reflect.get(globalThis, 'sidebarPageOffsets').push(offset)
+            if (!offset) return pages.first
+            if (++requests === 1)
+              return new Promise((resolve) =>
+                Reflect.set(globalThis, 'releaseSidebarPage', () =>
+                  resolve(inProject ? { ok: false, error: '受控分页读取错误' } : pages.second),
+                ),
+              )
+            return pages.second
+          })
+        },
+        {
+          channel: inProject
+            ? IPC_CHANNELS.getWorkspaceConversations
+            : IPC_CHANNELS.getChatOverview,
+          pages,
+          inProject,
+        },
+      )
+      await page.reload()
+      const region = page.getByRole('region', {
+        name: inProject ? '分页折叠项目' : '最近',
+        exact: true,
+      })
+      if (inProject) await region.getByRole('button', { name: '分页折叠项目', exact: true }).click()
+      const rows = region.locator('button[data-conversation-id]')
+      const more = region.getByRole('button', { name: '加载更多对话', exact: true })
+      await expect(rows).toHaveCount(5)
+      await expect(more).toHaveCount(0)
+      await region.getByRole('button', { name: '展开显示', exact: true }).click()
+      await expect(rows).toHaveCount(50)
+      await more.click()
+      await expect(more).toBeDisabled()
+      await region.getByRole('button', { name: '收起显示', exact: true }).click()
+      await expect(rows).toHaveCount(5)
+      await desktop.evaluate(() => Reflect.get(globalThis, 'releaseSidebarPage')())
+      if (inProject) await expect(region.getByRole('alert')).toHaveText('受控分页读取错误')
+      await region.getByRole('button', { name: '展开显示', exact: true }).click()
+      if (inProject) {
+        await expect(rows).toHaveCount(50)
+        await expect(more).toBeEnabled()
+        await more.click()
+        await expect(region.getByRole('alert')).toHaveCount(0)
+      }
+      await expect(rows).toHaveCount(51)
+      await expect(more).toHaveCount(0)
+      await region.getByRole('button', { name: '收起显示', exact: true }).click()
+      await expect(rows).toHaveCount(5)
+      await region.getByRole('button', { name: '展开显示', exact: true }).click()
+      await expect(rows).toHaveCount(51)
+      expect(await desktop.evaluate(() => Reflect.get(globalThis, 'sidebarPageOffsets'))).toEqual(
+        inProject ? [0, 50, 50] : [0, 50],
+      )
+    })
+  }
 
   test('输入区可搜索和新建项目，最近入口与项目选择保留隔离草稿并在发送时绑定', async ({
     desktop,
@@ -6086,78 +6312,191 @@ test.describe('Markdown 回答展示', () => {
   })
 
   for (const renderDelay of [0, 80])
-    test(`持续分片和慢排版仍持续更新，复用稳定节点且不抢回阅读位置（${renderDelay}ms）`, async ({
+    test(`持续分片在排版前显示，复用稳定节点且不抢回阅读位置（${renderDelay}ms）`, async ({
       desktop,
       modelEndpoint,
     }) => {
+      test.setTimeout(60_000)
       if (!modelEndpoint) throw new Error('受控端点不存在')
       const page = await desktop.firstWindow()
       await page.emulateMedia({ reducedMotion: 'no-preference' })
       await page.evaluate((delay) => {
-        if (delay === 0) return
-        // 每次解析额外等待 80ms，稳定复现分片快于排版时结果被不断作废的问题。
+        let hold = false
+        const held: (() => void)[] = []
+        let replies = 0
         const OriginalWorker = window.Worker
         class DelayedWorker extends OriginalWorker {
           postMessage(message: unknown): void {
-            setTimeout(() => super.postMessage(message), delay)
+            const send = (): void => {
+              this.addEventListener('message', () => replies++, { once: true })
+              super.postMessage(message)
+            }
+            if (hold) held.push(send)
+            else if (delay) setTimeout(send, delay)
+            else send()
           }
         }
+        Reflect.set(window, 'holdMarkdown', () => {
+          hold = true
+        })
+        Reflect.set(window, 'heldMarkdown', () => held.length)
+        Reflect.set(window, 'resumeMarkdown', () => {
+          hold = false
+          const before = replies
+          for (const send of held.splice(0)) send()
+          return before
+        })
+        Reflect.set(window, 'markdownReplies', () => replies)
         Reflect.set(window, 'Worker', DelayedWorker)
       }, renderDelay)
       const input = page.getByRole('textbox', { name: '消息', exact: true })
-      await expect(input).toBeEnabled()
+      await expect(input).toBeEnabled({ timeout: 40_000 })
       await input.fill('连续流渲染')
       await input.press('Enter')
       const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
       await expect(answer.getByRole('heading', { name: '连续流渲染', exact: true })).toBeVisible()
+      await expect(answer).toContainText('连续正文：')
       await answer.evaluate((element) => {
         const heading = element.querySelector('h1'),
           code = element.querySelector('pre'),
-          button = element.querySelector('button[data-copy-code]')
-        const updates: { index: number; delayMs: number }[] = []
-        let previous = -1
-        const observer = new MutationObserver(() => {
-          const latest = Array.from(
-            (element.textContent ?? '').matchAll(/序号(\d{3})时刻(\d{13})/g),
-          ).at(-1)
-          const index = Number(latest?.[1] ?? -1)
-          if (index > previous) {
-            previous = index
+          button = element.querySelector('button[data-copy-code]'),
+          tail = element.querySelector('.markdown-part:last-child > p')
+        const updates: {
+          length: number
+          characters: number
+          time: number
+          lastPacketDelay: number | null
+        }[] = []
+        const reveals: { text: string; opacity: number }[] = []
+        const observeReveal = (event: Event): void => {
+          if (
+            !(event instanceof AnimationEvent) ||
+            event.animationName !== 'markdown-stream-reveal' ||
+            !(event.target instanceof HTMLElement)
+          )
+            return
+          reveals.push({
+            text: event.target.textContent ?? '',
+            opacity: Number(getComputedStyle(event.target).opacity),
+          })
+        }
+        element.addEventListener('animationstart', observeReveal)
+        const prefixLength = (tail?.textContent ?? '').trimEnd().length
+        let previous = 0
+        let shrank = false
+        let frame = requestAnimationFrame(sample)
+        function sample(time: number): void {
+          const text = (tail?.textContent ?? '').trimEnd().slice(prefixLength)
+          if (text.length < previous) shrank = true
+          if (text.length > previous) {
+            const latest = Array.from(text.matchAll(/序号\d{3}时刻(\d{13})正文。/g)).at(-1)
             updates.push({
-              index,
-              delayMs: Date.now() - Number(latest?.[2] ?? Date.now()),
+              length: text.length,
+              characters: text.length - previous,
+              time,
+              lastPacketDelay: latest ? Date.now() - Number(latest[1]) : null,
             })
+            previous = text.length
           }
-        })
-        observer.observe(element, { subtree: true, childList: true, characterData: true })
+          frame = requestAnimationFrame(sample)
+        }
         Reflect.set(window, 'streamRenderingReport', () => ({
           updates,
+          reveals,
+          shrank,
           sameHeading: heading === element.querySelector('h1'),
           sameCode: code === element.querySelector('pre'),
           sameButton: button === element.querySelector('button[data-copy-code]'),
+          sameParagraph: tail === element.querySelector('.markdown-part:last-child > p'),
         }))
         Reflect.set(window, 'stopStreamObservation', () => {
-          observer.disconnect()
+          cancelAnimationFrame(frame)
+          element.removeEventListener('animationstart', observeReveal)
         })
       })
+      const packets: string[] = []
       for (let index = 0; index < 60; index++) {
-        modelEndpoint.appendStream(`序号${String(index).padStart(3, '0')}时刻${Date.now()}正文。`)
+        const packet = `序号${String(index).padStart(3, '0')}时刻${Date.now()}正文。`
+        packets.push(packet)
+        modelEndpoint.appendStream(packet)
         await new Promise((resolve) => setTimeout(resolve, 12))
       }
-      await expect(answer).toContainText('序号059')
+      await expect(answer).toContainText(packets.at(-1)!)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => Reflect.get(window, 'streamRenderingReport')().updates.at(-1)?.length,
+          ),
+        )
+        .toBe(packets.join('').length)
       const report = await page.evaluate(() => Reflect.get(window, 'streamRenderingReport')())
       await mkdir('.artifacts', { recursive: true })
       await writeFile(
-        `.artifacts/stream-rendering-${renderDelay}.json`,
+        `.artifacts/stream-preview-${renderDelay}.json`,
         JSON.stringify(report, null, 2),
       )
-      expect(report.updates.length).toBeGreaterThanOrEqual(5)
+      expect(report.updates.length).toBeGreaterThan(1)
+      expect(report.updates.at(-1)?.lastPacketDelay).toBeLessThan(350)
+      expect(report.shrank).toBe(false)
       expect(report.sameHeading).toBe(true)
       expect(report.sameCode).toBe(true)
       expect(report.sameButton).toBe(true)
+      expect(report.sameParagraph).toBe(true)
+      const fades = report.reveals.filter((sample: { text: string }) =>
+        /[序号时刻0-9正文]/.test(sample.text),
+      )
+      expect(fades.length).toBeGreaterThan(0)
+      expect(fades.every((sample: { text: string }) => !sample.text.includes('连续正文：'))).toBe(
+        true,
+      )
+      expect(fades.some((sample: { opacity: number }) => sample.opacity < 1)).toBe(true)
+      await page.evaluate(() => Reflect.get(window, 'stopStreamObservation')())
+
+      const tail = answer.locator('.markdown-part:last-child > p')
+      const probe = '这一批文字整段到达，在连续换行时也能看见尾端的透明度变化。'.repeat(6)
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+      await tail.evaluate((paragraph) => {
+        Reflect.set(window, 'previewParagraph', paragraph)
+        paragraph.addEventListener(
+          'animationstart',
+          () => {
+            const fragments = Array.from(paragraph.querySelectorAll('.markdown-stream-fragment'))
+            Reflect.set(
+              window,
+              'previewLines',
+              new Set(
+                fragments.flatMap((fragment) =>
+                  Array.from(fragment.getClientRects(), (rect) => rect.top),
+                ),
+              ).size,
+            )
+            Reflect.set(
+              window,
+              'previewOpacities',
+              fragments.map((fragment) => Number(getComputedStyle(fragment).opacity)),
+            )
+          },
+          { once: true },
+        )
+        Reflect.get(window, 'holdMarkdown')()
+      })
+      modelEndpoint.appendStream(probe)
+      await expect(tail).toHaveText(`连续正文：${packets.join('')}${probe}`)
+      await expect.poll(() => page.evaluate(() => Reflect.get(window, 'heldMarkdown')())).toBe(1)
+      await expect
+        .poll(() => page.evaluate(() => Reflect.get(window, 'previewLines')))
+        .toBeGreaterThan(1)
+      const opacities: number[] = await page.evaluate(() => Reflect.get(window, 'previewOpacities'))
+      expect(new Set(opacities).size).toBeGreaterThan(1)
+      expect(opacities.every((opacity) => opacity > 0 && opacity < 1)).toBe(true)
+      const replies: number = await page.evaluate(() => Reflect.get(window, 'resumeMarkdown')())
+      await expect
+        .poll(() => page.evaluate(() => Reflect.get(window, 'markdownReplies')()))
+        .toBeGreaterThan(replies)
+      await expect(tail).toHaveText(`连续正文：${packets.join('')}${probe}`)
       expect(
-        Math.max(...report.updates.map((sample: { delayMs: number }) => sample.delayMs)),
-      ).toBeLessThan(500)
+        await tail.evaluate((paragraph) => paragraph === Reflect.get(window, 'previewParagraph')),
+      ).toBe(true)
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
       const scroller = page.locator('[data-conversation-scroll]')
       const distanceFromBottom = () =>
@@ -6180,6 +6519,9 @@ test.describe('Markdown 回答展示', () => {
       ).toBe(3)
       await page.emulateMedia({ reducedMotion: 'reduce' })
       await expect(dots.first()).toHaveCSS('animation-name', 'none')
+      modelEndpoint.appendStream('减少动态效果时收到的新文字。')
+      await expect(answer).toContainText('减少动态效果时收到的新文字。')
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
       await page.emulateMedia({ reducedMotion: 'no-preference' })
       const indicatorBounds = (await runningIndicator.boundingBox())!
       const inputArea = (await composer.boundingBox())!
@@ -6199,18 +6541,71 @@ test.describe('Markdown 回答展示', () => {
       await expect(latest.locator('.conversation-progress-dots > span')).toHaveCount(3)
       await latest.click()
       await expect.poll(distanceFromBottom).toBeLessThan(1)
+
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+      await answer.evaluate((element) => {
+        const events: { text: string; container: string; active: boolean; opacity: number }[] = []
+        element.addEventListener('animationstart', (event) => {
+          const node = event.target
+          if (
+            !(event instanceof AnimationEvent) ||
+            event.animationName !== 'markdown-stream-reveal' ||
+            !(node instanceof HTMLElement)
+          )
+            return
+          events.push({
+            text: node.textContent ?? '',
+            container: node.parentElement?.tagName ?? '',
+            active: !!node.closest('.markdown-message[data-streaming]'),
+            opacity: Number(getComputedStyle(node).opacity),
+          })
+        })
+        Reflect.set(window, 'mixedMarkdownReveals', events)
+      })
+      const hasReveal = (container: string, text: string, active = true) =>
+        page.evaluate(
+          ({ container, text, active }) =>
+            Reflect.get(window, 'mixedMarkdownReveals').some(
+              (event: { text: string; container: string; active: boolean; opacity: number }) =>
+                event.container === container &&
+                text.includes(event.text) &&
+                event.active === active &&
+                event.opacity > 0 &&
+                event.opacity < 1,
+            ),
+          { container, text, active },
+        )
+      modelEndpoint.appendStream('\n\n## 混排标题\n\n- **核查要点** 已检查。')
+      await expect(answer.getByRole('heading', { name: '混排标题' })).toBeVisible()
+      await expect.poll(() => hasReveal('H2', '混排标题')).toBe(true)
+      await expect.poll(() => hasReveal('STRONG', '核查要点')).toBe(true)
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+      modelEndpoint.appendStream('补')
+      await expect.poll(() => hasReveal('LI', '补')).toBe(true)
+      modelEndpoint.appendStream('\n\n建议检查 `npm test` 和 [项目文档](https://example.com)。')
+      await expect(answer.getByRole('link', { name: '项目文档' })).toBeVisible()
+      await expect.poll(() => hasReveal('CODE', 'npm test')).toBe(true)
+      await expect.poll(() => hasReveal('A', '项目文档')).toBe(true)
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+
       await scroller.evaluate((element) => {
         element.scrollTop = 120
       })
       await expect(latest).toBeEnabled()
+      await page.evaluate(() => Reflect.get(window, 'holdMarkdown')())
+      modelEndpoint.appendStream('\n\n**完成前**的最后一段及时显示。')
       modelEndpoint.finishStream()
       await expect(page.getByRole('button', { name: '停止生成', exact: true })).not.toBeVisible()
+      await expect.poll(() => page.evaluate(() => Reflect.get(window, 'heldMarkdown')())).toBe(1)
+      await page.evaluate(() => Reflect.get(window, 'resumeMarkdown')())
+      await expect(answer).toContainText('完成前的最后一段及时显示。')
+      await expect.poll(() => hasReveal('STRONG', '完成前', false)).toBe(true)
+      await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
       await expect(latest.locator('svg')).toBeVisible()
       await latest.press('Enter')
       await expect.poll(distanceFromBottom).toBeLessThan(1)
       await expect(latest).toHaveCount(0)
       await expect(answer.locator('pre')).toHaveCount(12)
-      await page.evaluate(() => Reflect.get(window, 'stopStreamObservation')())
 
       const viewportBounds = (await scroller.boundingBox())!
       const composerBounds = (await composer.boundingBox())!
@@ -6414,19 +6809,30 @@ test.describe('Markdown 回答展示', () => {
 
   test('长内容完整回退为文本，取消及切换页面后不遗留旧排版', async ({ desktop, modelEndpoint }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     await expect(input).toBeEnabled()
-    await input.fill('Markdown 流式')
+    await input.fill('连续流渲染')
     await input.press('Enter')
     let answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
-    await expect(answer.getByRole('heading', { name: 'Markdown 示例', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(answer.getByRole('heading', { name: '连续流渲染', exact: true })).toBeVisible()
+    await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+    await answer.evaluate((element) => {
+      const stop = (event: Event): void => {
+        if (!(event instanceof AnimationEvent) || event.animationName !== 'markdown-stream-reveal')
+          return
+        element.removeEventListener('animationstart', stop)
+        document.querySelector<HTMLButtonElement>('button[aria-label="停止生成"]')?.click()
+      }
+      element.addEventListener('animationstart', stop)
+    })
+    modelEndpoint?.appendStream('\n\n- **停止时**保留最后一批文字。')
     await expect(page.getByText('生成已停止', { exact: true })).toBeVisible()
-    modelEndpoint?.finishMarkdown()
+    await expect(answer).toContainText('停止时保留最后一批文字。')
+    await expect(answer.locator('.markdown-stream-fragment')).toHaveCount(0)
+    modelEndpoint?.finishStream()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
-    await expect(
-      page.getByRole('heading', { name: 'Markdown 示例', exact: true }),
-    ).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: '连续流渲染', exact: true })).not.toBeVisible()
     await input.fill('Markdown 长内容')
     await input.press('Enter')
     answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
@@ -6471,12 +6877,60 @@ test.describe('Markdown 回答展示', () => {
   })
 })
 
+async function observeActivityFades(page: Page) {
+  await page.evaluate(() => {
+    const events: {
+      part: string
+      stepId: string | null
+      text: string
+      opacity: number
+      duration: string
+      groupHeader: boolean
+    }[] = []
+    document.addEventListener('animationstart', (event) => {
+      const element = event.target
+      if (!(element instanceof HTMLElement) || !element.closest('.activity-run')) return
+      const part =
+        event.animationName === 'activity-stream-reveal'
+          ? element.dataset.activityFade
+          : event.animationName === 'markdown-stream-reveal' &&
+              element.closest('.activity-commentary')
+            ? 'commentary'
+            : undefined
+      if (!part) return
+      const style = getComputedStyle(element)
+      events.push({
+        part,
+        stepId: element.closest('[data-step-id]')?.getAttribute('data-step-id') ?? null,
+        text: element.textContent?.trim() ?? '',
+        opacity: Number(style.opacity),
+        duration: style.animationDuration,
+        groupHeader: element.classList.contains('activity-group-label'),
+      })
+    })
+    Reflect.set(window, 'activityFades', events)
+  })
+  return () =>
+    page.evaluate(() => Reflect.get(window, 'activityFades')) as Promise<
+      {
+        part: string
+        stepId: string | null
+        text: string
+        opacity: number
+        duration: string
+        groupHeader: boolean
+      }[]
+    >
+}
+
 test.describe('Codex 风格过程展示', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
 
   test('运行中直接显示单条操作，结束收起，标题支持键盘展开', async ({ desktop, modelEndpoint }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const fades = await observeActivityFades(page)
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
     const timeline = answer.getByRole('region', { name: '调用过程', exact: true })
@@ -6513,6 +6967,27 @@ test.describe('Codex 风格过程展示', () => {
       name: /^工具详情：(已运行|已在 \d+s 内运行) .*controlled-fold-output/,
     })
     await expect(command).toBeVisible()
+    await expect
+      .poll(async () =>
+        (await fades()).some(
+          (event) =>
+            event.part === 'commentary' &&
+            event.text.includes('检查') &&
+            event.opacity < 0.7 &&
+            event.duration === '0.5s',
+        ),
+      )
+      .toBe(true)
+    const commandId = await command.evaluate((element) =>
+      element.closest('[data-step-id]')?.getAttribute('data-step-id'),
+    )
+    await expect
+      .poll(async () =>
+        (await fades()).some(
+          (event) => event.part === 'row' && event.stepId === commandId && event.opacity < 0.7,
+        ),
+      )
+      .toBe(true)
     await expect(overview.getByRole('button', { name: /^操作分组：/ })).toHaveCount(0)
     await expect(command).toHaveAttribute('aria-expanded', 'false')
     await command.focus()
@@ -6538,6 +7013,9 @@ test.describe('Codex 风格过程展示', () => {
       .locator('[data-tool-details]')
       .screenshot({ path: '.artifacts/screenshots/activity-command-terminal.png' })
     await terminal.focus()
+    // 最后一阶段和手动展开均使用系统减少动态效果设置。
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const liveFadeCount = (await fades()).length
     await expect.poll(() => modelEndpoint?.pendingProcess).toBe(1)
     modelEndpoint!.continueProcess()
     await expect(answer).toContainText('已完成项目检查')
@@ -6557,6 +7035,13 @@ test.describe('Codex 风格过程展示', () => {
     ).toContainText('已思考')
     await expect(overview.locator('[data-tool-details]')).toHaveCount(0)
     await expect(timeline.locator('.activity-reveal-enter-active')).toHaveCount(0)
+    expect((await fades()).length).toBe(liveFadeCount)
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await toggle.press('Space')
+    await expect(overview).toHaveCount(0)
+    await toggle.press('Space')
+    await expect(command).toBeVisible()
+    expect((await fades()).length).toBe(liveFadeCount)
     await input.focus()
     await page.mouse.move(1, 1)
     await timeline.screenshot({
@@ -6626,6 +7111,7 @@ test.describe('Codex 风格过程展示', () => {
   }) => {
     const page = await desktop.firstWindow()
     await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const fades = await observeActivityFades(page)
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
     const operations = answer.locator('.activity-tool')
@@ -6643,6 +7129,11 @@ test.describe('Codex 风格过程展示', () => {
     await expect(firstToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(operations).toHaveCount(0)
     await expect(firstToggle).toHaveText('已查看目录、读取文件、搜索内容、运行了命令')
+    await expect
+      .poll(async () => (await fades()).some((event) => event.groupHeader && event.opacity < 0.7), {
+        timeout: 10_000,
+      })
+      .toBe(true)
     await expect(firstToggle.locator('.activity-chevron')).toHaveCSS('opacity', '1')
     await firstToggle.focus()
     await firstToggle.press('Enter')
@@ -6689,6 +7180,19 @@ test.describe('Codex 风格过程展示', () => {
       name: /^工具详情：已在 \d+s 内运行 .*setTimeout/,
     })
     await expect(slowCommand).toBeVisible()
+    const slowCommandId = await slowCommand.evaluate((element) =>
+      element.closest('[data-step-id]')?.getAttribute('data-step-id'),
+    )
+    await expect
+      .poll(async () =>
+        (await fades()).some(
+          (event) =>
+            event.part === 'label' &&
+            event.stepId === slowCommandId &&
+            /已在 \d+s 内运行/.test(event.text),
+        ),
+      )
+      .toBe(true)
     const fixedLabel = await slowCommand.locator('.activity-tool-label > span').first().innerText()
     await page.waitForTimeout(1100)
     await expect(slowCommand.locator('.activity-tool-label > span').first()).toHaveText(fixedLabel)
@@ -6946,6 +7450,7 @@ test.describe('思考滚动与减少动态效果', () => {
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     await expect(input).toBeEnabled()
     await input.fill('思考长内容')
@@ -6965,8 +7470,15 @@ test.describe('思考滚动与减少动态效果', () => {
     await page.mouse.wheel(0, -10000)
     await expect(viewport).toHaveAttribute('data-at-start', 'true')
     await expect(viewport).toHaveAttribute('data-at-end', 'false')
-    modelEndpoint!.appendReasoning('\n\n阅读期间收到的新思考。')
-    await expect(viewport).toContainText('阅读期间收到的新思考。')
+    const tail = viewport.locator('.markdown-part:last-child > p')
+    modelEndpoint!.appendReasoning('\n\n阅读期间')
+    await expect(tail).toHaveText('阅读期间')
+    await tail.evaluate((paragraph) => Reflect.set(window, 'reasoningParagraph', paragraph))
+    modelEndpoint!.appendReasoning('收到的新思考。')
+    await expect(tail).toHaveText('阅读期间收到的新思考。')
+    expect(
+      await tail.evaluate((paragraph) => paragraph === Reflect.get(window, 'reasoningParagraph')),
+    ).toBe(true)
     await expect(viewport).toHaveAttribute('data-at-start', 'true')
     await page.screenshot({
       path: '.artifacts/screenshots/reasoning-long-preview.png',
@@ -7248,6 +7760,8 @@ test.describe('长任务自动压缩', () => {
     modelEndpoint,
   }) => {
     const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const fades = await observeActivityFades(page)
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     modelEndpoint!.pauseCompaction()
@@ -7260,6 +7774,13 @@ test.describe('长任务自动压缩', () => {
     await expect.poll(() => modelEndpoint!.pendingCompaction, { timeout: 20_000 }).toBe(1)
     await expect(compression).toHaveCount(1)
     await expect(compression).toHaveText('正在压缩上下文 · 可能需要几分钟')
+    await expect
+      .poll(async () =>
+        (await fades()).some(
+          (event) => event.part === 'row' && event.text === '正在压缩上下文 · 可能需要几分钟',
+        ),
+      )
+      .toBe(true)
     await expect(compression.getByRole('button')).toHaveCount(0)
     await expect(compression.locator('.animate-spin, .activity-chevron')).toHaveCount(0)
     expect(
@@ -7292,6 +7813,13 @@ test.describe('长任务自动压缩', () => {
     await expect.poll(() => modelEndpoint!.pendingCompactionAnswer).toBe(1)
     await expect(compression).toHaveText('上下文已自动压缩')
     await expect(compression.locator('.activity-shimmer')).toHaveCount(0)
+    await expect
+      .poll(async () =>
+        (await fades()).some(
+          (event) => event.part === 'label' && event.text === '上下文已自动压缩',
+        ),
+      )
+      .toBe(true)
     await compression.scrollIntoViewIfNeeded()
     await page.screenshot({
       path: '.artifacts/screenshots/compaction-completed-dark.png',

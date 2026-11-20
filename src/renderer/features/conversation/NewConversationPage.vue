@@ -262,14 +262,14 @@ const approvalError = computed(
       ? '执行状态已变化，请重新加载审批后核对。'
       : ''),
 )
+const runsById = computed(() => new Map(state.detail?.runs.map((run) => [run.id, run])))
 const messageRuns = computed(() => {
-  const runs = new Map(state.detail?.runs.map((run) => [run.id, run]))
   const shown = new Set<string>()
   const result = new Map<string, ChatRun>()
   for (const item of messages.value) {
     if (item.role !== 'assistant' || shown.has(item.runId)) continue
     shown.add(item.runId)
-    const run = runs.get(item.runId)
+    const run = runsById.value.get(item.runId)
     if (run) result.set(item.id, run)
   }
   return result
@@ -1040,6 +1040,7 @@ onScopeDispose(() => {
                 <MarkdownMessage
                   :content="item.content.filter((block) => !['image', 'file'].includes(block.type))"
                   :streaming="activeRun?.id === item.runId"
+                  :completed="runsById.get(item.runId)?.status === 'completed'"
                   @rendered="followRunLayout(item.runId)"
                 />
                 <AttachmentList

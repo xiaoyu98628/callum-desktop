@@ -3,16 +3,25 @@ import { computed, nextTick, onMounted, onScopeDispose, ref, shallowRef, watch }
 import type { ContentBlock } from '@shared/chat'
 import { parseWebLink } from '@shared/message-actions'
 import { getDesktopApi } from '@/lib/desktop'
-import { sanitizeMarkdown } from './markdown/sanitize'
 import type { MarkdownDocument } from './markdown/contract'
+import { markdownPart, previewParts, type MarkdownPart } from './markdown/stream-preview'
+import { streamFadeDuration, streamFadeEasing } from './markdown/stream-fade'
 import { useMarkdownRenderer } from './markdown/useMarkdownRenderer'
+import StreamMarkdownPart from './markdown/StreamMarkdownPart.vue'
 import './markdown/markdown.css'
 
-const props = defineProps<{ content: ContentBlock[]; streaming: boolean }>()
+const props = defineProps<{ content: ContentBlock[]; streaming: boolean; completed?: boolean }>()
 const emit = defineEmits<{ rendered: [] }>()
 const renderer = useMarkdownRenderer()
 const root = ref<HTMLElement | null>(null)
-const rendered = shallowRef<MarkdownDocument | null>(null)
+const rendered = shallowRef<{ codes: string[]; texts: string[]; parts: MarkdownPart[][] } | null>(
+  null,
+)
+const keepPreview = ref(props.streaming)
+const streamedHere = ref(props.streaming)
+const animateTail = computed(
+  () => props.streaming || (streamedHere.value && props.completed === true),
+)
 const notice = ref(''),
   actionError = ref('')
 const busyCopies = new Set<number>()
@@ -20,12 +29,21 @@ const copiedCodes = new Map<number, string>()
 const texts = computed(() =>
   props.content.map((block) => (block.type === 'text' ? block.text : '')),
 )
+const initialTexts = texts.value
+const displayed = computed(() =>
+  texts.value.map((text, index) => {
+    const parts = rendered.value?.parts[index] ?? []
+    return keepPreview.value && !notice.value
+      ? previewParts(parts, rendered.value?.texts[index] ?? '', text)
+      : parts
+  }),
+)
 let client: ReturnType<typeof renderer.register> | undefined
 let renderFrame: number | undefined
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
 let rawDocument: MarkdownDocument | null = null
 let disposed = false,
-  previous: string[] = []
+  previous = initialTexts
 function captureView() {
   const focused = document.activeElement
   const scrolling = Array.from(
@@ -90,19 +108,23 @@ function render(): void {
 }
 function update(): void {
   const current = texts.value
+  const extendsPrevious =
+    current.length >= previous.length &&
+    previous.every((text, index) => current[index]?.startsWith(text))
   // 内容回滚、工具轮次替换或块结构变化时立即清除旧排版，不能把旧回答当成新内容。
-  if (
-    current.length !== previous.length ||
-    current.some((text, index) => !text.startsWith(previous[index] ?? ''))
-  ) {
+  if (current.length !== previous.length || !extendsPrevious) {
     client?.invalidate()
     rendered.value = null
     rawDocument = null
+    notice.value = ''
   }
-  previous = [...current]
-  notice.value = ''
+  previous = current
   if (!props.streaming) render()
-  else if (renderFrame === undefined) renderFrame = requestAnimationFrame(render)
+  else {
+    streamedHere.value = true
+    keepPreview.value = true
+    if (renderFrame === undefined) renderFrame = requestAnimationFrame(render)
+  }
 }
 onMounted(() => {
   try {
@@ -114,34 +136,41 @@ onMounted(() => {
           rendered.value = null
           rawDocument = null
           notice.value = result.error
+          keepPreview.value = false
         } else {
           if (
             result.texts.length !== texts.value.length ||
             result.texts.some((text, index) => !texts.value[index]?.startsWith(text))
           )
             return
+          const previousParts = rendered.value?.parts
           rendered.value = {
-            html: result.document.html.map((parts, index) =>
-              parts.map((html, part) =>
-                rawDocument?.html[index]?.[part] === html
-                  ? (rendered.value?.html[index]?.[part] ?? sanitizeMarkdown(html))
-                  : sanitizeMarkdown(html),
-              ),
-            ),
             codes: result.document.codes,
+            texts: result.texts,
+            parts: result.document.html.map((parts, block) =>
+              parts.map((html, part) => {
+                const previous = previousParts?.[block]?.[part]
+                return previous && rawDocument?.html[block]?.[part] === html
+                  ? previous
+                  : markdownPart(html)
+              }),
+            ),
           }
           rawDocument = result.document
           notice.value = ''
+          if (!props.streaming && result.texts.every((text, index) => text === texts.value[index]))
+            keepPreview.value = false
         }
       } catch {
         rendered.value = null
+        rawDocument = null
+        keepPreview.value = false
         notice.value = '消息排版失败，已按文本显示。'
       }
       void nextTick(() => {
         if (disposed) return
         syncCodeButtons()
         restoreView(view)
-        emit('rendered')
       })
     })
     update()
@@ -149,7 +178,8 @@ onMounted(() => {
     notice.value = '消息较多，已按文本显示。'
   }
 })
-watch([texts, () => props.streaming], update, { flush: 'post' })
+watch([texts, () => props.streaming], update)
+watch(displayed, () => emit('rendered'), { flush: 'post' })
 async function act(event: MouseEvent): Promise<void> {
   if (!(event.target instanceof Element) || !root.value) return
   const button = event.target.closest('button[data-copy-code]')
@@ -204,22 +234,34 @@ onScopeDispose(() => {
 </script>
 
 <template>
-  <div ref="root" class="markdown-message" @click="act" @auxclick.prevent>
+  <div
+    ref="root"
+    class="markdown-message"
+    :data-streaming="streaming ? '' : undefined"
+    :style="{
+      '--markdown-stream-duration': `${streamFadeDuration}ms`,
+      '--markdown-stream-easing': streamFadeEasing,
+    }"
+    @click="act"
+    @auxclick.prevent
+  >
     <template v-for="(block, index) in content" :key="index">
-      <!-- HTML 已经过严格允许列表清理；原始模型 HTML 在解析阶段也被禁用。 -->
-      <!-- eslint-disable vue/no-v-html -->
-      <div v-if="block.type === 'text' && rendered?.html[index]?.length" class="message-markdown">
-        <div
-          v-for="(html, part) in rendered.html[index]"
+      <div v-if="block.type === 'text' && displayed[index]?.length" class="message-markdown">
+        <StreamMarkdownPart
+          v-for="(entry, part) in displayed[index]"
           :key="part"
-          class="markdown-part"
-          v-html="html"
+          :entry="entry"
+          :animate="animateTail && part >= displayed[index]!.length - 3"
         />
       </div>
-      <!-- eslint-enable vue/no-v-html -->
-      <p v-else-if="block.type === 'text'" class="markdown-plain-text">
-        {{ block.text }}
-      </p>
+      <template v-else-if="block.type === 'text'">
+        <p
+          v-if="!animateTail || notice || rendered?.texts[index] === block.text"
+          class="markdown-plain-text"
+        >
+          {{ block.text }}
+        </p>
+      </template>
       <p v-else class="text-sm leading-7 text-muted-foreground">
         [{{ block.type === 'image' ? '图片' : '暂不支持展示的内容' }}] {{ block.path }}
       </p>

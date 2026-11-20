@@ -494,6 +494,8 @@ async function restoreConversation(item: Conversation): Promise<void> {
                     <div v-if="state.workspaceGroups[workspace.id]" class="ml-6 pt-0.5">
                       <ConversationList
                         :items="state.workspaceGroups[workspace.id]?.items ?? []"
+                        :has-more="state.workspaceGroups[workspace.id]?.hasMore ?? false"
+                        :loading="state.workspaceGroups[workspace.id]?.loading ?? false"
                         :workspace-name="workspace.name"
                         :preview-suspended="
                           !!managementTarget ||
@@ -511,6 +513,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                         @delete="(item, trigger) => manageConversation(item, true, trigger)"
                         @pin="pinConversation"
                         @archive="archiveConversation"
+                        @load-more="loadWorkspaceConversations(workspace.id, true)"
                       />
                       <p
                         v-if="state.workspaceGroups[workspace.id]?.loading"
@@ -538,15 +541,6 @@ async function restoreConversation(item: Conversation): Promise<void> {
                       >
                         暂无聊天
                       </p>
-                      <Button
-                        v-if="state.workspaceGroups[workspace.id]?.hasMore"
-                        variant="ghost"
-                        size="sm"
-                        class="w-full text-xs text-muted-foreground"
-                        :disabled="state.workspaceGroups[workspace.id]?.loading"
-                        @click="loadWorkspaceConversations(workspace.id, true)"
-                        >加载更多对话</Button
-                      >
                     </div>
                   </div>
                 </div>
@@ -629,6 +623,8 @@ async function restoreConversation(item: Conversation): Promise<void> {
               </p>
               <ConversationList
                 :items="state.conversations"
+                :has-more="state.hasMore"
+                :loading="state.loadingList"
                 :preview-suspended="
                   !!managementTarget || creatingProject || state.archivesOpen || !recentOpen
                 "
@@ -641,16 +637,8 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 @delete="(item, trigger) => manageConversation(item, true, trigger)"
                 @pin="pinConversation"
                 @archive="archiveConversation"
+                @load-more="refreshOverview(true)"
               />
-              <Button
-                v-if="state.hasMore && !collapsed"
-                variant="ghost"
-                size="sm"
-                class="mt-2 w-full text-xs text-muted-foreground"
-                :disabled="state.loadingList"
-                @click="refreshOverview(true)"
-                >加载更多对话</Button
-              >
             </div>
           </div>
         </section>

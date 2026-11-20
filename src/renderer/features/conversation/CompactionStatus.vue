@@ -1,11 +1,23 @@
 <script setup lang="ts">
 import type { CompactionDisplayStatus } from '@shared/manual-compaction'
+import { activityFade } from './activity-fade'
 
-defineProps<{ status: CompactionDisplayStatus }>()
+defineProps<{
+  status: CompactionDisplayStatus
+  arrivalAt?: number | undefined
+  statusAt?: number | undefined
+}>()
+const vActivityFade = activityFade()
 </script>
 
 <template>
-  <div data-compaction-status class="activity-compaction" role="status" aria-live="polite">
+  <div
+    v-activity-fade="{ id: 'row', at: arrivalAt, part: 'row' }"
+    data-compaction-status
+    class="activity-compaction"
+    role="status"
+    aria-live="polite"
+  >
     <div class="activity-compaction-line" :class="status.danger ? 'text-destructive' : ''">
       <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
         <path
@@ -16,7 +28,9 @@ defineProps<{ status: CompactionDisplayStatus }>()
           stroke-linejoin="round"
         />
       </svg>
-      <span :class="status.pending ? 'activity-shimmer' : ''">{{ status.label }}</span>
+      <span v-activity-fade="{ id: 'label', at: statusAt, part: 'label' }">
+        <span :class="status.pending ? 'activity-shimmer' : ''">{{ status.label }}</span>
+      </span>
     </div>
     <p v-if="status.error" class="activity-compaction-error text-destructive">{{ status.error }}</p>
   </div>
