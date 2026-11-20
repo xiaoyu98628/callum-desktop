@@ -75,6 +75,9 @@ function save(): void {
       </label>
       <p :id="hintId" class="text-xs leading-5 text-muted-foreground">
         粘贴包含 mcpServers 的 JSON。使用 stdio 时，command 填可执行文件的绝对路径。
+        <span v-if="input.value?.server.auth === 'oauth'" class="block">
+          可用 scope 指定 OAuth 权限，例如 "scope": "read"。修改权限范围后需要重新授权。
+        </span>
       </p>
       <label v-if="candidates.entries.length > 1" class="block space-y-1.5 text-sm">
         <span>要保存的服务</span>

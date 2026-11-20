@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { McpService } from '../../src/main/backend/mcp-service.ts'
 import { editableMcpConfig, mcpConfigForSave, parseMcpConfig } from '../../src/shared/mcp-config.ts'
 import type { McpServerView } from '../../src/shared/mcp.ts'
-import { parseMcpResponse } from '../../src/shared/mcp.ts'
+import { parseMcpRequest, parseMcpResponse } from '../../src/shared/mcp.ts'
 import { approvalSummary } from '../../src/shared/approval-summary.ts'
 
 const serverId = '01951234-0000-7000-8000-123456789abc'
@@ -123,10 +123,14 @@ test('MCP JSON 编辑回填公开配置，保存时保留已有凭据并支持�
   }
   const [saved] = parseMcpConfig(editableMcpConfig(remote))
   assert(saved)
-  const edit = mcpConfigForSave(saved, remote)
+  const edit = mcpConfigForSave(saved, {
+    ...remote,
+    allowed_tools: new Proxy(remote.allowed_tools, {}),
+  })
   assert.equal(edit.server.id, serverId)
   assert.equal(edit.server.auth, 'token')
   assert.deepEqual(edit.server.allowed_tools, ['echo'])
+  assert.deepEqual(structuredClone(edit), edit)
   assert.deepEqual(edit.secrets, {})
   const local: McpServerView = {
     ...remote,
@@ -168,6 +172,11 @@ test('MCP JSON 校验格式、路径、HTTPS、OAuth 回调和无法映射的字
       /redirectUri/,
     ],
     [{ command: '/usr/bin/node', enabled: true }, /enabled/],
+    [{ command: '/usr/bin/node', scope: 'read' }, /scope/],
+    [{ url: 'https://example.com/mcp', auth: 'token', scope: 'read' }, /scope.*OAuth/],
+    [{ url: 'https://example.com/mcp', auth: 'oauth', scope: ['read'] }, /scope/],
+    [{ url: 'https://example.com/mcp', auth: 'oauth', scope: '   ' }, /scope/],
+    [{ url: 'https://example.com/mcp', auth: 'oauth', scope: 'read\nwrite' }, /scope/],
   ]
   for (const [value, error] of invalidCases)
     assert.throws(() => mcpConfigForSave({ name: '测试', value }), error)
@@ -183,4 +192,33 @@ test('MCP JSON 校验格式、路径、HTTPS、OAuth 回调和无法映射的字
   assert.equal(oauth.server.auth, 'oauth')
   assert.equal(oauth.server.client_id, 'registered-client')
   assert.equal(oauth.server.redirect_uri, 'http://127.0.0.1:8080/callback')
+  assert.equal(oauth.server.scope, undefined)
+})
+
+test('MCP OAuth scope 通过 JSON 编辑器和跨进程接口往返', () => {
+  const { server, secrets } = mcpConfigForSave({
+    name: 'OAuth',
+    value: { url: 'https://example.com/mcp', auth: 'oauth', scope: ' read  profile read ' },
+  })
+  assert.equal(server.scope, 'profile read')
+  const request = { action: 'save', revision: 1, confirmed: false, server, secrets } as const
+  assert.deepEqual(parseMcpRequest(request), request)
+  const catalog = {
+    revision: 2,
+    servers: [
+      {
+        ...server,
+        id: serverId,
+        connected: false,
+        authorized: false,
+        secret_env_keys: [],
+        tools: [],
+      },
+    ],
+  }
+  const parsed = parseMcpResponse('list', catalog)
+  assert.deepEqual(parsed, catalog)
+  const [saved] = parseMcpConfig(editableMcpConfig(catalog.servers[0]!))
+  assert(saved)
+  assert.equal(mcpConfigForSave(saved).server.scope, 'profile read')
 })

@@ -42,6 +42,7 @@ async function request(input: McpRequest): Promise<McpResponse> {
 async function refresh(): Promise<void> {
   const value = await request({ action: 'list' })
   if (typeof value !== 'object' || Array.isArray(value) || !('servers' in value)) return
+  if (catalog.value && value.revision < catalog.value.revision) return
   catalog.value = value
   if (!value.servers.some((server) => server.id === selectedId.value)) select(null)
   if (pendingId.value && !value.servers.some((server) => server.id === pendingId.value)) {
@@ -72,7 +73,13 @@ async function run(action: () => Promise<void>): Promise<void> {
 }
 
 async function save(input: Extract<McpRequest, { action: 'save' }>): Promise<void> {
+  const previous = catalog.value?.servers.find((server) => server.id === input.server.id)
   const result = await request(input)
+  if (previous && previous.scope !== input.server.scope && pendingId.value === result) {
+    clearTimeout(timer)
+    pendingId.value = ''
+    oauth.value = null
+  }
   editor.value = undefined
   await refresh()
   select(catalog.value?.servers.find((server) => server.id === result) ?? null)
@@ -100,13 +107,16 @@ function track(id: string, state: McpOAuthState): void {
 
 async function poll(id: string): Promise<void> {
   if (disposed || pendingId.value !== id) return
+  let trackedState = oauth.value
   try {
     const value = await request({ action: 'status', id })
-    if (disposed || pendingId.value !== id || !isOAuth(value)) return
+    if (disposed || pendingId.value !== id || oauth.value !== trackedState || !isOAuth(value))
+      return
     track(id, value)
+    trackedState = oauth.value
     if (value.status === 'authorized') await refresh()
   } catch {
-    if (disposed || pendingId.value !== id) return
+    if (disposed || pendingId.value !== id || oauth.value !== trackedState) return
     track(id, { status: 'failed', message: '无法读取授权状态，请刷新后查看。' })
   }
 }

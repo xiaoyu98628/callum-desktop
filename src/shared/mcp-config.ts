@@ -1,4 +1,4 @@
-import { mcpEnvironment } from './mcp.ts'
+import { mcpEnvironment, normalizeMcpOAuthScope } from './mcp.ts'
 import type { McpSecrets, McpServer, McpServerView } from './mcp.ts'
 
 export const MCP_JSON_EXAMPLE = JSON.stringify(
@@ -156,7 +156,7 @@ export function mcpConfigForSave(
     id: current?.id ?? '',
     name,
     enabled: false,
-    allowed_tools: current?.transport === transport ? current.allowed_tools : [],
+    allowed_tools: current?.transport === transport ? [...current.allowed_tools] : [],
     transport,
     auth: 'none',
   }
@@ -170,7 +170,7 @@ export function mcpConfigForSave(
     return { server, secrets }
   }
 
-  checkFields(source, ['type', 'url', 'headers', 'auth', 'clientId', 'redirectUri'])
+  checkFields(source, ['type', 'url', 'headers', 'auth', 'clientId', 'redirectUri', 'scope'])
   server.url = connectionURL(source.url)
   const token = source.headers === undefined ? undefined : bearerToken(source.headers)
   const auth = source.auth === undefined ? (token === undefined ? 'none' : 'token') : source.auth
@@ -183,8 +183,13 @@ export function mcpConfigForSave(
   if (auth === 'oauth') {
     if (source.clientId !== undefined) server.client_id = text(source.clientId, 'clientId')
     if (source.redirectUri !== undefined) server.redirect_uri = oauthRedirect(source.redirectUri)
-  } else if (source.clientId !== undefined || source.redirectUri !== undefined) {
-    throw new Error('clientId 和 redirectUri 需要使用 OAuth 认证。')
+    if (source.scope !== undefined) server.scope = normalizeMcpOAuthScope(source.scope)
+  } else if (
+    source.clientId !== undefined ||
+    source.redirectUri !== undefined ||
+    source.scope !== undefined
+  ) {
+    throw new Error('clientId、redirectUri 和 scope 需要使用 OAuth 认证。')
   }
   return { server, secrets }
 }
@@ -206,6 +211,7 @@ export function editableMcpConfig(server: McpServerView): string {
           auth: server.auth,
           clientId: server.client_id || undefined,
           redirectUri: server.redirect_uri || undefined,
+          scope: server.scope || undefined,
         }
   return JSON.stringify({ mcpServers: { [server.name]: config } }, null, 2)
 }

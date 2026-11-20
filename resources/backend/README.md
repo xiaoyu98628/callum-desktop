@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `3a956df751a078e0c547dbcae377be4fb68db8c0a0d02a85e250c689c2ab0f59`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `e639e8cb86c1fa362bfe88d86f4c6000e4f56cb18537686ac146cb7d153f5c16`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
 | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `425bcbcb1d46e17d3a0d8e072305ae696292907f78f2c8698d796dbfd9d90063` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `79fcd02e2d846feca86c33101bf9afb862633b01e96035e3ea42d39c63611679` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `95ded3653f49e994034fadb1d0dee09634bc02fa54eb254bf45a09cdfdf0b905` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `c8527edb15bba056378c506698e0b5ba3b0276f281cd12bd9124d7a104c64e44` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `6a3c7b85c969f5819f6f0a9cccd6f8e16b4290d6368befcf7e5979b9a26b1811` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `74752b30b2d92d0b3d0a0edcc7b02e12450113a99070a739f385c0cd88d679f7` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `502c4895dacf95ae5f3840ba21e7bbc65e5673b8ef6729a8c6c94dfe26969e92` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `8f97420f74696a7b7d77fcf2f1e6b5e76c923a3c7483a1209019c993bdb87d40` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -43,7 +43,7 @@ resources/backend/
 
 随附服务为后续消息提供持久队列、附件保管和当前执行引导。支持 `conversation.continue` 显式继续最新停止或中断的任务，恢复原需求和已经保存的工具结果。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
 
-随附服务提供本地 stdio 和远程 Streamable HTTP MCP。MCP 设置位于 `app_settings` 的 `mcp` 组，访问令牌及加密环境变量保存在 `mcp_credentials` 表。本机 Go 服务接收 OAuth 授权回调、换取并刷新令牌，桌面端打开系统浏览器并展示授权状态。 浏览器回调页在凭据保存后显示授权结果，加载时清理地址栏中的回调参数。工具选择和逐次审批沿用服务端权限校验。
+随附服务提供本地 stdio 和远程 Streamable HTTP MCP。MCP 设置位于 `app_settings` 的 `mcp` 组，访问令牌及加密环境变量保存在 `mcp_credentials` 表。本机 Go 服务接收 OAuth 授权回调、换取并刷新令牌，桌面端打开系统浏览器并展示授权状态。远程 OAuth 可通过 JSON 的 `scope` 字段限制授权和刷新使用的权限。浏览器回调页在凭据保存后显示授权结果，加载时清理地址栏中的回调参数。工具选择和逐次审批沿用服务端权限校验。
 
 | 接入能力     | 随附程序基线与客户端约束                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

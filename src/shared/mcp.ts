@@ -13,6 +13,7 @@ export interface McpServer {
   url?: string
   client_id?: string
   redirect_uri?: string
+  scope?: string
   allowed_tools: string[]
 }
 
@@ -67,12 +68,28 @@ export function mcpEnvironment(value: unknown): Record<string, string> {
   )
 }
 
+/** 校验 OAuth 权限名并按 Go 服务的规则规范化。 */
+export function normalizeMcpOAuthScope(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length > 1024 ||
+    /[^\x20-\x21\x23-\x5b\x5d-\x7e]/.test(value)
+  ) {
+    throw new Error('scope 需要填写由空格分隔的 OAuth 权限名称，最多 1024 个字符。')
+  }
+  const scopes = value.split(' ').filter(Boolean)
+  if (!scopes.length) throw new Error('scope 至少需要填写一个 OAuth 权限名称。')
+  return [...new Set(scopes)].sort().join(' ')
+}
+
 export function parseMcpServer(value: unknown): McpServer {
   const v = record(value)
   if (v.transport !== 'stdio' && v.transport !== 'streamable_http')
     throw new Error('MCP 连接方式无效')
   if (v.auth !== 'none' && v.auth !== 'token' && v.auth !== 'oauth')
     throw new Error('MCP 认证方式无效')
+  if (v.scope !== undefined && (v.transport !== 'streamable_http' || v.auth !== 'oauth'))
+    throw new Error('scope 需要使用远程 OAuth 认证。')
   return {
     id: v.id === '' ? '' : id(v.id),
     name: string(v.name),
@@ -87,6 +104,7 @@ export function parseMcpServer(value: unknown): McpServer {
     ...(v.url !== undefined ? { url: string(v.url) } : {}),
     ...(v.client_id !== undefined ? { client_id: string(v.client_id) } : {}),
     ...(v.redirect_uri !== undefined ? { redirect_uri: string(v.redirect_uri) } : {}),
+    ...(v.scope !== undefined ? { scope: normalizeMcpOAuthScope(v.scope) } : {}),
   }
 }
 
