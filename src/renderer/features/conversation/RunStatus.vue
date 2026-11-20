@@ -31,7 +31,12 @@ function stopClock(): void {
   clock = undefined
 }
 watch(
-  () => [props.run?.id, props.run?.createdAt, props.run?.status, props.connected],
+  () => [
+    props.run?.id,
+    props.run?.resumedAt ?? props.run?.createdAt,
+    props.run?.status,
+    props.connected,
+  ],
   () => {
     stopClock()
     now.value = Date.now()
@@ -53,9 +58,7 @@ onScopeDispose(stopClock)
     aria-label="执行状态"
     aria-live="off"
     :title="
-      duration
-        ? '从本次请求创建起的总用时，包含等待审批；结束后固定。'
-        : '缺少准确的执行时间，不显示推测用时。'
+      duration ? '从本次开始或继续时起计时，包含等待审批。' : '缺少准确的执行时间，不显示推测用时。'
     "
     class="activity-status"
   >

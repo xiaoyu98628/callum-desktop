@@ -16,6 +16,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     reasoningReturned: boolean
     summaryRequest: boolean
     contextSummary: boolean
+    continuation: boolean
     messageCount: number
     images?: string[]
   }[] = []
@@ -63,8 +64,12 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       const summaryRequest =
         typeof messages[0]?.content === 'string' &&
         messages[0].content.startsWith('You are performing a CONTEXT CHECKPOINT COMPACTION.')
+      const continuation =
+        typeof messages[0]?.content === 'string' &&
+        messages[0].content.includes('用户通过「继续任务」')
       requests.push({
         summaryRequest,
+        continuation,
         contextSummary: messages.some(
           (message) =>
             typeof message.content === 'string' &&
@@ -271,7 +276,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         })
         return
       }
-      if (text === '继续任务') {
+      if (continuation && role === 'tool' && last.tool_call_id === 'continue-read') {
         if (
           !messages.some((item) => item.role === 'user' && item.content === '先读取文件再核对') ||
           !messages.some(
@@ -283,6 +288,11 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         )
           throw new Error('续跑请求没有恢复原要求和读取结果')
         emit(response, { content: '已根据原有读取结果完成剩余核对。' })
+        finish(response)
+        return
+      }
+      if (continuation && text === '等待服务中断') {
+        emit(response, { content: '已在原任务中完成回答。' })
         finish(response)
         return
       }

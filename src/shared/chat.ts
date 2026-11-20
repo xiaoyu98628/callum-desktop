@@ -114,6 +114,7 @@ export interface ChatRun {
   status: RunStatus
   error: string | null
   createdAt: number
+  resumedAt?: number
   finishedAt: number | null
   /** 仅在首个持久化步骤明确标记为手动压缩时提供。 */
   compaction?: {
@@ -523,6 +524,7 @@ export function parseRun(value: unknown): ChatRun {
     status: status as RunStatus,
     error: v.error === null ? null : string(v.error),
     createdAt: integer(v.createdAt),
+    ...(v.resumedAt !== undefined ? { resumedAt: integer(v.resumedAt) } : {}),
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
     ...(compaction
       ? {

@@ -982,6 +982,11 @@ test.describe('后续消息', () => {
     await expect(input).toHaveValue('稍后发送的输入草稿')
     await input.fill('')
     await expect(primary).toHaveAccessibleName('继续任务')
+    const user = page.getByRole('article', { name: '你的消息', exact: true })
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+    const userId = await user.getAttribute('data-message-id')
+    const answerId = await answer.getAttribute('data-message-id')
+    expect(userId && answerId).toBeTruthy()
 
     await page.reload()
     await page
@@ -991,7 +996,11 @@ test.describe('后续消息', () => {
     await expect(primary).toHaveAccessibleName('继续任务')
     await expect(primary.locator('svg.lucide-play')).toHaveCount(1)
     await primary.press('Enter')
-    await expect(page.getByText('已根据原有读取结果完成剩余核对。', { exact: true })).toBeVisible()
+    await expect(page.locator(`[data-message-id="${answerId}"]`)).toContainText(
+      '已根据原有读取结果完成剩余核对。',
+    )
+    await expect(page.locator(`[data-message-id="${userId}"]`)).toBeVisible()
+    await expect(user.filter({ hasText: '继续任务' })).toHaveCount(0)
     await expect
       .poll(() =>
         modelEndpoint.requests.some(
@@ -999,8 +1008,11 @@ test.describe('后续消息', () => {
         ),
       )
       .toBe(true)
+    expect(modelEndpoint.requests.filter((item) => item.continuation && item.stream)).toHaveLength(
+      1,
+    )
     expect(
-      modelEndpoint.requests.filter((item) => item.stream && item.text === '继续任务'),
+      modelEndpoint.requests.filter((item) => item.stream && item.text === '先读取文件再核对'),
     ).toHaveLength(1)
     expect(modelEndpoint.requests.some((item) => item.text === '稍后发送的输入草稿')).toBe(false)
   })
@@ -2781,14 +2793,15 @@ test.describe('真实 Go 对话交互', () => {
     await expect(lastAnswerActions.locator('time')).toHaveCSS('opacity', '0')
   })
 
-  test('自有服务异常退出后保留部分回答，不重发请求，重启可读取中断状态', async ({
+  test('自有服务异常退出后保留部分回答，重启后可在原任务继续', async ({
     desktop,
     profile,
     modelEndpoint,
   }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
-    await expect(input).toBeEnabled()
+    await expect(input).toBeEnabled({ timeout: 50_000 })
     await input.fill('等待服务中断')
     await input.press('Enter')
     await expect(page.getByText('仅属于等待服务中断的内容', { exact: true })).toBeVisible()
@@ -2816,8 +2829,26 @@ test.describe('真实 Go 对话交互', () => {
     const recovered = new ChatService(join(profile, 'backend'), resourceRoot)
     try {
       const detail = await recovered.detail(conversationId)
-      expect(detail.runs.at(-1)?.status).toBe('interrupted')
+      const run = detail.runs.at(-1)
+      if (!run) throw new Error('缺少中断的原执行')
+      expect(run.status).toBe('interrupted')
       expect(detail.messages).toHaveLength(2)
+      expect(
+        await recovered.continueConversation({
+          conversationId,
+          runId: run.id,
+          modelId: detail.conversation.modelId,
+        }),
+      ).toEqual({ conversationId, runId: run.id })
+      await expect
+        .poll(async () => (await recovered.detail(conversationId)).runs.at(-1)?.status)
+        .toBe('completed')
+      const resumed = await recovered.detail(conversationId)
+      expect(resumed.runs.map((item) => item.id)).toEqual([run.id])
+      expect(resumed.messages.map((item) => item.id)).toEqual(
+        detail.messages.map((item) => item.id),
+      )
+      expect(resumed.messages.at(-1)?.content[0]?.text).toBe('已在原任务中完成回答。')
     } finally {
       await recovered.close()
     }

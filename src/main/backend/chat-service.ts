@@ -1023,11 +1023,12 @@ export class ChatService {
           conversation_id: input.conversationId,
           run_id: input.runId,
           model_id: input.modelId,
+          resume_in_place: true,
         }),
       )
-      if (id(value.conversation_id) !== input.conversationId)
+      if (id(value.conversation_id) !== input.conversationId || id(value.run_id) !== input.runId)
         throw new Error('继续任务的受理结果归属不匹配。')
-      return { conversationId: input.conversationId, runId: id(value.run_id) }
+      return { conversationId: input.conversationId, runId: input.runId }
     })
   }
   async resend(input: ResendMessageInput): Promise<ResendMessageResult> {

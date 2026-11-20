@@ -132,6 +132,7 @@ export function runFromRpc(value: unknown): ChatRun {
     status: v.status,
     error: v.error_message ?? null,
     createdAt: v.created_at,
+    resumedAt: v.resumed_at,
     finishedAt: v.finished_at ?? null,
   })
 }

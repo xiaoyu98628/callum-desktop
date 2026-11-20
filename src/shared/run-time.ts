@@ -16,19 +16,20 @@ export function elapsedStepTime(step: ChatStep, now: number): number | null {
   return end - step.startedAt
 }
 
-/** 执行总用时包含等待审批；中断恢复时间不是实际结束时间，不能据此计算耗时。 */
+/** 从受理或最近一次继续起计时，包含本段的审批等待时间。 */
 export function elapsedRunTime(run: ChatRun, now: number): number | null {
   if (run.status === 'interrupted') return null
+  const start = run.resumedAt ?? run.createdAt
   const end = isActiveRun(run) ? now : run.finishedAt
   if (
     end === null ||
     !Number.isSafeInteger(end) ||
-    !Number.isSafeInteger(run.createdAt) ||
-    run.createdAt < 0 ||
-    end < run.createdAt
+    !Number.isSafeInteger(start) ||
+    start < 0 ||
+    end < start
   )
     return null
-  return end - run.createdAt
+  return end - start
 }
 
 export function formatRunTime(milliseconds: number): string {
