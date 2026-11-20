@@ -21,6 +21,7 @@ type Intent = {
 }
 const catalog = ref<McpCatalog | null>(null)
 const editor = ref<McpServerView | null | undefined>(undefined)
+const editorRevision = ref(0)
 const selectedId = ref('')
 const discovered = ref<McpTool[] | null>(null)
 const selectedTools = ref<string[]>([])
@@ -45,10 +46,28 @@ async function refresh(): Promise<void> {
   if (catalog.value && value.revision < catalog.value.revision) return
   catalog.value = value
   if (!value.servers.some((server) => server.id === selectedId.value)) select(null)
-  if (pendingId.value && !value.servers.some((server) => server.id === pendingId.value)) {
-    clearTimeout(timer)
-    pendingId.value = ''
-    oauth.value = null
+  const tracked = value.servers.find((server) => server.id === pendingId.value)
+  if (
+    pendingId.value &&
+    (!tracked || (oauth.value?.status === 'authorized' && !tracked.authorized))
+  )
+    clearOAuth(pendingId.value)
+}
+
+function edit(server: McpServerView | null): void {
+  if (!catalog.value) return
+  editorRevision.value = catalog.value.revision
+  editor.value = server
+}
+
+function rebaseEditor(): void {
+  if (!catalog.value || editor.value === undefined) return
+  const latest = editor.value
+    ? catalog.value.servers.find((server) => server.id === editor.value?.id)
+    : null
+  if (latest !== undefined) {
+    edit(latest)
+    error.value = ''
   }
 }
 
@@ -74,12 +93,14 @@ async function run(action: () => Promise<void>): Promise<void> {
 
 async function save(input: Extract<McpRequest, { action: 'save' }>): Promise<void> {
   const previous = catalog.value?.servers.find((server) => server.id === input.server.id)
+  if (
+    !catalog.value?.scope_update &&
+    (input.clear_scope ||
+      (input.server.scope !== undefined && input.server.scope !== previous?.scope))
+  )
+    throw new Error('当前 Go 服务版本不支持安全更新 OAuth scope，请使用客户端随附的新版服务。')
   const result = await request(input)
-  if (previous && previous.scope !== input.server.scope && pendingId.value === result) {
-    clearTimeout(timer)
-    pendingId.value = ''
-    oauth.value = null
-  }
+  if (typeof result === 'string') clearOAuth(result)
   editor.value = undefined
   await refresh()
   select(catalog.value?.servers.find((server) => server.id === result) ?? null)
@@ -99,10 +120,19 @@ function isOAuth(value: McpResponse): value is McpOAuthState {
 }
 
 function track(id: string, state: McpOAuthState): void {
+  if (disposed) return
   clearTimeout(timer)
   pendingId.value = id
   oauth.value = state
   if (state.status === 'pending') timer = setTimeout(() => void poll(id), 900)
+}
+
+function clearOAuth(id: string): void {
+  if (pendingId.value !== id) return
+  clearTimeout(timer)
+  timer = undefined
+  pendingId.value = ''
+  oauth.value = null
 }
 
 async function poll(id: string): Promise<void> {
@@ -152,6 +182,7 @@ async function update(
     secrets: {},
     confirmed,
   })
+  clearOAuth(server.id)
   await refresh()
 }
 
@@ -168,6 +199,7 @@ async function confirmIntent(): Promise<void> {
   else if (kind === 'enable') await update(server, { enabled: true }, true, revision)
   else if (kind === 'disconnect') {
     await request({ action: 'disconnect', id: server.id })
+    clearOAuth(server.id)
     await refresh()
   } else if (catalog.value) {
     await request({ action: 'delete', id: server.id, revision })
@@ -195,7 +227,7 @@ onUnmounted(() => {
         <Button type="button" size="sm" variant="outline" :disabled="busy" @click="run(refresh)">
           <RefreshCwIcon class="size-4" aria-hidden="true" />刷新
         </Button>
-        <Button type="button" size="sm" :disabled="busy || !catalog" @click="editor = null">
+        <Button type="button" size="sm" :disabled="busy || !catalog" @click="edit(null)">
           <PlusIcon class="size-4" aria-hidden="true" />添加服务
         </Button>
       </div>
@@ -212,9 +244,12 @@ onUnmounted(() => {
       v-if="editor !== undefined && catalog"
       :key="editor?.id ?? 'new'"
       :current="editor"
-      :revision="catalog.revision"
+      :revision="editorRevision"
+      :latest-revision="catalog.revision"
+      :latest="editor ? (catalog.servers.find((item) => item.id === editor?.id) ?? null) : null"
       :busy="busy"
       @save="run(() => save($event))"
+      @rebase="rebaseEditor"
       @cancel="editor = undefined"
     />
     <p
@@ -249,7 +284,7 @@ onUnmounted(() => {
           </span>
         </button>
         <div class="flex gap-2">
-          <Button type="button" size="sm" variant="ghost" :disabled="busy" @click="editor = server"
+          <Button type="button" size="sm" variant="ghost" :disabled="busy" @click="edit(server)"
             >编辑</Button
           >
           <Button

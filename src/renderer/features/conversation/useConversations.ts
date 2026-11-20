@@ -2,7 +2,7 @@ import { computed, inject, onMounted, onScopeDispose, provide, reactive, ref, wa
 import { createConversationState } from './state'
 import type { DraftSkill } from './state'
 import { createExecutionInteractions } from './execution-interactions'
-import { unwrap, upsert, boundMessages } from './state-utils'
+import { unwrap, upsert, boundMessages, ListPagination } from './state-utils'
 import type { InjectionKey } from 'vue'
 import { comparePinnedItems, isActiveRun, isVisible, MAX_MESSAGE_LENGTH } from '@shared/chat'
 import { boundSteps } from '@shared/steps'
@@ -34,22 +34,22 @@ const IMAGE_INPUT_REQUIRED = '当前模型未启用图片输入，请在模型�
 function createConversations() {
   const state = createConversationState()
   let selection = 0,
-    listOffset = 0,
     unsubscribe: (() => void) | undefined,
     disposed = false
   const pendingEvents = new Map<string, ChatEvent>()
   const listEvents = new Map<string, ChatEvent>()
+  const listPagination = new ListPagination()
+  const workspacePagination = new ListPagination()
+  const archivePagination = new ListPagination()
   let listRevision = 0,
     detailRevision = 0
   let modelGeneration = 0
   let overviewGeneration = 0,
     workspaceGeneration = 0,
-    workspaceOffset = 0,
     workspaceRevision = 0
   const workspaceEvents = new Map<string, ChatEvent>()
   const archiveEvents = new Map<string, ChatEvent>()
   let archiveGeneration = 0,
-    archiveOffset = 0,
     archiveRevision = 0
   // 通知和管理快照有界保留，防止迟到通知或旧查询撤销已接受的用户操作。
   const conversationUpdates = new Map<string, ConversationUpdate>()
@@ -558,6 +558,26 @@ function createConversations() {
   }
   function receive(event: ChatEvent): void {
     const change = event.change
+    // 服务端按实时排序分页。快照可合并已经收到的变更，但无法用旧偏移找到被前移的未加载记录。
+    if (change.kind === 'conversation') {
+      const group = change.value.workspaceId && state.workspaceGroups[change.value.workspaceId]
+      if (group && group.pagination.invalidate()) group.hasMore = true
+      if (!change.value.workspaceId && listPagination.invalidate()) state.hasMore = true
+      if (
+        state.archivesOpen &&
+        state.archiveKind === 'conversations' &&
+        archivePagination.invalidate()
+      )
+        state.archivesHasMore = true
+    } else if (change.kind === 'workspace') {
+      if (workspacePagination.invalidate()) state.workspacesHasMore = true
+      if (
+        state.archivesOpen &&
+        (state.archiveKind === 'workspaces' || change.value.deletedAt !== null) &&
+        archivePagination.invalidate()
+      )
+        state.archivesHasMore = true
+    }
     if (change.kind === 'follow-ups') {
       if (change.value.conversationId === state.selectedId) void loadFollowUps()
       return
@@ -608,22 +628,25 @@ function createConversations() {
   }
   async function refreshOverview(more = false): Promise<void> {
     if (state.loadingList && more) return
+    const page = listPagination.read(more)
     state.loadingList = true
     const requestGeneration = ++overviewGeneration
     const generation = modelGeneration
     const recovering = !!state.serviceError
-    if (!more) {
+    let loadNext = false
+    if (!page.offset) {
       state.serviceError = ''
       listEvents.clear()
     }
     try {
-      const result = unwrap(await getDesktopApi().getChatOverview(more ? listOffset : 0))
+      const result = unwrap(await getDesktopApi().getChatOverview(page.offset))
       if (disposed || requestGeneration !== overviewGeneration) return
+      if (page.offset && listPagination.changed(page)) return await refreshOverview()
       // 配置页面可能在概览查询期间保存模型，不让迟到的旧列表覆盖已保存配置。
       if (generation === modelGeneration) setModels(result.models)
       listRevision = result.revision
       state.conversations = reconcileConversations(
-        more
+        page.offset
           ? [
               ...new Map(
                 [...state.conversations, ...result.conversations].map((item) => [item.id, item]),
@@ -636,7 +659,7 @@ function createConversations() {
         .sort(comparePinnedItems)
         .slice(0, 1000)
       state.hasMore = result.hasMore && state.conversations.length < 1000
-      listOffset = (more ? listOffset : 0) + 50
+      loadNext = listPagination.finish(page, state.hasMore, more)
       for (const event of listEvents.values()) if (event.revision > result.revision) apply(event)
       if (recovering && state.selectedId) await openConversation(state.selectedId)
     } catch (error) {
@@ -647,19 +670,24 @@ function createConversations() {
         listEvents.clear()
       }
     }
+    if (loadNext && !disposed && requestGeneration === overviewGeneration)
+      await refreshOverview(true)
   }
   async function refreshWorkspaces(more = false): Promise<void> {
     if (more && state.workspacesLoading) return
+    const page = workspacePagination.read(more)
     const generation = ++workspaceGeneration
+    let loadNext = false
     state.workspacesLoading = true
     state.workspacesError = ''
     workspaceEvents.clear()
     try {
-      const result = unwrap(await getDesktopApi().listWorkspaces(more ? workspaceOffset : 0))
+      const result = unwrap(await getDesktopApi().listWorkspaces(page.offset))
       if (disposed || generation !== workspaceGeneration) return
+      if (page.offset && workspacePagination.changed(page)) return await refreshWorkspaces()
       workspaceRevision = result.revision
       state.workspaces = reconcileWorkspaces(
-        more
+        page.offset
           ? [
               ...new Map(
                 [...state.workspaces, ...result.workspaces].map((item) => [item.id, item]),
@@ -672,7 +700,7 @@ function createConversations() {
         .sort(comparePinnedItems)
         .slice(0, 1000)
       state.workspacesHasMore = result.hasMore && state.workspaces.length < 1000
-      workspaceOffset = (more ? workspaceOffset : 0) + 50
+      loadNext = workspacePagination.finish(page, state.workspacesHasMore, more)
       for (const event of workspaceEvents.values())
         if (event.revision > result.revision) apply(event)
     } catch (error) {
@@ -683,17 +711,20 @@ function createConversations() {
         workspaceEvents.clear()
       }
     }
+    if (loadNext && !disposed && generation === workspaceGeneration) await refreshWorkspaces(true)
   }
   async function loadWorkspaceConversations(workspaceId: string, more = false): Promise<void> {
     const group = state.workspaceGroups[workspaceId]
     if (!group || (more && group.loading)) return
+    const page = group.pagination.read(more)
     const generation = ++group.generation
+    let loadNext = false
     group.loading = true
     group.error = ''
     group.events.clear()
     try {
       const result = unwrap(
-        await getDesktopApi().getWorkspaceConversations(workspaceId, more ? group.offset : 0),
+        await getDesktopApi().getWorkspaceConversations(workspaceId, page.offset),
       )
       if (
         disposed ||
@@ -701,8 +732,10 @@ function createConversations() {
         generation !== group.generation
       )
         return
+      if (page.offset && group.pagination.changed(page))
+        return await loadWorkspaceConversations(workspaceId)
       group.items = reconcileConversations(
-        more
+        page.offset
           ? [
               ...new Map(
                 [...group.items, ...result.conversations].map((item) => [item.id, item]),
@@ -715,8 +748,8 @@ function createConversations() {
         .sort(comparePinnedItems)
         .slice(0, 1000)
       group.revision = result.revision
-      group.offset = (more ? group.offset : 0) + 50
       group.hasMore = result.hasMore && group.items.length < 1000
+      loadNext = group.pagination.finish(page, group.hasMore, more)
       for (const event of group.events.values()) if (event.revision > result.revision) apply(event)
     } catch (error) {
       if (
@@ -731,6 +764,13 @@ function createConversations() {
         group.events.clear()
       }
     }
+    if (
+      loadNext &&
+      !disposed &&
+      group === state.workspaceGroups[workspaceId] &&
+      generation === group.generation
+    )
+      await loadWorkspaceConversations(workspaceId, true)
   }
   function expandWorkspace(workspaceId: string): void {
     if (state.workspaceGroups[workspaceId]?.expanded) return
@@ -745,7 +785,7 @@ function createConversations() {
         loading: false,
         error: '',
         hasMore: false,
-        offset: 0,
+        pagination: new ListPagination(),
         revision: 0,
         generation: 0,
         expanded: true,
@@ -771,6 +811,7 @@ function createConversations() {
   async function createWorkspace(input: WorkspaceInput, selectionId: string): Promise<Workspace> {
     const result = await manage(() => getDesktopApi().createWorkspace(input, selectionId))
     if (!disposed) {
+      workspacePagination.invalidate()
       hiddenWorkspaces.delete(result.id)
       state.workspaces = upsert(state.workspaces, result)
         .filter(isVisible)
@@ -801,6 +842,8 @@ function createConversations() {
   async function renameConversation(conversationId: string, name: string): Promise<void> {
     const result = await manage(() => getDesktopApi().renameConversation(conversationId, name))
     if (disposed) return
+    if (result.workspaceId) state.workspaceGroups[result.workspaceId]?.pagination.invalidate()
+    else listPagination.invalidate()
     state.conversations = mergeConversation(state.conversations, result, null)
     for (const [workspaceId, group] of Object.entries(state.workspaceGroups))
       group.items = mergeConversation(group.items, result, workspaceId)
@@ -886,19 +929,22 @@ function createConversations() {
   }
   async function refreshArchives(more = false): Promise<void> {
     if (!state.archivesOpen || (more && state.archivesLoading)) return
+    const page = archivePagination.read(more)
     const generation = ++archiveGeneration
+    let loadNext = false
     state.archivesLoading = true
     state.archivesError = ''
     archiveEvents.clear()
     try {
       const result = unwrap<WorkspacePage | ConversationPage>(
         await (state.archiveKind === 'workspaces'
-          ? getDesktopApi().listArchivedWorkspaces(more ? archiveOffset : 0)
-          : getDesktopApi().listArchivedConversations(more ? archiveOffset : 0)),
+          ? getDesktopApi().listArchivedWorkspaces(page.offset)
+          : getDesktopApi().listArchivedConversations(page.offset)),
       )
       if (disposed || generation !== archiveGeneration || !state.archivesOpen) return
+      if (page.offset && archivePagination.changed(page)) return await refreshArchives()
       if ('workspaces' in result) {
-        const items = more
+        const items = page.offset
           ? [
               ...new Map(
                 [...state.archivedWorkspaces, ...result.workspaces].map((item) => [item.id, item]),
@@ -910,7 +956,7 @@ function createConversations() {
           .sort(comparePinnedItems)
           .slice(0, 1000)
       } else {
-        const items = more
+        const items = page.offset
           ? [
               ...new Map(
                 [...state.archivedConversations, ...result.conversations].map((item) => [
@@ -926,12 +972,12 @@ function createConversations() {
           .slice(0, 1000)
       }
       archiveRevision = result.revision
-      archiveOffset = (more ? archiveOffset : 0) + 50
       const count =
         state.archiveKind === 'workspaces'
           ? state.archivedWorkspaces.length
           : state.archivedConversations.length
       state.archivesHasMore = result.hasMore && count < 1000
+      loadNext = archivePagination.finish(page, state.archivesHasMore, more)
       for (const event of archiveEvents.values()) if (event.revision > result.revision) apply(event)
     } catch (error) {
       if (!disposed && generation === archiveGeneration) state.archivesError = message(error)
@@ -941,6 +987,7 @@ function createConversations() {
         archiveEvents.clear()
       }
     }
+    if (loadNext && !disposed && generation === archiveGeneration) await refreshArchives(true)
   }
   function newConversation(workspaceId: string | null = null): void {
     selection++

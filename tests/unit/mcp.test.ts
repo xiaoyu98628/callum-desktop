@@ -205,6 +205,7 @@ test('MCP OAuth scope 通过 JSON 编辑器和跨进程接口往返', () => {
   assert.deepEqual(parseMcpRequest(request), request)
   const catalog = {
     revision: 2,
+    scope_update: true,
     servers: [
       {
         ...server,
@@ -221,4 +222,13 @@ test('MCP OAuth scope 通过 JSON 编辑器和跨进程接口往返', () => {
   const [saved] = parseMcpConfig(editableMcpConfig(catalog.servers[0]!))
   assert(saved)
   assert.equal(mcpConfigForSave(saved).server.scope, 'profile read')
+  const withoutScope = {
+    name: 'OAuth',
+    value: { url: 'https://example.com/mcp', auth: 'oauth' },
+  }
+  const clear = mcpConfigForSave(withoutScope, catalog.servers[0])
+  assert.equal(clear.server.scope, undefined)
+  assert.equal(clear.clear_scope, true)
+  assert.deepEqual(parseMcpRequest({ ...request, ...clear }), { ...request, ...clear })
+  assert.equal(mcpConfigForSave(withoutScope).clear_scope, undefined)
 })

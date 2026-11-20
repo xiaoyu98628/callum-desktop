@@ -143,7 +143,7 @@ function saveEnvironment(
 export function mcpConfigForSave(
   entry: McpConfigEntry,
   current?: McpServerView | null,
-): { server: McpServer; secrets: McpSecrets } {
+): { server: McpServer; secrets: McpSecrets; clear_scope?: true } {
   const name = text(entry.name, '服务名称')
   if (new TextEncoder().encode(name).length > 240) throw new Error('服务名称超过 240 字节。')
   const source = object(entry.value, '服务配置')
@@ -191,7 +191,9 @@ export function mcpConfigForSave(
   ) {
     throw new Error('clientId、redirectUri 和 scope 需要使用 OAuth 认证。')
   }
-  return { server, secrets }
+  return auth === 'oauth' && current?.scope && server.scope === undefined
+    ? { server, secrets, clear_scope: true }
+    : { server, secrets }
 }
 
 /** 将保存过的非敏感配置以 mcpServers 格式回填，令牌及加密变量只显示状态。 */

@@ -33,6 +33,7 @@ export interface McpServerView extends McpServer {
 export interface McpCatalog {
   revision: number
   servers: McpServerView[]
+  scope_update?: boolean
 }
 
 export interface McpOAuthState {
@@ -42,7 +43,14 @@ export interface McpOAuthState {
 
 export type McpRequest =
   | { action: 'list' }
-  | { action: 'save'; revision: number; server: McpServer; secrets: McpSecrets; confirmed: boolean }
+  | {
+      action: 'save'
+      revision: number
+      server: McpServer
+      secrets: McpSecrets
+      confirmed: boolean
+      clear_scope?: boolean
+    }
   | { action: 'delete'; id: string; revision: number }
   | { action: 'test'; id: string; confirmed: boolean; revision: number }
   | { action: 'start' | 'status' | 'cancel' | 'disconnect'; id: string }
@@ -128,6 +136,7 @@ export function parseMcpRequest(value: unknown): McpRequest {
         server: parseMcpServer(v.server),
         secrets: parseSecrets(v.secrets),
         confirmed: flag(v.confirmed),
+        ...(v.clear_scope !== undefined ? { clear_scope: flag(v.clear_scope) } : {}),
       }
     case 'delete':
       return { action: v.action, id: id(v.id), revision: integer(v.revision, 1) }
@@ -159,6 +168,7 @@ export function parseMcpCatalog(value: unknown): McpCatalog {
   const v = record(value)
   return {
     revision: integer(v.revision, 1),
+    ...(v.scope_update !== undefined ? { scope_update: flag(v.scope_update) } : {}),
     servers: array(v.servers, (item) => {
       const server = record(item)
       return {

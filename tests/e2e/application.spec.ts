@@ -7402,6 +7402,94 @@ test.describe('上下文压缩异常状态', () => {
   }
 })
 
+test('项目分页在删除通知后重读首屏并补齐前移项', async ({ desktop }) => {
+  test.setTimeout(90_000)
+  const page = await desktop.firstWindow()
+  await expect(page.getByRole('heading', { name: '开始一段新对话' })).toBeVisible({
+    timeout: 60_000,
+  })
+  const fixtures = await page.evaluate(async () => {
+    for (let index = 0; index < 51; index++) {
+      const result = await window.callum.createWorkspace(
+        { name: `分页项目 ${index}`, rootPath: '' },
+        '',
+      )
+      if (!result.ok) throw new Error(result.error)
+    }
+    const first = await window.callum.listWorkspaces(0)
+    const second = await window.callum.listWorkspaces(50)
+    if (!first.ok || !second.ok || !first.value.workspaces[0] || !second.value.workspaces[0])
+      throw new Error('分页测试数据不足')
+    return { removed: first.value.workspaces[0], moved: second.value.workspaces[0] }
+  })
+  await page.reload()
+  const removed = page.getByRole('button', { name: fixtures.removed.name, exact: true })
+  const moved = page.getByRole('button', { name: fixtures.moved.name, exact: true })
+  const more = page.getByRole('button', { name: '加载更多项目', exact: true })
+  await expect(removed).toBeVisible()
+  await expect(more).toBeVisible()
+  await expect(moved).toHaveCount(0)
+  const deleted = await page.evaluate(
+    (id) => window.callum.deleteWorkspace(id),
+    fixtures.removed.id,
+  )
+  expect(deleted.ok).toBe(true)
+  await expect(removed).toHaveCount(0)
+  await more.click()
+  await expect(moved).toBeVisible()
+})
+
+test('清除 OAuth 凭据后移除旧授权成功提示', async ({ desktop }) => {
+  test.setTimeout(75_000)
+  await desktop.evaluate(({ ipcMain }, channel) => {
+    let authorized = true
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, (_event, { action }: { action: string }) => {
+      if (action === 'list')
+        return {
+          ok: true,
+          value: {
+            revision: 1,
+            scope_update: true,
+            servers: [
+              {
+                id: '01951234-0000-7000-8000-123456789abc',
+                name: '受控 OAuth',
+                transport: 'streamable_http',
+                url: 'https://example.invalid/mcp',
+                auth: 'oauth',
+                enabled: false,
+                connected: false,
+                authorized,
+                allowed_tools: [],
+                secret_env_keys: [],
+                tools: [],
+              },
+            ],
+          },
+        }
+      if (action === 'status')
+        return { ok: true, value: { status: authorized ? 'authorized' : 'idle' } }
+      if (action === 'disconnect') {
+        authorized = false
+        return { ok: true, value: true }
+      }
+      throw new Error('意外的 MCP 请求')
+    })
+  }, IPC_CHANNELS.mcp)
+  const page = await desktop.firstWindow()
+  const settings = page.getByRole('button', { name: '设置', exact: true })
+  await expect(settings).toBeEnabled({ timeout: 60_000 })
+  await settings.click()
+  await page.getByRole('button', { name: 'MCP', exact: true }).click()
+  await page.getByRole('button', { name: /受控 OAuth/ }).click()
+  await expect(page.getByText('授权成功。')).toBeVisible()
+  await page.getByRole('button', { name: '清除凭据', exact: true }).click()
+  await page.getByRole('button', { name: '确认', exact: true }).click()
+  await expect(page.getByText('待授权', { exact: true })).toBeVisible()
+  await expect(page.getByText('授权成功。')).toHaveCount(0)
+})
+
 test.describe('随附 Go 服务的 MCP 回归', () => {
   test.use({ withModel: true })
 
@@ -7524,6 +7612,51 @@ for await (const line of input) {
         ],
       },
     })
+    await oauth.getByRole('button', { name: '编辑', exact: true }).click()
+    const draftWithoutScope = (await editor.inputValue()).replace(/,\s*"scope": "profile read"/, '')
+    await editor.fill(draftWithoutScope)
+    // 模拟旧客户端保存启用状态时省略 scope，引发打开中的编辑版本冲突。
+    const oldSave = await page.evaluate(async () => {
+      const snapshot = await window.callum.mcp({ action: 'list' })
+      if (!snapshot.ok || typeof snapshot.value !== 'object' || !('servers' in snapshot.value))
+        throw new Error('无法读取 MCP 快照')
+      const entry = snapshot.value.servers.find((item) => item.name === 'OAuth只读')
+      if (!entry) throw new Error('找不到 OAuth 服务')
+      const { scope, ...server } = entry
+      if (scope !== 'profile read') throw new Error('旧客户端测试缺少显式 scope')
+      return window.callum.mcp({
+        action: 'save',
+        revision: snapshot.value.revision,
+        confirmed: false,
+        secrets: {},
+        server: { ...server, enabled: true },
+      })
+    })
+    expect(oldSave.ok).toBe(true)
+    const afterOldSave = await page.evaluate(() => window.callum.mcp({ action: 'list' }))
+    expect(afterOldSave).toMatchObject({
+      ok: true,
+      value: {
+        servers: expect.arrayContaining([
+          expect.objectContaining({ name: 'OAuth只读', scope: 'profile read' }),
+        ]),
+      },
+    })
+    await save.click()
+    await expect(page.getByRole('alert')).toContainText('请刷新后重试')
+    await page.getByRole('button', { name: '刷新', exact: true }).click()
+    await expect(save).toBeDisabled()
+    await expect(editor).toHaveValue(draftWithoutScope)
+    await page.getByRole('button', { name: '使用当前版本继续编辑' }).click()
+    await expect(editor).toHaveValue(draftWithoutScope)
+    await save.click()
+    await expect(editor).toBeHidden()
+    const cleared = await page.evaluate(() => window.callum.mcp({ action: 'list' }))
+    if (!cleared.ok || typeof cleared.value !== 'object' || !('servers' in cleared.value))
+      throw new Error('无法读取 MCP 保存结果')
+    const clearedServer = cleared.value.servers.find((item) => item.name === 'OAuth只读')
+    expect(clearedServer).toBeDefined()
+    expect(clearedServer?.scope).toBeUndefined()
     await page.getByRole('button', { name: '新对话', exact: true }).click()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
     await expect(input).toBeEnabled()

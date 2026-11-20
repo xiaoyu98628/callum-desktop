@@ -11,6 +11,7 @@ import type {
 import type { ExecutionSettings } from '../../../shared/execution.ts'
 import type { ContextUsage } from '../../../shared/context-usage.ts'
 import type { SkillReference } from '../../../shared/skills.ts'
+import type { ListPagination } from './state-utils.ts'
 export type DraftSkill = SkillReference
 
 export interface ConversationGroup {
@@ -18,7 +19,7 @@ export interface ConversationGroup {
   loading: boolean
   error: string
   hasMore: boolean
-  offset: number
+  pagination: ListPagination
   revision: number
   generation: number
   expanded: boolean

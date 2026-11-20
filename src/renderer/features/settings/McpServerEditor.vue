@@ -9,11 +9,21 @@ import {
 } from '@shared/mcp-config'
 import { Button } from '@/components/ui/button'
 
-const props = defineProps<{ current: McpServerView | null; revision: number; busy: boolean }>()
-const emit = defineEmits<{ save: [input: Extract<McpRequest, { action: 'save' }>]; cancel: [] }>()
-const current = props.current
-const revision = props.revision
-const content = ref(current ? editableMcpConfig(current) : '')
+const props = defineProps<{
+  current: McpServerView | null
+  revision: number
+  latestRevision: number
+  latest: McpServerView | null
+  busy: boolean
+}>()
+const emit = defineEmits<{
+  save: [input: Extract<McpRequest, { action: 'save' }>]
+  cancel: []
+  rebase: []
+}>()
+const content = ref(props.current ? editableMcpConfig(props.current) : '')
+const stale = computed(() => props.latestRevision !== props.revision)
+const latestConfig = computed(() => (props.latest ? editableMcpConfig(props.latest) : ''))
 const selection = ref('')
 const submitted = ref(false)
 const hintId = useId()
@@ -41,7 +51,7 @@ const input = computed(() => {
   if (!selected.value)
     return { value: null, error: candidates.value.error || '请选择要保存的服务。' }
   try {
-    return { value: mcpConfigForSave(selected.value, current), error: '' }
+    return { value: mcpConfigForSave(selected.value, props.current), error: '' }
   } catch (cause) {
     return { value: null, error: message(cause) }
   }
@@ -49,8 +59,8 @@ const input = computed(() => {
 
 function save(): void {
   submitted.value = true
-  if (!input.value.value) return
-  emit('save', { action: 'save', revision, ...input.value.value, confirmed: false })
+  if (stale.value || !input.value.value) return
+  emit('save', { action: 'save', revision: props.revision, ...input.value.value, confirmed: false })
 }
 </script>
 
@@ -76,7 +86,8 @@ function save(): void {
       <p :id="hintId" class="text-xs leading-5 text-muted-foreground">
         粘贴包含 mcpServers 的 JSON。使用 stdio 时，command 填可执行文件的绝对路径。
         <span v-if="input.value?.server.auth === 'oauth'" class="block">
-          可用 scope 指定 OAuth 权限，例如 "scope": "read"。修改权限范围后需要重新授权。
+          可用 scope 指定 OAuth 权限，例如 "scope":
+          "read"。删除该字段可恢复自动发现。修改权限范围后需要重新授权。
         </span>
       </p>
       <label v-if="candidates.entries.length > 1" class="block space-y-1.5 text-sm">
@@ -101,12 +112,34 @@ function save(): void {
     <p v-if="current?.enabled" class="text-sm text-muted-foreground">
       保存后服务会停用。检查配置后可重新启用。
     </p>
+    <div v-if="stale" class="space-y-2 rounded-lg border p-3 text-sm">
+      <p role="status">
+        {{
+          current && !latest
+            ? '此服务已删除。草稿仍保留，可以复制后关闭编辑。'
+            : 'MCP 设置版本已变化。核对当前配置后可以保留草稿继续编辑。'
+        }}
+      </p>
+      <details v-if="latestConfig">
+        <summary>查看当前配置</summary>
+        <pre class="mt-2 max-h-48 overflow-auto text-xs">{{ latestConfig }}</pre>
+      </details>
+      <Button
+        v-if="!current || latest"
+        type="button"
+        size="sm"
+        variant="outline"
+        :disabled="busy"
+        @click="emit('rebase')"
+        >使用当前版本继续编辑</Button
+      >
+    </div>
     <p v-if="submitted && input.error" :id="errorId" role="alert" class="text-sm text-destructive">
       {{ input.error }}
     </p>
     <div class="flex justify-end gap-2">
       <Button type="button" variant="ghost" :disabled="busy" @click="emit('cancel')">取消</Button>
-      <Button type="submit" :disabled="busy">保存</Button>
+      <Button type="submit" :disabled="busy || stale">保存</Button>
     </div>
   </form>
 </template>
