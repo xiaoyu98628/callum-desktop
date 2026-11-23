@@ -63,6 +63,44 @@ type StepMotion = { arrival?: number; status?: number; commentary?: number }
 const stepMotion = shallowRef(new Map<string, StepMotion>())
 let observedSequence = 0
 const version = (step: ChatStep): string => `${step.status}:${step.updatedAt}`
+const runFailed = computed(
+  () => props.run?.status === 'failed' || props.run?.status === 'interrupted',
+)
+const retainedReasoningId = computed(() => {
+  if (!props.active && !runFailed.value) return null
+  const lastAnswer = rows.value.findLast(
+    (row) => row.type === 'model_call' && row.purpose === 'answer',
+  )
+  // 模型步骤通常先于运行终态到达，避免两条事件之间先隐藏已显示的思考。
+  if (
+    (lastAnswer?.status === 'failed' || lastAnswer?.status === 'interrupted') &&
+    (lastAnswer.reasoning || lastAnswer.reasoningTruncated)
+  )
+    return lastAnswer.id
+  if (!runFailed.value) return null
+  return (
+    rows.value.findLast(
+      (row) =>
+        row.type === 'model_call' &&
+        row.purpose === 'answer' &&
+        (row.reasoning || row.reasoningTruncated),
+    )?.id ?? null
+  )
+})
+const liveReasoning = computed(() => {
+  const result = new Map<string, string>()
+  if (!props.active && !runFailed.value) return result
+  for (const step of props.snapshots) {
+    if (
+      step.conversationId === props.conversationId &&
+      step.runId === props.runId &&
+      step.reasoning &&
+      !step.reasoningTruncated
+    )
+      result.set(step.id, step.reasoning)
+  }
+  return result
+})
 const visible = computed(() =>
   rows.value.filter(
     (step) =>
@@ -90,7 +128,7 @@ const items = computed(() => {
   return groupTimeline(visible.value, steering)
 })
 const currentGroupId = computed(() => {
-  if (!props.active) return null
+  if (!props.active && !runFailed.value) return null
   const latest = [...rows.value, ...props.snapshots]
     .filter(
       (step) =>
@@ -741,6 +779,9 @@ onScopeDispose(() => {
             <ReasoningItem
               v-if="item.step.reasoning || item.step.reasoningTruncated"
               :step="item.step"
+              :live-reasoning="liveReasoning.get(item.step.id)"
+              :keep-open="retainedReasoningId === item.step.id"
+              :error-below="runFailed"
               :active="active"
               :connected="connected"
               @inspect="inspect"

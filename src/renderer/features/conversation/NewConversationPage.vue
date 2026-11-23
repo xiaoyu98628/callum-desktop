@@ -544,12 +544,31 @@ const runLabels = {
   interrupted: '回答已中断',
 }
 const latestRun = computed(() => state.detail?.runs.at(-1))
+function runError(run: ChatRun | undefined): string | null {
+  if (!run || run.compaction || (run.status !== 'failed' && run.status !== 'interrupted'))
+    return null
+  return run.error || runLabels[run.status]
+}
+const messageErrors = computed(() => {
+  const errors = new Map<string, string>()
+  for (const [id, run] of messageRuns.value) {
+    const error = runError(run)
+    if (error) errors.set(id, error)
+  }
+  return errors
+})
+const unplacedRunError = computed(() => {
+  const run = latestRun.value
+  if (!run || activeRun.value) return null
+  for (const assigned of messageRuns.value.values()) if (assigned.id === run.id) return null
+  return runError(run)
+})
 const expandedRunId = ref<string | null>(null)
 watch(
   [() => state.selectedId, () => latestRun.value?.id],
   () => {
-    expandedRunId.value =
-      latestRun.value && isActiveRun(latestRun.value) ? latestRun.value.id : null
+    const run = latestRun.value
+    expandedRunId.value = run && (isActiveRun(run) || runError(run)) ? run.id : null
   },
   { immediate: true },
 )
@@ -557,7 +576,9 @@ watch(
   () => latestRun.value?.status,
   () => {
     const run = latestRun.value
-    if (run && !isActiveRun(run) && expandedRunId.value === run.id) expandedRunId.value = null
+    if (!run || isActiveRun(run)) return
+    if (runError(run)) expandedRunId.value = run.id
+    else if (expandedRunId.value === run.id) expandedRunId.value = null
   },
 )
 function keydown(event: KeyboardEvent): void {
@@ -1159,6 +1180,13 @@ onScopeDispose(() => {
                       : '回答已中断'
                 }}
               </p>
+              <p
+                v-if="messageErrors.has(item.id)"
+                role="alert"
+                class="mt-3 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm leading-6"
+              >
+                {{ messageErrors.get(item.id) }}
+              </p>
             </article>
             <ManualCompactionStatus
               v-for="run in compactions"
@@ -1173,16 +1201,11 @@ onScopeDispose(() => {
           {{ attachmentSaveError }}
         </p>
         <p
-          v-if="
-            latestRun &&
-            !latestRun.compaction &&
-            !activeRun &&
-            ['failed', 'interrupted'].includes(latestRun.status)
-          "
+          v-if="unplacedRunError"
           role="alert"
           class="mt-6 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm leading-6"
         >
-          {{ latestRun.error || runLabels[latestRun.status] }}
+          {{ unplacedRunError }}
         </p>
         <div
           v-if="!currentInteraction && (state.error || state.serviceError || state.modelError)"

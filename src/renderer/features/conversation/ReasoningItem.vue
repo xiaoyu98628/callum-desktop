@@ -1,15 +1,44 @@
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref, watch } from 'vue'
 import type { ChatStep } from '@shared/chat'
+import { getDesktopApi } from '@/lib/desktop'
 import ActivityDisclosure from './ActivityDisclosure.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
+import { MAX_MARKDOWN_TEXT } from './markdown/contract'
 
-const props = defineProps<{ step: ChatStep; active: boolean; connected: boolean }>()
+const props = defineProps<{
+  step: ChatStep
+  liveReasoning: string | undefined
+  keepOpen: boolean
+  errorBelow: boolean
+  active: boolean
+  connected: boolean
+}>()
 const emit = defineEmits<{ changed: []; inspect: [] }>()
 const inProgress = computed(
   () => props.active && ['pending', 'running'].includes(props.step.status),
 )
-const expanded = ref(false)
+const expanded = ref(props.keepOpen)
+const open = computed(() => inProgress.value || expanded.value)
+const savedReasoning = ref('')
+const readError = ref('')
+const reading = ref(false)
+const retryCount = ref(0)
+const reasoning = computed(() => {
+  const preview = props.step.reasoning ?? ''
+  const live = props.liveReasoning ?? ''
+  const newest = live.length >= preview.length ? live : preview
+  return savedReasoning.value.length > newest.length ? savedReasoning.value : newest
+})
+const needsRead = computed(
+  () =>
+    !!props.step.reasoningTruncated &&
+    !(
+      inProgress.value &&
+      (props.liveReasoning?.length ?? 0) >= (props.step.reasoning?.length ?? 0) &&
+      props.liveReasoning !== undefined
+    ),
+)
 const viewport = ref<HTMLElement | null>(null)
 const overflow = ref(false),
   atStart = ref(true),
@@ -49,9 +78,34 @@ function toggle(): void {
   expanded.value = !expanded.value
   emit('inspect')
 }
-watch(inProgress, () => {
-  expanded.value = false
+watch([inProgress, () => props.keepOpen], ([running, keepOpen], [wasRunning, wasKept]) => {
+  if (running || (!keepOpen && (wasRunning || wasKept))) expanded.value = false
+  else if (keepOpen && (!wasKept || wasRunning)) expanded.value = true
 })
+watch(
+  () => [open.value, props.connected, props.step.id, needsRead.value, retryCount.value] as const,
+  async ([visible, connected, stepId, required], _, onCleanup) => {
+    reading.value = false
+    readError.value = ''
+    if (!visible || !connected || !required) return
+    const { conversationId, runId } = props.step
+    let current = true
+    onCleanup(() => {
+      current = false
+    })
+    reading.value = true
+    try {
+      const result = await getDesktopApi().getStepReasoning(conversationId, runId, stepId)
+      if (!result.ok) throw new Error(result.error)
+      if (current) savedReasoning.value = result.value
+    } catch {
+      if (current) readError.value = '无法读取思考内容。'
+    } finally {
+      if (current) reading.value = false
+    }
+  },
+  { immediate: true },
+)
 watch(viewport, (element) => {
   observer?.disconnect()
   followTail = inProgress.value
@@ -62,12 +116,9 @@ watch(viewport, (element) => {
     schedule()
   }
 })
-watch(
-  () => props.step.reasoning,
-  () => {
-    void nextTick(schedule)
-  },
-)
+watch(reasoning, () => {
+  void nextTick(schedule)
+})
 onScopeDispose(() => {
   disposed = true
   observer?.disconnect()
@@ -77,12 +128,13 @@ onScopeDispose(() => {
 
 <template>
   <ActivityDisclosure
-    :expanded="inProgress || expanded"
+    :expanded="open"
     :collapsible="!inProgress"
     aria-label="思考过程"
     content-label="思考内容"
     @toggle="toggle"
     @changed="schedule"
+    @collapsed="savedReasoning = ''"
   >
     <template #label>
       <span :class="inProgress && connected ? 'activity-shimmer' : ''">{{
@@ -110,18 +162,23 @@ onScopeDispose(() => {
     >
       <div class="reasoning-content">
         <MarkdownMessage
-          v-if="step.reasoning"
-          :content="[{ type: 'text', text: step.reasoning, path: '' }]"
+          v-if="reasoning && reasoning.length <= MAX_MARKDOWN_TEXT"
+          :content="[{ type: 'text', text: reasoning, path: '' }]"
           :streaming="inProgress && connected"
           @rendered="schedule"
         />
+        <div v-else-if="reasoning" class="wrap-anywhere whitespace-pre-wrap">{{ reasoning }}</div>
       </div>
     </div>
-    <p v-if="step.reasoningTruncated" class="reasoning-notice">
-      思考内容较长，展示已截取；完整记录保留在服务中。
+    <p v-if="reading" role="status" class="reasoning-notice">正在读取思考内容…</p>
+    <p v-else-if="readError" role="alert" class="reasoning-notice">
+      {{ readError }}
+      <button type="button" class="underline" @click="retryCount++">重试</button>
     </p>
     <p
-      v-if="!step.steered && ['cancelled', 'interrupted', 'failed'].includes(step.status)"
+      v-if="
+        !errorBelow && !step.steered && ['cancelled', 'interrupted', 'failed'].includes(step.status)
+      "
       class="reasoning-notice"
     >
       执行未完成，以上为已收到的部分思考内容。

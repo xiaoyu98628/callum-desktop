@@ -122,6 +122,11 @@ export interface DesktopApi {
     runId: string,
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
+  getStepReasoning(
+    conversationId: string,
+    runId: string,
+    stepId: string,
+  ): Promise<ChatResult<string>>
   previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
   saveAttachment(input: AttachmentSaveInput): Promise<ChatResult<boolean>>
   previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>

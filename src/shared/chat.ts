@@ -6,6 +6,18 @@ import { parseSkillReference } from './skills.ts'
 import type { SkillReference } from './skills.ts'
 import { array, id, integer, record, string } from './validation.ts'
 export { array, id, integer, record, string } from './validation.ts'
+// 对应 Go 执行接收的文本字节上限，独立于步骤概述和 Markdown 的展示预算。
+export const MAX_REASONING_BYTES = 1024 * 1024
+
+export function parseReasoningText(value: unknown): string {
+  const text = string(value)
+  if (
+    text.length > MAX_REASONING_BYTES ||
+    new TextEncoder().encode(text).byteLength > MAX_REASONING_BYTES
+  )
+    throw new Error('思考内容过长')
+  return text
+}
 
 /** 客户端对话契约；仅包含界面需要的业务数据，不暴露厂商配置或传输方法。 */
 export interface ChatModel {
@@ -543,7 +555,7 @@ function reasoningProjection(v: Record<string, unknown>): {
 } {
   if (v.reasoning === undefined && v.reasoningTruncated === undefined) return {}
   const reasoning = string(v.reasoning)
-  if (reasoning.length > 512 * 1024 || typeof v.reasoningTruncated !== 'boolean')
+  if (reasoning.length > MAX_REASONING_BYTES || typeof v.reasoningTruncated !== 'boolean')
     throw new Error('思考内容格式无效或过长')
   return { reasoning, reasoningTruncated: v.reasoningTruncated }
 }

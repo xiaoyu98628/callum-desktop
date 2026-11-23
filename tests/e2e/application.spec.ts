@@ -221,6 +221,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'getConversationHistory',
     'listRunSteps',
     'getStepDetails',
+    'getStepReasoning',
     'previewAttachment',
     'saveAttachment',
     'previewDraftAttachment',
@@ -7558,6 +7559,76 @@ test.describe('Codex 风格过程展示', () => {
 test.describe('独立推理取消与恢复', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+  for (const withBody of [true, false]) {
+    test(`${withBody ? '已有正文' : '只有思考'}时失败，保留输出并在该轮下方显示错误`, async ({
+      desktop,
+      modelEndpoint,
+    }) => {
+      test.setTimeout(90_000)
+      const page = await desktop.firstWindow()
+      const input = page.getByRole('textbox', { name: '消息', exact: true })
+      await expect(input).toBeEnabled({ timeout: 50_000 })
+      const title = withBody ? '读取后异常' : '思考等待'
+      await input.fill(title)
+      await input.press('Enter')
+      const answers = page.getByRole('article', { name: 'Callum 的回答', exact: true })
+      const answer = answers.first()
+      const thought = answer.getByLabel('思考文本', { exact: true })
+      const partial = answer.getByText('这是已输出的正文。', { exact: true })
+      const error = answer.getByRole('alert')
+      const timeline = answer.getByRole('button', { name: '调用过程', exact: true })
+      const toolResult = answer.getByLabel('工具结果', { exact: true })
+      await expect(thought).toContainText('这是独立推理，等待后续结果。')
+      if (withBody) {
+        await answer.getByRole('button', { name: /^操作分组：/ }).click()
+        await answer
+          .getByRole('button', { name: '工具详情：已读取 fixture.txt', exact: true })
+          .first()
+          .click()
+        await expect(toolResult).toContainText('controlled-file')
+        modelEndpoint!.appendStream('这是已输出的正文。')
+        await expect(partial).toBeVisible()
+      }
+      modelEndpoint!.finishStream('length')
+      await expect(error).toHaveText('模型输出未完整完成')
+      await expect(timeline).toHaveAttribute('aria-expanded', 'true')
+      await expect(thought).toBeVisible()
+      await expect(thought).toContainText('这是独立推理，等待后续结果。')
+      if (withBody) {
+        await expect(partial).toBeVisible()
+        await expect(toolResult).toContainText('controlled-file')
+      }
+      const output = await (withBody ? partial : thought).boundingBox()
+      const errorBox = await error.boundingBox()
+      expect(output && errorBox && output.y + output.height <= errorBox.y).toBe(true)
+      await expect(answer.getByText('执行未完成', { exact: false })).toHaveCount(0)
+
+      await page.reload()
+      await expect(input).toBeEnabled({ timeout: 50_000 })
+      await page
+        .getByRole('region', { name: '最近', exact: true })
+        .getByRole('button', { name: title, exact: true })
+        .click()
+      await expect(timeline).toHaveAttribute('aria-expanded', 'true')
+      await expect(thought).toContainText('这是独立推理，等待后续结果。')
+      await expect(error).toHaveText('模型输出未完整完成')
+      if (withBody) await expect(partial).toBeVisible()
+      await timeline.click()
+      await expect(thought).toHaveCount(0)
+      await expect(error).toBeVisible()
+      await timeline.click()
+      await expect(thought).toBeVisible()
+
+      await input.fill('分页-正常后续')
+      await input.press('Enter')
+      await expect(answers).toHaveCount(2)
+      await expect(answers.last()).toContainText('分页回答。')
+      await expect(answers.last().getByRole('alert')).toHaveCount(0)
+      await expect(error).toHaveText('模型输出未完整完成')
+      if (withBody) await expect(partial).toBeVisible()
+    })
+  }
+
   test('只有推理时实时展示，停止后保留部分内容，重载后可展开', async ({ desktop }) => {
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
@@ -7593,6 +7664,65 @@ test.describe('独立推理取消与恢复', () => {
 test.describe('思考滚动与减少动态效果', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+  test('思考超过概述和即时缓存旧上限后，生成与重开都能读到完整内容', async ({
+    desktop,
+    modelEndpoint,
+  }) => {
+    test.setTimeout(90_000)
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await input.fill('思考长内容')
+    await input.press('Enter')
+    const answer = page.getByRole('article', { name: 'Callum 的回答', exact: true }).last()
+    const viewport = answer.getByLabel('思考文本', { exact: true })
+    await expect(viewport).toContainText('检查步骤 40')
+    const segment = '0123456789'.repeat(4000)
+    const ending = '完整思考末尾🙂'
+    const extension =
+      Array.from({ length: 14 }, (_, index) => `\n\n第 ${index + 1} 段 ${segment}`).join('') +
+      ending
+    for (let offset = 0; offset < extension.length - ending.length; offset += 40_000)
+      modelEndpoint!.appendReasoning(
+        extension.slice(offset, Math.min(offset + 40_000, extension.length - ending.length)),
+      )
+    modelEndpoint!.appendReasoning(ending)
+    const expectComplete = async () => {
+      await expect
+        .poll(() =>
+          viewport.evaluate(
+            (element, { extension }) => {
+              const text = element.textContent ?? ''
+              return text.startsWith('这是独立推理，') && text.endsWith(extension)
+            },
+            { extension },
+          ),
+        )
+        .toBe(true)
+      await expect(answer.getByText('思考内容较长', { exact: false })).toHaveCount(0)
+    }
+    await expectComplete()
+    await expect(viewport).toHaveAttribute('data-at-end', 'true')
+    await viewport.hover()
+    await page.mouse.wheel(0, -10_000_000)
+    await expect(viewport).toHaveAttribute('data-at-start', 'true')
+    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await expect(answer.getByRole('button', { name: '调用过程', exact: true })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await page.reload()
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    await page
+      .getByRole('region', { name: '最近', exact: true })
+      .getByRole('button', { name: '思考长内容', exact: true })
+      .click()
+    await answer.getByRole('button', { name: '调用过程', exact: true }).click()
+    await answer.getByRole('button', { name: '思考过程', exact: true }).click()
+    await expectComplete()
+    await expect(answer.getByLabel('思考内容')).toContainText('执行未完成')
+  })
+
   test('长思考限制高度并渐隐，结束默认收起，减少动态效果时无动画', async ({
     desktop,
     modelEndpoint,
@@ -8080,7 +8210,9 @@ test.describe('上下文压缩异常状态', () => {
         await expect(answer.getByRole('group', { name: '执行状态', exact: true })).toContainText(
           outcome === 'failure' ? '回答失败' : '生成已停止',
         )
-        await answer.getByRole('button', { name: '调用过程', exact: true }).click()
+        const timeline = answer.getByRole('button', { name: '调用过程', exact: true })
+        if (outcome === 'failure') await expect(timeline).toHaveAttribute('aria-expanded', 'true')
+        else await timeline.click()
         await expect
           .poll(async () => {
             await page.locator('[data-conversation-scroll]').evaluate((element) => {

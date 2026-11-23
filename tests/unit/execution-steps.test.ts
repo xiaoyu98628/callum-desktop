@@ -10,7 +10,13 @@ import { startModelServer } from '../helpers/model-server.ts'
 import type { ChatEvent, ChatApproval } from '../../src/shared/chat.ts'
 import { stepFromRpc } from '../../src/main/backend/protocol-mapper.ts'
 import { StepOutput, readStepDetails } from '../../src/main/backend/step-data.ts'
-import { parseChatEvent, parseStepPage, record } from '../../src/shared/chat.ts'
+import {
+  MAX_REASONING_BYTES,
+  parseChatEvent,
+  parseReasoningText,
+  parseStepPage,
+  record,
+} from '../../src/shared/chat.ts'
 import {
   boundSteps,
   commandStepInput,
@@ -629,7 +635,10 @@ test('较大的步骤元数据截取后仍可接收，Unicode 展示边界不拆
 })
 
 test('思考投影拒绝非字符串和越界内容，不从回答正文猜测推理', async () => {
-  for (const reasoning of [42, 'x'.repeat(512 * 1024 + 1)]) {
+  const maximum = 'x'.repeat(MAX_REASONING_BYTES)
+  assert.equal(parseReasoningText(maximum), maximum)
+  assert.throws(() => parseReasoningText('🙂'.repeat(MAX_REASONING_BYTES / 4 + 1)), /过长/)
+  for (const reasoning of [42, maximum + 'x']) {
     assert.throws(() =>
       parseChatEvent({
         revision: 1,

@@ -270,6 +270,9 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.getStepDetails, 3, (conversationId, runId, stepId) =>
     service.stepDetails(id(conversationId), id(runId), id(stepId)),
   )
+  handle(IPC_CHANNELS.getStepReasoning, 3, (conversationId, runId, stepId) =>
+    service.stepReasoning(id(conversationId), id(runId), id(stepId)),
+  )
   handle(IPC_CHANNELS.previewAttachment, 1, (input) =>
     service.previewAttachment(parseAttachmentPreviewInput(input)),
   )

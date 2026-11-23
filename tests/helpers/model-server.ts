@@ -464,6 +464,24 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       }
       const lastUser = messages.findLast((message) => message.role === 'user')
       const prompt = typeof lastUser?.content === 'string' ? lastUser.content : ''
+      if (prompt === '读取后异常') {
+        if (role === 'tool') {
+          emit(response, { reasoning_content: '这是独立推理，等待后续结果。' })
+          streamingResponses.add(response)
+          response.once('close', () => streamingResponses.delete(response))
+        } else {
+          emit(response, {
+            tool_calls: Array.from({ length: 2 }, (_, index) => ({
+              index,
+              id: `call-before-failure-${index}`,
+              type: 'function',
+              function: { name: 'read_file', arguments: JSON.stringify({ path: fixturePath }) },
+            })),
+          })
+          finish(response, 'tool_calls')
+        }
+        return
+      }
       if (prompt === '长过程折叠') {
         if (role === 'tool') {
           emit(response, { content: '长过程检查已完成。' })
@@ -905,8 +923,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     appendReasoning(text: string) {
       for (const response of streamingResponses) emit(response, { reasoning_content: text })
     },
-    finishStream() {
-      for (const response of streamingResponses) finish(response)
+    finishStream(reason = 'stop') {
+      for (const response of streamingResponses) finish(response, reason)
       streamingResponses.clear()
     },
     finishSteeredAnswer() {

@@ -29,6 +29,7 @@ import {
   id,
   isActiveRun,
   isVisible,
+  MAX_REASONING_BYTES,
   PAGE_SIZE,
   parseName,
   parseCompactInput,
@@ -87,7 +88,7 @@ import {
   STEP_TEXT_LIMIT,
   truncateStepText,
 } from '../../shared/steps.ts'
-import { StepOutput, readStepDetails } from './step-data.ts'
+import { StepOutput, readStepDetails, readStepReasoning } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
 import { generalSettingsFromRpc } from '../../shared/general-settings.ts'
@@ -156,6 +157,7 @@ export class ChatService {
   private readonly dirtySteps = new Map<string, ChatStep>()
   private readonly stepOutputs = new Map<string, StepOutput>()
   private readonly stepReads = new Map<string, Promise<StepDetails>>()
+  private readonly reasoningReads = new Map<string, Promise<string>>()
   private readonly historyReader = new ConversationHistoryReader(
     (method, params) => this.request(method, params),
     (id) => this.runs.get(id),
@@ -698,21 +700,39 @@ export class ChatService {
     }
   }
   async stepDetails(conversationId: string, runId: string, stepId: string): Promise<StepDetails> {
+    return this.readOwnedStep(this.stepReads, conversationId, runId, stepId, (step) =>
+      readStepDetails((method, params) => this.request(method, params), step),
+    )
+  }
+  async stepReasoning(conversationId: string, runId: string, stepId: string): Promise<string> {
+    return this.readOwnedStep(this.reasoningReads, conversationId, runId, stepId, (step) => {
+      if (step.type !== 'model_call') throw new Error('该步骤没有模型思考内容。')
+      return readStepReasoning((method, params) => this.request(method, params), step.id)
+    })
+  }
+  private async readOwnedStep<T>(
+    reads: Map<string, Promise<T>>,
+    conversationId: string,
+    runId: string,
+    stepId: string,
+    read: (step: ChatStep) => Promise<T>,
+  ): Promise<T> {
     const key = `${conversationId}:${runId}:${stepId}`
-    const pending = this.stepReads.get(key)
+    const pending = reads.get(key)
     if (pending) return pending
-    if (this.stepReads.size >= 16) throw new Error('步骤详情查询较多，请稍后重试。')
+    if (this.stepReads.size + this.reasoningReads.size >= 16)
+      throw new Error('步骤详情查询较多，请稍后重试。')
     const task = (async () => {
       const step = stepFromRpc(await this.request('step.get', { id: stepId }))
       if (step.id !== stepId || step.runId !== runId || step.conversationId !== conversationId)
         throw new Error('步骤归属不匹配')
-      return readStepDetails((method, params) => this.request(method, params), step)
+      return read(step)
     })()
-    this.stepReads.set(key, task)
+    reads.set(key, task)
     try {
       return await task
     } finally {
-      this.stepReads.delete(key)
+      reads.delete(key)
     }
   }
   private saveStep(step: ChatStep): void {
@@ -1229,12 +1249,13 @@ export class ChatService {
         )
           throw new Error('思考内容归属不匹配')
         const text = string(p.text)
-        if (text.length > 512 * 1024) throw new Error('思考增量过长')
+        if (Buffer.byteLength(text) > MAX_REASONING_BYTES) throw new Error('思考增量过长')
         const reasoning = (previous.reasoning ?? '') + text
+        const tooLong = reasoning.length > MAX_REASONING_BYTES
         const step = {
           ...previous,
-          reasoning: truncateStepText(reasoning, STEP_TEXT_LIMIT),
-          reasoningTruncated: previous.reasoningTruncated || reasoning.length > STEP_TEXT_LIMIT,
+          reasoning: tooLong ? truncateStepText(reasoning, MAX_REASONING_BYTES) : reasoning,
+          reasoningTruncated: previous.reasoningTruncated || tooLong,
         }
         this.saveStep(step)
         this.dirtySteps.set(step.id, step)
