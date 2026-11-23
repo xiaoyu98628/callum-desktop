@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onScopeDispose, reactive, ref } from 'vue'
 import {
-  ArchiveIcon,
   ChevronRightIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -23,7 +22,6 @@ import SidebarItemMenu from './SidebarItemMenu.vue'
 import SidebarManagementDialog from './SidebarManagementDialog.vue'
 import type { ManagementTarget } from './SidebarManagementDialog.vue'
 import CreateProjectDialog from './CreateProjectDialog.vue'
-import ArchivedItemsDialog from './ArchivedItemsDialog.vue'
 
 const props = defineProps<{
   collapsed: boolean
@@ -53,20 +51,12 @@ const {
   setConversationArchived,
   setWorkspacePinned,
   setWorkspaceArchived,
-  changeArchiveKind,
-  openArchives,
-  closeArchives,
-  refreshArchives,
 } = useConversations()
 const managementTarget = ref<ManagementTarget | null>(null)
 const managementReturnFocus = ref<HTMLElement | null>(null)
 const managementError = ref('')
 const creatingProject = ref(false)
 const sidebarError = ref('')
-const archivesReturnFocus = ref<HTMLElement | null>(null)
-const restoreError = ref('')
-const restoreNotice = ref('')
-const restoringId = ref('')
 const projectsOpen = ref(true)
 const recentOpen = ref(true)
 // 点击已由键盘聚焦的按钮时，浏览器可能继续匹配 :focus-visible。
@@ -225,27 +215,10 @@ async function archiveConversation(item: Conversation): Promise<void> {
   try {
     await setConversationArchived(item.id, true)
     if (document.activeElement === trigger || document.activeElement === document.body)
-      document.getElementById('archived-conversations')?.focus()
+      document.getElementById('sidebar-settings')?.focus()
   } catch (error) {
     sidebarError.value = error instanceof Error ? error.message : '无法归档会话，请重试。'
   }
-}
-function showArchives(event: MouseEvent): void {
-  archivesReturnFocus.value =
-    event.currentTarget instanceof HTMLElement ? event.currentTarget : null
-  restoreError.value = ''
-  restoreNotice.value = ''
-  openArchives()
-}
-function loadArchives(more: boolean): void {
-  restoreError.value = ''
-  restoreNotice.value = ''
-  void refreshArchives(more)
-}
-function changeArchivesView(kind: 'conversations' | 'workspaces'): void {
-  restoreError.value = ''
-  restoreNotice.value = ''
-  changeArchiveKind(kind)
 }
 async function pinWorkspace(item: Workspace): Promise<void> {
   if (state.managing || state.serviceError) return
@@ -263,43 +236,9 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
   try {
     await setWorkspaceArchived(item.id, true)
     if (document.activeElement === trigger || document.activeElement === document.body)
-      document.getElementById('archived-conversations')?.focus()
+      document.getElementById('sidebar-settings')?.focus()
   } catch (error) {
     sidebarError.value = error instanceof Error ? error.message : '无法归档项目，请重试。'
-  }
-}
-async function restoreWorkspace(item: Workspace): Promise<void> {
-  if (state.managing || state.serviceError || restoringId.value) return
-  restoringId.value = `workspace:${item.id}`
-  restoreError.value = ''
-  restoreNotice.value = ''
-  try {
-    await setWorkspaceArchived(item.id, false)
-    if (state.archivesOpen) {
-      restoreNotice.value = `已恢复项目“${item.name}”`
-      document.getElementById('archived-items-title')?.focus()
-    }
-  } catch (error) {
-    restoreError.value = error instanceof Error ? error.message : '无法恢复项目，请重试。'
-  } finally {
-    restoringId.value = ''
-  }
-}
-async function restoreConversation(item: Conversation): Promise<void> {
-  if (state.managing || state.serviceError || restoringId.value) return
-  restoringId.value = item.id
-  restoreError.value = ''
-  restoreNotice.value = ''
-  try {
-    await setConversationArchived(item.id, false)
-    if (state.archivesOpen) {
-      restoreNotice.value = `已恢复“${item.title}”`
-      document.getElementById('archived-items-title')?.focus()
-    }
-  } catch (error) {
-    restoreError.value = error instanceof Error ? error.message : '无法恢复会话，请重试。'
-  } finally {
-    restoringId.value = ''
   }
 }
 </script>
@@ -344,7 +283,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
       <div
         data-sidebar-scroll
         :data-scrolling="scrollbarVisible ? '' : undefined"
-        class="mt-7 min-h-0 flex-1 space-y-7 overflow-y-auto"
+        class="mt-7 -mr-3 min-h-0 flex-1 space-y-7 overflow-y-auto pr-3"
         @scroll="trackSidebarScroll"
       >
         <p v-if="sidebarError" role="alert" class="break-words px-3 text-xs text-destructive">
@@ -449,9 +388,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                     :item="workspace"
                     :home-directory="appInfo?.homeDirectory ?? ''"
                     :disabled="state.managing || !!state.serviceError"
-                    :suspended="
-                      !!managementTarget || creatingProject || state.archivesOpen || !projectsOpen
-                    "
+                    :suspended="!!managementTarget || creatingProject || !projectsOpen"
                     @pin="pinWorkspace(workspace)"
                     @edit="manageWorkspace(workspace, false, $event)"
                   >
@@ -527,7 +464,6 @@ async function restoreConversation(item: Conversation): Promise<void> {
                         :preview-suspended="
                           !!managementTarget ||
                           creatingProject ||
-                          state.archivesOpen ||
                           !projectsOpen ||
                           !state.workspaceGroups[workspace.id]?.expanded
                         "
@@ -653,9 +589,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 :items="state.conversations"
                 :has-more="state.hasMore"
                 :loading="state.loadingList"
-                :preview-suspended="
-                  !!managementTarget || creatingProject || state.archivesOpen || !recentOpen
-                "
+                :preview-suspended="!!managementTarget || creatingProject || !recentOpen"
                 :selected-id="state.selectedId"
                 :active="activePage === 'conversation'"
                 :collapsed="collapsed"
@@ -675,18 +609,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
 
     <div class="mt-5 shrink-0 space-y-4">
       <Button
-        id="archived-conversations"
-        variant="ghost"
-        class="w-full gap-3 rounded-lg"
-        :class="collapsed ? 'px-0' : 'justify-start px-3'"
-        :title="collapsed ? '已归档' : undefined"
-        :disabled="state.managing"
-        @click="showArchives"
-      >
-        <ArchiveIcon class="size-4 shrink-0" aria-hidden="true" />
-        <span :class="collapsed ? 'sr-only' : ''">已归档</span>
-      </Button>
-      <Button
+        id="sidebar-settings"
         :variant="activePage === 'settings' ? 'secondary' : 'ghost'"
         class="w-full gap-3 rounded-lg"
         :class="collapsed ? 'px-0' : 'justify-start px-3'"
@@ -708,26 +631,6 @@ async function restoreConversation(item: Conversation): Promise<void> {
       </div>
     </div>
   </aside>
-  <ArchivedItemsDialog
-    v-if="state.archivesOpen"
-    :items="state.archivedConversations"
-    :projects="state.archivedWorkspaces"
-    :view="state.archiveKind"
-    :workspaces="state.workspaces"
-    :loading="state.archivesLoading"
-    :has-more="state.archivesHasMore"
-    :busy="state.managing || !!restoringId"
-    :disabled="state.managing || !!state.serviceError || !!restoringId"
-    :restoring-id="restoringId"
-    :error="restoreError || state.archivesError || state.serviceError"
-    :notice="restoreNotice"
-    :return-focus="archivesReturnFocus"
-    @close="closeArchives"
-    @load="loadArchives"
-    @restore="restoreConversation"
-    @restore-workspace="restoreWorkspace"
-    @view="changeArchivesView"
-  />
   <CreateProjectDialog
     v-if="creatingProject"
     :busy="state.managing"

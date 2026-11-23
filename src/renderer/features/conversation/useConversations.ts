@@ -872,10 +872,16 @@ function createConversations() {
   }
   async function deleteConversation(conversationId: string): Promise<void> {
     const result = await manage(() => getDesktopApi().deleteConversation(conversationId))
-    if (!disposed) {
-      removeConversation(conversationId)
-      if (result.workspaceId) void loadWorkspaceConversations(result.workspaceId)
-      else void refreshOverview()
+    if (disposed) return
+    removeConversation(conversationId)
+    if (result.workspaceId) void loadWorkspaceConversations(result.workspaceId)
+    else void refreshOverview()
+    if (state.archivesOpen && state.archiveKind === 'conversations') {
+      state.archivedConversations = state.archivedConversations.filter(
+        (item) => item.id !== conversationId,
+      )
+      // 删除会让归档列表中的后续条目前移，从首页重读并废弃在途分页。
+      void refreshArchives()
     }
   }
   async function updateConversationFlag(

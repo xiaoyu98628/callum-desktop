@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { CpuIcon, PaletteIcon, PlugIcon, Settings2Icon } from '@lucide/vue'
+import { ArchiveIcon, CpuIcon, PaletteIcon, PlugIcon, Settings2Icon } from '@lucide/vue'
 import type { ChatModel } from '@shared/chat'
 import type { SettingsSection } from '@/app/navigation'
 import { Button } from '@/components/ui/button'
 import AppearanceSettings from '@/features/appearance/AppearanceSettings.vue'
 import ModelSettings from '@/features/models/ModelSettings.vue'
 import type { AppInfo } from '@shared/desktop-api'
+import ArchivedSettings from './ArchivedSettings.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import McpSettings from './McpSettings.vue'
 defineProps<{ section: SettingsSection; platform?: AppInfo['platform'] | undefined }>()
@@ -24,7 +25,7 @@ defineEmits<{
     </p>
 
     <div class="mt-9 grid min-w-0 gap-7 lg:grid-cols-[8rem_minmax(0,1fr)] lg:gap-8">
-      <nav aria-label="设置分类" class="flex gap-2 lg:flex-col">
+      <nav aria-label="设置分类" class="flex flex-wrap gap-2 lg:flex-col lg:flex-nowrap">
         <Button
           :variant="section === 'general' ? 'secondary' : 'ghost'"
           class="justify-start gap-2.5 lg:w-full"
@@ -59,10 +60,20 @@ defineEmits<{
           @click="$emit('update:section', 'mcp')"
           ><PlugIcon class="size-4" aria-hidden="true" />MCP</Button
         >
+        <Button
+          :variant="section === 'archived' ? 'secondary' : 'ghost'"
+          class="justify-start gap-2.5 lg:w-full"
+          :aria-current="section === 'archived' ? 'page' : undefined"
+          aria-controls="archived-settings"
+          @click="$emit('update:section', 'archived')"
+        >
+          <ArchiveIcon class="size-4" aria-hidden="true" />已归档
+        </Button>
       </nav>
       <GeneralSettings v-if="section === 'general'" id="general-settings" :platform="platform" />
       <AppearanceSettings v-else-if="section === 'appearance'" id="appearance-settings" />
       <McpSettings v-else-if="section === 'mcp'" id="mcp-settings" />
+      <ArchivedSettings v-else-if="section === 'archived'" id="archived-settings" />
       <ModelSettings
         v-else
         id="models-settings"

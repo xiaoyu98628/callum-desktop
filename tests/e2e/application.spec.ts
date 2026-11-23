@@ -2889,6 +2889,21 @@ async function addTestWorkspace(
   await expect(page.getByRole('region', { name, exact: true })).toBeVisible()
 }
 
+function settingsCategory(page: Page, name: string): Locator {
+  return page
+    .getByRole('navigation', { name: '设置分类', exact: true })
+    .getByRole('button', { name, exact: true })
+}
+
+async function archiveSettingsEntry(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  return settingsCategory(page, '已归档')
+}
+
+function archiveSettingsPanel(page: Page): Locator {
+  return page.getByRole('region', { name: '已归档', exact: true })
+}
+
 async function createSidebarConversations(
   page: Page,
   workspaceId: string | null,
@@ -3551,9 +3566,20 @@ test.describe('会话与项目管理', () => {
     expect(smallCard.x).toBeGreaterThanOrEqual(0)
     expect(smallCard.x + smallCard.width).toBeLessThanOrEqual(windowWidth)
     await page.screenshot({ path: '.artifacts/screenshots/conversation-hover-dark.png' })
+    const scroller = page.locator('[data-sidebar-scroll]')
+    const scrollbarGap = () =>
+      scroller.evaluate((element) => {
+        const sidebar = element.closest('aside')!
+        return (
+          sidebar.getBoundingClientRect().right -
+          parseFloat(getComputedStyle(sidebar).borderRightWidth) -
+          element.getBoundingClientRect().right
+        )
+      })
     await page.getByRole('button', { name: '收起侧栏', exact: true }).click()
     await independent.hover()
     await expect(chatPreview).toContainText('独立悬停会话')
+    expect(await scrollbarGap()).toBeCloseTo(0)
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
 
     await page.evaluate(async () => {
@@ -3570,7 +3596,7 @@ test.describe('会话与项目管理', () => {
       .getByRole('button', { name: '滚动项目 11', exact: true })
     await empty.hover()
     await expect(preview).toContainText('未添加文件夹')
-    const scroller = page.locator('[data-sidebar-scroll]')
+    expect(await scrollbarGap()).toBeCloseTo(0)
     await scroller.hover()
     await page.mouse.wheel(0, 300)
     await expect(preview).toHaveCount(0)
@@ -4066,29 +4092,42 @@ test.describe('会话与项目管理', () => {
     await menu.getByRole('menuitem', { name: '归档项目', exact: true }).click()
     await expect(project).toHaveCount(0)
     expect(await readFile(join(folder, 'kept.txt'), 'utf8')).toBe('project-data')
-    const archived = page.getByRole('button', { name: '已归档', exact: true })
-    await archived.click()
+    await expect(page.getByRole('button', { name: '设置', exact: true })).toBeFocused()
+    await expect(
+      page.locator('#app-sidebar').getByRole('button', { name: '已归档', exact: true }),
+    ).toHaveCount(0)
+    const archived = await archiveSettingsEntry(page)
+    await archived.press('Enter')
+    await expect(archived).toHaveAttribute('aria-current', 'page')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(archiveSettingsPanel(page)).toBeVisible()
     await page.getByRole('tab', { name: '项目', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '已归档项目', exact: true })
-    await expect(dialog.getByRole('button', { name: `恢复${name}`, exact: true })).toBeVisible()
+    const archivesPanel = archiveSettingsPanel(page)
+    await expect(
+      archivesPanel.getByRole('button', { name: `取消归档${name}`, exact: true }),
+    ).toBeVisible()
+    await expect(
+      archivesPanel.getByRole('button', { name: `删除${name}`, exact: true }),
+    ).toHaveCount(0)
     await page.screenshot({
       path: '.artifacts/screenshots/archived-projects-dark.png',
       animations: 'disabled',
     })
-    await dialog.getByRole('button', { name: `恢复${name}`, exact: true }).click()
-    await expect(dialog.getByRole('status')).toContainText('已恢复项目')
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
-    await expect(archived).toBeFocused()
+    await archivesPanel.getByRole('button', { name: `取消归档${name}`, exact: true }).click()
+    await expect(archivesPanel.getByRole('status')).toContainText('已取消归档项目')
+    await settingsCategory(page, '外观').click()
+    await expect(archivesPanel).toHaveCount(0)
+    await expect(settingsCategory(page, '外观')).toHaveAttribute('aria-current', 'page')
     await project.getByRole('button', { name: '项目归档保留的会话', exact: true }).click()
     // 页面重载只保留服务端数据；重新填写后再次归档，核对本窗口草稿生命周期。
     await input.fill('当前窗口项目草稿')
     await trigger.click()
     await menu.getByRole('menuitem', { name: '归档项目', exact: true }).click()
     await expect(project).toHaveCount(0)
-    await archived.click()
+    await (await archiveSettingsEntry(page)).click()
     await page.getByRole('tab', { name: '项目', exact: true }).click()
-    await dialog.getByRole('button', { name: `恢复${name}`, exact: true }).click()
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await archivesPanel.getByRole('button', { name: `取消归档${name}`, exact: true }).click()
     await project.getByRole('button', { name: '项目归档保留的会话', exact: true }).click()
     await expect(input).toHaveValue('当前窗口项目草稿')
     await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
@@ -4170,23 +4209,25 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.listArchivedWorkspaces, listed },
     )
-    await page.getByRole('button', { name: '已归档', exact: true }).click()
+    await (await archiveSettingsEntry(page)).click()
     await page.getByRole('tab', { name: '项目', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '已归档项目', exact: true })
-    await expect(dialog.getByRole('alert')).toContainText('受控项目归档读取失败')
-    await dialog.getByRole('button', { name: '刷新已归档项目', exact: true }).click()
+    const archivesPanel = archiveSettingsPanel(page)
+    await expect(archivesPanel.getByRole('alert')).toContainText('受控项目归档读取失败')
+    await archivesPanel.getByRole('button', { name: '刷新已归档项目', exact: true }).click()
     await desktop.evaluate(({ ipcMain }, channel) => {
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, () => ({ ok: false, error: '受控项目恢复失败' }))
     }, IPC_CHANNELS.setWorkspaceArchived)
-    await dialog.getByRole('button', { name: '恢复错误项目', exact: true }).click()
-    await expect(dialog.getByRole('alert')).toContainText('受控项目恢复失败')
-    await expect(dialog.getByRole('button', { name: '恢复错误项目', exact: true })).toBeEnabled()
+    await archivesPanel.getByRole('button', { name: '取消归档错误项目', exact: true }).click()
+    await expect(archivesPanel.getByRole('alert')).toContainText('受控项目恢复失败')
+    await expect(
+      archivesPanel.getByRole('button', { name: '取消归档错误项目', exact: true }),
+    ).toBeEnabled()
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
     )
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(860)
-    const bounds = await dialog.boundingBox()
+    const bounds = await archivesPanel.boundingBox()
     expect(
       bounds &&
         bounds.x >= 0 &&
@@ -4199,9 +4240,11 @@ test.describe('会话与项目管理', () => {
       animations: 'disabled',
     })
     await interruptTestBackend(desktop)
-    await expect(dialog.getByRole('button', { name: '恢复错误项目', exact: true })).toBeDisabled()
-    await page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
+    await expect(
+      archivesPanel.getByRole('button', { name: '取消归档错误项目', exact: true }),
+    ).toBeDisabled()
+    await settingsCategory(page, '外观').click()
+    await expect(archivesPanel).toHaveCount(0)
   })
 
   test('归档项目分页和页签切换丢弃迟到查询，恢复不被旧项目快照和通知撤销', async ({
@@ -4255,26 +4298,25 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.listArchivedWorkspaces, listed },
     )
-    const archived = page.getByRole('button', { name: '已归档', exact: true })
+    const archived = await archiveSettingsEntry(page)
     await archived.click()
     await page.getByRole('tab', { name: '会话', exact: true }).focus()
     await page.keyboard.press('ArrowRight')
-    const dialog = page.getByRole('dialog', { name: '已归档项目', exact: true })
-    await expect(dialog.getByRole('status')).toContainText('正在加载')
+    const archivesPanel = archiveSettingsPanel(page)
+    await expect(archivesPanel.getByRole('status')).toContainText('正在加载')
     await page.getByRole('tab', { name: '会话', exact: true }).click()
     await desktop.evaluate(() => Reflect.get(globalThis, 'releaseProjectArchiveList')())
-    await expect(dialog).toHaveCount(0)
-    await expect(
-      page
-        .getByRole('dialog', { name: '已归档会话', exact: true })
-        .getByText('暂无已归档会话', { exact: true }),
-    ).toBeVisible()
-    await page.keyboard.press('Escape')
+    await expect(archivesPanel.getByRole('tab', { name: '会话', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    await expect(archivesPanel.getByText('暂无已归档会话', { exact: true })).toBeVisible()
+    await settingsCategory(page, '外观').click()
     await archived.click()
     await page.getByRole('tab', { name: '项目', exact: true }).click()
-    await dialog.getByRole('button', { name: '加载更多项目', exact: true }).click()
+    await archivesPanel.getByRole('button', { name: '加载更多项目', exact: true }).click()
     await expect(
-      dialog.getByRole('button', { name: `恢复${second.name}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${second.name}`, exact: true }),
     ).toBeVisible()
     expect(await desktop.evaluate(() => Reflect.get(globalThis, 'projectArchiveOffsets'))).toEqual([
       0, 0, 50,
@@ -4286,16 +4328,15 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.listWorkspaces, active },
     )
-    await dialog.getByRole('button', { name: `恢复${first.name}`, exact: true }).click()
-    await expect(dialog.getByRole('status')).toContainText('已恢复项目')
+    await archivesPanel.getByRole('button', { name: `取消归档${first.name}`, exact: true }).click()
+    await expect(archivesPanel.getByRole('status')).toContainText('已取消归档项目')
     await expect(
-      dialog.getByRole('button', { name: `恢复${first.name}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${first.name}`, exact: true }),
     ).toHaveCount(0)
-    await dialog.getByRole('button', { name: '加载更多项目', exact: true }).click()
+    await archivesPanel.getByRole('button', { name: '加载更多项目', exact: true }).click()
     await expect(
-      dialog.getByRole('button', { name: `恢复${second.name}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${second.name}`, exact: true }),
     ).toBeVisible()
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await desktop.evaluate(
       ({ BrowserWindow }, { channel, value, revision }) =>
         BrowserWindow.getAllWindows()[0]?.webContents.send(channel, 0, {
@@ -4413,11 +4454,11 @@ test.describe('会话与项目管理', () => {
     await archive.click()
     await expect(older).toHaveCount(0)
     await expect(page.getByRole('heading', { name: '开始一段新对话', exact: true })).toBeVisible()
-    const archives = page.getByRole('button', { name: '已归档', exact: true })
+    const archives = await archiveSettingsEntry(page)
     await archives.click()
-    const dialog = page.getByRole('dialog', { name: '已归档会话', exact: true })
+    const archivesPanel = archiveSettingsPanel(page)
     await expect(
-      dialog.getByRole('button', { name: '恢复需要置顶的会话', exact: true }),
+      archivesPanel.getByRole('button', { name: '取消归档需要置顶的会话', exact: true }),
     ).toBeVisible()
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect(page.locator('html')).toHaveClass(/dark/)
@@ -4425,11 +4466,9 @@ test.describe('会话与项目管理', () => {
       path: '.artifacts/screenshots/archived-conversations-dark.png',
       animations: 'disabled',
     })
-    await dialog.getByRole('button', { name: '恢复需要置顶的会话', exact: true }).click()
-    await expect(dialog.getByRole('status')).toContainText('已恢复')
-    await expect(dialog.getByText('暂无已归档会话', { exact: true })).toBeVisible()
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
-    await expect(archives).toBeFocused()
+    await archivesPanel.getByRole('button', { name: '取消归档需要置顶的会话', exact: true }).click()
+    await expect(archivesPanel.getByRole('status')).toContainText('已取消归档')
+    await expect(archivesPanel.getByText('暂无已归档会话', { exact: true })).toBeVisible()
     await older.click()
     await expect(input).toHaveValue('归档恢复保留的草稿')
     await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
@@ -4446,10 +4485,9 @@ test.describe('会话与项目管理', () => {
     await page.getByRole('menuitem', { name: '归档聊天', exact: true }).click()
     await expect(project.getByRole('button', { name: '项目归档会话', exact: true })).toHaveCount(0)
     await page.reload()
-    await archives.click()
-    await expect(dialog.getByText('归档项目', { exact: true })).toBeVisible()
-    await dialog.getByRole('button', { name: '恢复项目归档会话', exact: true }).click()
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await (await archiveSettingsEntry(page)).click()
+    await expect(archivesPanel.getByText('归档项目', { exact: true })).toBeVisible()
+    await archivesPanel.getByRole('button', { name: '取消归档项目归档会话', exact: true }).click()
     await project.getByRole('button', { name: '归档项目', exact: true }).click()
     await expect(
       project.getByRole('button', { name: '取消置顶项目归档会话', exact: true }),
@@ -4513,23 +4551,24 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.listArchivedConversations, listed },
     )
-    await page.getByRole('button', { name: '已归档', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '已归档会话', exact: true })
-    await expect(dialog.getByRole('alert')).toContainText('受控归档读取失败')
-    await dialog.getByRole('button', { name: '刷新已归档会话', exact: true }).click()
-    const restore = dialog.getByRole('button', { name: '恢复等待甲', exact: true })
+    const archives = await archiveSettingsEntry(page)
+    await archives.click()
+    const archivesPanel = archiveSettingsPanel(page)
+    await expect(archivesPanel.getByRole('alert')).toContainText('受控归档读取失败')
+    await archivesPanel.getByRole('button', { name: '刷新已归档会话', exact: true }).click()
+    const restore = archivesPanel.getByRole('button', { name: '取消归档等待甲', exact: true })
     await expect(restore).toBeVisible()
     await desktop.evaluate(({ ipcMain }, channel) => {
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, () => ({ ok: false, error: '受控恢复失败' }))
     }, IPC_CHANNELS.setConversationArchived)
     await restore.click()
-    await expect(dialog.getByRole('alert')).toContainText('受控恢复失败')
+    await expect(archivesPanel.getByRole('alert')).toContainText('受控恢复失败')
     await expect(restore).toBeEnabled()
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
     )
-    const bounds = await dialog.boundingBox()
+    const bounds = await archivesPanel.boundingBox()
     expect(
       bounds &&
         bounds.x >= 0 &&
@@ -4541,15 +4580,136 @@ test.describe('会话与项目管理', () => {
       path: '.artifacts/screenshots/archived-conversations-error-compact.png',
       animations: 'disabled',
     })
-    await page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
+    await settingsCategory(page, '外观').click()
+    await expect(archivesPanel).toHaveCount(0)
     await interruptTestBackend(desktop)
-    await page.getByRole('button', { name: '已归档', exact: true }).click()
-    await expect(dialog.getByRole('alert')).toContainText('连接已中断')
-    await expect(dialog.getByRole('button', { name: '刷新已归档会话', exact: true })).toBeDisabled()
+    await archives.click()
+    await expect(archivesPanel.getByRole('alert')).toContainText('连接已中断')
+    await expect(
+      archivesPanel.getByRole('button', { name: '刷新已归档会话', exact: true }),
+    ).toBeDisabled()
   })
 
-  test('已归档列表按需分页，关闭丢弃迟到查询，恢复不被旧快照和旧通知撤销', async ({ desktop }) => {
+  test('已归档会话可在行内取消和软删除，重启后保持结果，失败保留会话', async ({
+    desktop,
+    playwright,
+    profile,
+  }) => {
+    test.setTimeout(90_000)
+    const page = await desktop.firstWindow()
+    const deletedTitle = '需删除的归档聊天'
+    const keptTitle = '应保留的归档聊天'
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    for (const title of [deletedTitle, keptTitle]) {
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      await input.fill(title)
+      await input.press('Enter')
+      await expect(page.getByRole('article', { name: 'Callum 的回答', exact: true })).toContainText(
+        '你好，这是受控回答。',
+      )
+      await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+      await page.getByRole('button', { name: `归档${title}`, exact: true }).click()
+      await expect(page.getByRole('button', { name: title, exact: true })).toHaveCount(0)
+    }
+
+    await (await archiveSettingsEntry(page)).click()
+    const archivesPanel = archiveSettingsPanel(page)
+    const unarchive = archivesPanel.getByRole('button', {
+      name: `取消归档${deletedTitle}`,
+      exact: true,
+    })
+    const remove = archivesPanel.getByRole('button', { name: `删除${deletedTitle}`, exact: true })
+    const cancel = archivesPanel.getByRole('button', { name: '取消', exact: true })
+    const confirm = archivesPanel.getByRole('button', { name: '确认删除', exact: true })
+    await expect(unarchive).toHaveText('取消归档')
+    await expect(remove).toHaveText('删除')
+    await expect(unarchive.locator('svg')).toHaveCount(0)
+    await expect(remove.locator('svg')).toHaveCount(0)
+    for (const colorScheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme })
+      if (colorScheme === 'dark') await expect(page.locator('html')).toHaveClass(/dark/)
+      else await expect(page.locator('html')).not.toHaveClass(/dark/)
+      const removeStyle = await remove.evaluate((button) => {
+        const style = getComputedStyle(button)
+        return { color: style.color, border: style.borderTopColor }
+      })
+      expect(removeStyle.border).toBe(removeStyle.color)
+      expect(removeStyle.color).not.toBe(
+        await unarchive.evaluate((button) => getComputedStyle(button).color),
+      )
+    }
+    const removeBounds = await remove.boundingBox()
+    const unarchiveBounds = await unarchive.boundingBox()
+    expect(removeBounds && unarchiveBounds && removeBounds.x > unarchiveBounds.x).toBe(true)
+
+    await remove.press('Enter')
+    await expect(cancel).toBeFocused()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await cancel.press('Enter')
+    await expect(remove).toBeFocused()
+    await expect(confirm).toHaveCount(0)
+    await expect(unarchive).toBeEnabled()
+
+    await remove.click()
+    await confirm.click()
+    await expect(archivesPanel.getByRole('status')).toContainText(`已删除“${deletedTitle}”`)
+    await expect(remove).toHaveCount(0)
+    await expect(
+      archivesPanel.getByRole('button', { name: `删除${keptTitle}`, exact: true }),
+    ).toBeVisible()
+    await expect
+      .poll(async () => {
+        const [archived, recent] = await page.evaluate(() =>
+          Promise.all([
+            window.callum.listArchivedConversations(0),
+            window.callum.getChatOverview(0),
+          ]),
+        )
+        return archived.ok && recent.ok
+          ? [...archived.value.conversations, ...recent.value.conversations].map(
+              (item) => item.title,
+            )
+          : []
+      })
+      .toEqual([keptTitle])
+
+    await desktop.close()
+    const restarted = await playwright._electron.launch({
+      args: [projectRoot],
+      env: {
+        ...process.env,
+        CALLUM_USER_DATA_DIR: profile,
+        CALLUM_TEST_BACKGROUND: '1',
+        CALLUM_BACKEND_EXECUTABLE: '',
+      },
+    })
+    try {
+      const reopened = await restarted.firstWindow()
+      await (await archiveSettingsEntry(reopened)).click()
+      const reopenedArchives = archiveSettingsPanel(reopened)
+      const kept = reopenedArchives.getByRole('button', { name: `删除${keptTitle}`, exact: true })
+      await expect(kept).toBeVisible()
+      await expect(
+        reopenedArchives.getByRole('button', { name: `删除${deletedTitle}`, exact: true }),
+      ).toHaveCount(0)
+      await restarted.evaluate(({ ipcMain }, channel) => {
+        ipcMain.removeHandler(channel)
+        ipcMain.handle(channel, () => ({ ok: false, error: '受控会话删除失败' }))
+      }, IPC_CHANNELS.deleteConversation)
+      await kept.click()
+      const retry = reopenedArchives.getByRole('button', { name: '确认删除', exact: true })
+      await retry.click()
+      await expect(reopenedArchives.getByRole('alert')).toContainText('受控会话删除失败')
+      await expect(retry).toBeEnabled()
+      await expect(kept).toBeVisible()
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test('已归档列表按需分页，切换设置丢弃迟到查询，恢复不被旧快照和旧通知撤销', async ({
+    desktop,
+  }) => {
     const page = await desktop.firstWindow()
     const invalid = await page.evaluate(async () => ({
       pin: await window.callum.setConversationPinned('../../invalid', true),
@@ -4609,20 +4769,20 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.listArchivedConversations, listed },
     )
-    const archives = page.getByRole('button', { name: '已归档', exact: true })
-    const dialog = page.getByRole('dialog', { name: '已归档会话', exact: true })
+    const archives = await archiveSettingsEntry(page)
+    const archivesPanel = archiveSettingsPanel(page)
     await archives.click()
-    await expect(dialog.getByRole('status')).toContainText('正在加载')
-    await page.keyboard.press('Escape')
+    await expect(archivesPanel.getByRole('status')).toContainText('正在加载')
+    await settingsCategory(page, '外观').click()
     await desktop.evaluate(() => Reflect.get(globalThis, 'releaseArchiveList')())
-    await expect(dialog).toHaveCount(0)
+    await expect(archivesPanel).toHaveCount(0)
     await archives.click()
     await expect(
-      dialog.getByRole('button', { name: `恢复${first.title}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${first.title}`, exact: true }),
     ).toBeVisible()
-    await dialog.getByRole('button', { name: '加载更多会话', exact: true }).click()
+    await archivesPanel.getByRole('button', { name: '加载更多会话', exact: true }).click()
     await expect(
-      dialog.getByRole('button', { name: `恢复${second.title}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${second.title}`, exact: true }),
     ).toBeVisible()
     expect(await desktop.evaluate(() => Reflect.get(globalThis, 'archiveOffsets'))).toEqual([
       0, 0, 50,
@@ -4634,16 +4794,15 @@ test.describe('会话与项目管理', () => {
       },
       { channel: IPC_CHANNELS.getChatOverview, overview },
     )
-    await dialog.getByRole('button', { name: `恢复${first.title}`, exact: true }).click()
-    await expect(dialog.getByRole('status')).toContainText('已恢复')
+    await archivesPanel.getByRole('button', { name: `取消归档${first.title}`, exact: true }).click()
+    await expect(archivesPanel.getByRole('status')).toContainText('已取消归档')
     await expect(
-      dialog.getByRole('button', { name: `恢复${first.title}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${first.title}`, exact: true }),
     ).toHaveCount(0)
-    await dialog.getByRole('button', { name: '加载更多会话', exact: true }).click()
+    await archivesPanel.getByRole('button', { name: '加载更多会话', exact: true }).click()
     await expect(
-      dialog.getByRole('button', { name: `恢复${second.title}`, exact: true }),
+      archivesPanel.getByRole('button', { name: `取消归档${second.title}`, exact: true }),
     ).toBeVisible()
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     const restored = page
       .getByRole('region', { name: '最近', exact: true })
       .getByRole('button', { name: first.title, exact: true })
