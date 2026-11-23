@@ -3250,17 +3250,27 @@ test.describe('会话与项目管理', () => {
   })
 
   test('文件夹侧栏支持空项目、键盘新建、缩进会话与独立最近列表', async ({ desktop, profile }) => {
+    test.setTimeout(90_000)
     const folder = join(profile, 'sidebar-project')
     await mkdir(folder)
     const page = await desktop.firstWindow()
+    await expect(page.getByRole('button', { name: '添加项目', exact: true })).toBeEnabled({
+      timeout: 50_000,
+    })
     await addTestWorkspace(desktop, page, folder, '空项目')
     const project = page.getByRole('region', { name: '空项目', exact: true })
     const row = project.getByRole('button', { name: '空项目', exact: true })
     await expect(row).toHaveAttribute('aria-expanded', 'true')
     await expect(row).toHaveCSS('font-size', '13px')
     await expect(project.getByText('暂无聊天', { exact: true })).toBeVisible()
+    const projectMenu = project.getByRole('button', { name: '空项目的操作', exact: true })
     const create = project.getByRole('button', { name: '在空项目中新建对话', exact: true })
-    await create.focus()
+    await row.focus()
+    await page.keyboard.press('Tab')
+    await expect(projectMenu).toBeFocused()
+    await expect(projectMenu).toHaveCSS('opacity', '1')
+    await page.keyboard.press('Tab')
+    await expect(create).toBeFocused()
     await expect(create).toHaveCSS('opacity', '1')
     await create.press('Enter')
     await expect(page.getByText('在 空项目 中开始对话。', { exact: true })).toBeVisible()
@@ -3283,6 +3293,24 @@ test.describe('会话与项目管理', () => {
 
     const projects = page.getByRole('button', { name: '项目', exact: true })
     const recentToggle = recent.getByRole('button', { name: '最近', exact: true })
+    const projectChevron = projects.locator('svg')
+    const recentChevron = recentToggle.locator('svg')
+    await page.mouse.move(0, 0)
+    for (const heading of [projects, recentToggle]) {
+      const chevron = heading.locator('svg')
+      const label = heading.locator('span')
+      await expect(chevron).toHaveCSS('opacity', '0')
+      const labelBounds = await label.boundingBox()
+      if (!labelBounds) throw new Error('缺少侧栏标题')
+      await heading.hover()
+      await expect(chevron).toHaveCSS('opacity', '1')
+      await expect(chevron).toHaveCSS('rotate', '90deg')
+      const chevronBounds = await chevron.boundingBox()
+      if (!chevronBounds) throw new Error('缺少侧栏标题箭头')
+      expect(chevronBounds.x - (labelBounds.x + labelBounds.width)).toBeCloseTo(4)
+      expect((await label.boundingBox())?.x).toBe(labelBounds.x)
+      await page.mouse.move(0, 0)
+    }
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     const resize = await projects.evaluate(async (button: HTMLButtonElement) => {
       const panel = document.getElementById(button.getAttribute('aria-controls') ?? '')
@@ -3316,6 +3344,8 @@ test.describe('会话与项目管理', () => {
     await expect(project).toHaveCount(0)
     await expect(independent).toBeVisible()
     await expect(projects).toBeFocused()
+    await expect(projectChevron).toHaveCSS('opacity', '1')
+    await expect(projectChevron).toHaveCSS('rotate', 'none')
     await projects.press('Space')
     await expect(row).toHaveAttribute('aria-expanded', 'true')
     const projectChat = project.getByRole('button', { name: '项目聊天', exact: true })
@@ -3328,11 +3358,83 @@ test.describe('会话与项目管理', () => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await recentToggle.press('Enter')
     await expect(recentToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(recentChevron).toHaveCSS('opacity', '1')
+    await expect(recentChevron).toHaveCSS('rotate', 'none')
     await expect(page.locator('#recent-conversations')).toHaveCSS('transition-duration', '0s')
     await expect(independent).toHaveCount(0)
     await expect(projectChat).toBeVisible()
     await recentToggle.press('Enter')
     await expect(independent).toBeVisible()
+
+    const recentCreate = recent.getByRole('button', { name: '最近中新建对话', exact: true })
+    await expect(recentCreate).toHaveCSS('opacity', '1')
+    await recentToggle.click()
+    await page.mouse.move(0, 0)
+    await expect(recentToggle).toBeFocused()
+    await expect(recentChevron).toHaveCSS('opacity', '0')
+    await expect(recentCreate).toHaveCSS('opacity', '0')
+    await recentToggle.click()
+
+    await row.click()
+    await page.mouse.move(0, 0)
+    await expect(row).toBeFocused()
+    await expect(projectMenu).toHaveCSS('opacity', '0')
+    await expect(create).toHaveCSS('opacity', '0')
+    await row.click()
+    for (const [chat, region, title] of [
+      [projectChat, project, '项目聊天'],
+      [independent, recent, '独立聊天'],
+    ] as const) {
+      const pin = region.getByRole('button', { name: `置顶${title}`, exact: true })
+      const archive = region.getByRole('button', { name: `归档${title}`, exact: true })
+      await chat.hover()
+      await expect(pin).toHaveCSS('opacity', '1')
+      await chat.click()
+      await page.mouse.move(0, 0)
+      await expect(chat).toBeFocused()
+      await expect(pin).toHaveCSS('opacity', '0')
+      await expect(archive).toHaveCSS('opacity', '0')
+      await expect(chat).toHaveCSS('padding-right', '12px')
+      await page.keyboard.press('Tab')
+      await expect(pin).toBeFocused()
+      await expect(pin).toHaveCSS('opacity', '1')
+      await expect(archive).toHaveCSS('opacity', '1')
+    }
+
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.setSize(860, 620),
+    )
+    await row.click()
+    await expect(projectChat).toHaveCount(0)
+    const scroller = page.locator('[data-sidebar-scroll]')
+    await scroller.evaluate((element) => {
+      const lastSection = element.lastElementChild
+      if (!lastSection) throw new Error('缺少侧栏分组')
+      // 留半条会话的高度，让同一窗口在项目收放时跨过滚动阈值。
+      const contentHeight =
+        lastSection.getBoundingClientRect().bottom -
+        element.getBoundingClientRect().top +
+        element.scrollTop
+      element.style.maxHeight = `${Math.ceil(contentHeight + 14)}px`
+    })
+    const overflowAmount = () =>
+      scroller.evaluate((element) => element.scrollHeight - element.clientHeight)
+    const actions = [
+      page.getByRole('button', { name: '添加项目', exact: true }),
+      projectMenu,
+      create,
+      recentCreate,
+    ]
+    const actionPositions = () =>
+      Promise.all(
+        actions.map((action) => action.evaluate((element) => element.getBoundingClientRect().x)),
+      )
+    expect(await overflowAmount()).toBe(0)
+    const before = await actionPositions()
+    await row.click()
+    await expect(projectChat).toBeVisible()
+    await expect.poll(overflowAmount).toBeGreaterThan(0)
+    expect(await actionPositions()).toEqual(before)
   })
 
   test('项目与会话悬停卡片展示现有资料，支持操作、键盘和细滚动条', async ({ desktop, profile }) => {

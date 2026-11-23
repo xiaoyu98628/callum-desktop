@@ -198,7 +198,7 @@ onScopeDispose(() => titleObserver?.disconnect())
                   :class="
                     collapsed
                       ? 'justify-center px-0'
-                      : 'px-3 group-hover:pr-14 group-focus-within:pr-14'
+                      : 'px-3 group-hover:pr-14 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:pr-14 group-has-[[aria-expanded=true]]:pr-14'
                   "
                   :data-conversation-id="item.id"
                   :aria-current="active && selectedId === item.id ? 'page' : undefined"
@@ -228,7 +228,7 @@ onScopeDispose(() => titleObserver?.disconnect())
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:opacity-100 group-has-[[aria-expanded=true]]:opacity-100"
                 :aria-label="`${item.pinnedAt === null ? '置顶' : '取消置顶'}${item.title}`"
                 :title="item.pinnedAt === null ? '置顶聊天' : '取消置顶'"
                 :aria-pressed="item.pinnedAt !== null"
@@ -241,7 +241,7 @@ onScopeDispose(() => titleObserver?.disconnect())
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:opacity-100 group-has-[[aria-expanded=true]]:opacity-100"
                 :aria-label="`归档${item.title}`"
                 title="归档聊天"
                 :disabled="disabled"

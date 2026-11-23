@@ -69,8 +69,14 @@ const restoreNotice = ref('')
 const restoringId = ref('')
 const projectsOpen = ref(true)
 const recentOpen = ref(true)
+// 点击已由键盘聚焦的按钮时，浏览器可能继续匹配 :focus-visible。
+const sidebarKeyboardFocus = ref(true)
 const scrollbarVisible = ref(false)
 let scrollbarTimer: number | undefined
+function restoreSidebarKeyboardFocus(event: FocusEvent): void {
+  if (event.target instanceof Element && event.target.matches(':focus-visible'))
+    sidebarKeyboardFocus.value = true
+}
 function trackSidebarScroll(): void {
   scrollbarVisible.value = true
   window.clearTimeout(scrollbarTimer)
@@ -303,7 +309,11 @@ async function restoreConversation(item: Conversation): Promise<void> {
     id="app-sidebar"
     class="flex min-h-0 shrink-0 flex-col border-r bg-sidebar px-3 py-6 transition-[width] duration-200"
     :class="collapsed ? 'w-18' : 'w-60'"
+    :data-sidebar-keyboard="sidebarKeyboardFocus ? '' : undefined"
     aria-label="主导航"
+    @pointerdown.capture="sidebarKeyboardFocus = false"
+    @keydown.capture="sidebarKeyboardFocus = true"
+    @focusin="restoreSidebarKeyboardFocus"
   >
     <div
       class="mb-7 flex shrink-0 items-center gap-3"
@@ -341,15 +351,15 @@ async function restoreConversation(item: Conversation): Promise<void> {
           {{ sidebarError }}
         </p>
         <section aria-labelledby="workspace-heading">
-          <div class="mb-2 flex h-7 items-center gap-1" :class="collapsed ? '' : 'px-2'">
+          <div class="mb-2 flex h-7 items-center gap-1" :class="collapsed ? '' : 'pr-2'">
             <h2 class="min-w-0 flex-1">
               <Button
                 id="workspace-heading"
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="h-7 w-full gap-1 rounded-md px-1 text-xs text-muted-foreground hover:text-foreground"
-                :class="collapsed ? 'justify-center' : 'justify-start'"
+                class="sidebar-heading h-7 w-full gap-1 rounded-md px-0 text-xs text-muted-foreground hover:text-foreground"
+                :class="collapsed ? 'justify-center' : 'justify-start pl-3'"
                 :aria-expanded="projectsOpen"
                 aria-controls="workspace-list"
                 :title="collapsed ? '项目' : undefined"
@@ -359,7 +369,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 <span :class="collapsed ? 'sr-only' : ''">项目</span>
                 <ChevronRightIcon
                   v-if="!collapsed"
-                  class="sidebar-chevron ml-auto size-3.5"
+                  class="sidebar-chevron size-3"
                   :class="{ 'rotate-90': projectsOpen }"
                   aria-hidden="true"
                 />
@@ -488,7 +498,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                       type="button"
                       variant="ghost"
                       size="icon"
-                      class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100"
+                      class="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:opacity-100 group-has-[[data-state=open]]:opacity-100"
                       :aria-label="`在${workspace.name}中新建对话`"
                       title="新建对话"
                       :disabled="state.managing || !!state.serviceError"
@@ -579,7 +589,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
         <section aria-labelledby="conversations-heading">
           <div
             class="group/recent mb-2 flex h-7 items-center gap-1"
-            :class="collapsed ? '' : 'px-2'"
+            :class="collapsed ? '' : 'pr-2'"
           >
             <h2 class="min-w-0 flex-1">
               <Button
@@ -587,8 +597,8 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 type="button"
                 variant="ghost"
                 size="icon"
-                class="h-7 w-full gap-1 rounded-md px-1 text-xs text-muted-foreground hover:text-foreground"
-                :class="collapsed ? 'justify-center' : 'justify-start'"
+                class="sidebar-heading h-7 w-full gap-1 rounded-md px-0 text-xs text-muted-foreground hover:text-foreground"
+                :class="collapsed ? 'justify-center' : 'justify-start pl-3'"
                 :aria-expanded="recentOpen"
                 aria-controls="recent-conversations"
                 :title="collapsed ? '最近' : undefined"
@@ -598,7 +608,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
                 <span :class="collapsed ? 'sr-only' : ''">最近</span>
                 <ChevronRightIcon
                   v-if="!collapsed"
-                  class="sidebar-chevron ml-auto size-3.5"
+                  class="sidebar-chevron size-3"
                   :class="{ 'rotate-90': recentOpen }"
                   aria-hidden="true"
                 />
@@ -609,7 +619,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
               type="button"
               variant="ghost"
               size="icon"
-              class="ml-auto size-6 text-muted-foreground opacity-0 group-hover/recent:opacity-100 group-focus-within/recent:opacity-100"
+              class="ml-auto size-6 text-muted-foreground opacity-0 group-hover/recent:opacity-100 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]/recent:opacity-100"
               aria-label="最近中新建对话"
               title="新建对话"
               @click="startConversation()"
@@ -746,6 +756,7 @@ async function restoreConversation(item: Conversation): Promise<void> {
 }
 
 [data-sidebar-scroll] {
+  scrollbar-gutter: stable;
   transition: --sidebar-scrollbar-thumb 180ms ease-out;
 }
 
@@ -794,6 +805,14 @@ async function restoreConversation(item: Conversation): Promise<void> {
 }
 
 .sidebar-chevron {
-  transition: rotate 220ms ease;
+  opacity: 0;
+  transition:
+    rotate 220ms ease,
+    opacity 120ms ease;
+}
+
+.sidebar-heading:hover .sidebar-chevron,
+#app-sidebar[data-sidebar-keyboard] .sidebar-heading:focus-visible .sidebar-chevron {
+  opacity: 1;
 }
 </style>
