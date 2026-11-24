@@ -87,8 +87,8 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 - `message.delta` 追加到指定消息和内容块，`message.updated` 使用完整消息替换本地内容，工具调用前的中间文本可以被清空。
 - 消息的 `created_at`、`completed_at` 经查询和完整消息事件分别映射为 `createdAt`、`completedAt`，以毫秒时间戳传递并校验；缺失或空值保留为未知，不用 `updated_at` 或客户端当前时间补造完成时间。
 - 活动消息在主进程持有，界面关闭后仍消费流；重新打开窗口可读取尚未完全落库的回答。终态时释放对应活动缓存。
-- 完整消息通知按约 16ms 合并（完成、取消和断连前立即排空增量）；快照协调记录最多 512 条、16 MiB，超出恢复窗口时要求重新加载，不返回不一致快照。
-- `ChatEventDelivery` 每次向窗口发送一条通知，preload 在处理后通过固定内部通道确认。等待期间按实体合并最新快照，队列最多 128 个实体、16 MiB；积压超限时提示重新查询。确认和订阅通道同样校验来源，不暴露给业务界面。
+- 完整消息通知按约 16ms 合并（完成、取消和断连前立即排空增量）。`ChatEventHistory` 统一分配事件版本、分发实时通知并保留快照回放记录，最多 512 条、16 MiB。项目与会话查询读取数据库后按发布顺序回放期间发生的变更，超出恢复窗口时要求重新加载，回放遇到断连时返回连接错误。应用退出时释放历史和订阅。
+- `ChatEventDelivery` 每次向窗口发送一条通知，preload 在处理后通过固定内部通道确认。等待期间按实体合并最新快照，消息移除通知按版本逐条保留，队列最多 128 条、16 MiB。渲染层加载会话或历史期间使用同一合并规则，最多缓冲 500 条，随后按版本回放。积压超限时提示重新查询。确认和订阅通道同样校验来源，不暴露给业务界面。
 - 正常结束、失败、取消、重启后的中断与连接断开分别处理。`persisted:false` 保留落库失败提示，不把内存中的终态当作已安全保存。
 
 补充输入的 `user_input.requested/updated` 事件映射为 `ChatUserInput`，校验会话、执行、步骤和问题标识；`user_input.list` 恢复等待快照，回复通过固定 `submitUserInput` IPC 提交。问题与回答由 Go 保存在 `user_input` 步骤中，等待不持有模型调用槽位或数据库事务；服务重启只恢复中断状态，不自动继续。
@@ -97,13 +97,15 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 「常规」通过固定 IPC 读写 `settings.get` 和 `settings.update` 的 `general` 组，由 Go 持久化到 `app_settings`。客户端携带读取到的 revision 保存，冲突后重新读取。桌面只在数据库记录仍为版本 1 的默认排队时迁入旧的本地引导偏好，成功后清理旧键。
 
-主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。「编辑」通过版本校验将待发记录取出为持久草稿，主进程只从待发记录自动续发。竞态导致队首失效时，重新查询当前队首。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按受理时的 `steering_after_step` 插入所属调用过程，后续步骤不会改变气泡位置。同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
+主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。「编辑」通过版本校验将待发记录取出为持久草稿，主进程只从待发记录自动续发。受理冲突后重新查询队首，同一条消息的新版本也可参与受理。每次自动续发最多提交 32 个不同的消息与版本组合，遇到已尝试的版本或达到上限时结束尝试并刷新待发列表。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按受理时的 `steering_after_step` 插入所属调用过程，后续步骤不会改变气泡位置。同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
 
 ## 步骤查询与输出
 
 `ChatService` 通过既有 `step.created`、`step.updated` 和 `tool.output` 通知维护有界的步骤快照。`message.delta` 同时按 `step_id` 保存模型说明文字，工具调用轮清空回答消息时不会清除对应步骤文字。工具或提问步骤通过 `parent_step_id` 标记产生它的模型步骤；首个回答模型步骤可以缺少 `purpose`，后续回答、辅助标题及摘要仍按已有用途字段区分。工具输出为 base64 字节，每个步骤的 stdout/stderr 独立增量解码 UTF-8，缺片或超出缓存时标记截取，不将片段当成最终结果。
 
-preload 只暴露固定的 `listRunSteps(conversationId, runId, afterSequence)` 和 `getStepDetails(conversationId, runId, stepId)`，主进程校验运行或步骤的会话归属。列表复用 `step.list` 并合并查询期间的实时快照，每页 50 条；详情按 `step.data` 返回的 UTF-8 字节偏移分页拼接，最多读取 8 MiB，展示最多 256 Ki 字符。过程文字从统一 `context_message` 恢复，不让界面解析厂商响应；原始工具输出、审批及操作事实仍来自服务记录。
+preload 提供固定的 `listRunSteps(conversationId, runId, afterSequence)`、`getStepPreview(conversationId, runId, stepId)`、`getStepDetails(conversationId, runId, stepId)` 和 `getStepReasoning(conversationId, runId, stepId)`。主进程校验会话、执行和步骤归属，预览、详情与思考全文共用查询并发上限。列表复用 `step.list` 并合并实时快照，每页 50 条。
+
+时间线加载已保存的过程说明时通过 `step.data` 读 `text` 和 `reasoning`，每个字段只读一个至多 64 KiB 的 UTF-8 窗口。展开思考时按需读取思考全文，展开原始详情时才分片读取 `output`。原始详情最多读取 8 MiB，展示最多 256 Ki 字符。过程正文来自统一的 `context_message`，其读取容量与供应商原始响应的大小无关。使用开发环境的自定义服务程序时，服务需支持 `step.data` 的 `text` 字段。
 
 过程分组、思考预览、压缩状态与滚动窗口见 [调用过程展示](architecture.md#调用过程展示)。原始工具输出和步骤终态由服务端保存，实时片段不承诺重放；断线后重新查询有界最终结果，不将片段视为成功凭据。
 

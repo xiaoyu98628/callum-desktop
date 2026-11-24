@@ -1,6 +1,7 @@
+import { chatEventBufferKey } from '../../shared/chat.ts'
 import type { ChatEvent } from '../../shared/chat.ts'
 
-/** 每次只允许一条未确认通知；慢窗口只保留每个实体的最新快照。 */
+/** 每次只允许一条未确认通知；积压时合并快照并保留消息移除通知。 */
 export class ChatEventDelivery {
   private serial = 0
   private inFlight: number | null = null
@@ -14,8 +15,7 @@ export class ChatEventDelivery {
 
   offer(event: ChatEvent): void {
     if (this.overloaded) return
-    const key =
-      event.change.kind === 'service' ? 'service' : `${event.change.kind}:${event.change.value.id}`
+    const key = chatEventBufferKey(event)
     const previous = this.pending.get(key)
     if (previous) this.bytes -= previous.bytes
     const bytes = Buffer.byteLength(JSON.stringify(event))

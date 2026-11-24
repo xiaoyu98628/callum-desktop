@@ -8,6 +8,7 @@ import { array, id, integer, record, string } from './validation.ts'
 export { array, id, integer, record, string } from './validation.ts'
 // 对应 Go 执行接收的文本字节上限，独立于步骤概述和 Markdown 的展示预算。
 export const MAX_REASONING_BYTES = 1024 * 1024
+export const MAX_STEP_PREVIEW_BYTES = 64 * 1024
 
 export function parseReasoningText(value: unknown): string {
   const text = string(value)
@@ -169,6 +170,15 @@ export interface StepPage {
   hasMore: boolean
   revision: number
 }
+export interface StepPreview {
+  id: string
+  conversationId: string
+  runId: string
+  text: string
+  textTruncated: boolean
+  reasoning: string
+  reasoningTruncated: boolean
+}
 export interface StepDetails {
   id: string
   conversationId: string
@@ -248,6 +258,14 @@ export interface ChatEvent {
   revision: number
   change: ChatChange
 }
+
+/** 快照可按实体覆盖，消息移除只包含本次的 ID，需按版本逐条回放。 */
+export function chatEventBufferKey({ revision, change }: ChatEvent): string {
+  if (change.kind === 'service') return 'service'
+  if (change.kind === 'messages-removed') return `messages-removed:${revision}`
+  return `${change.kind}:${change.value.id}`
+}
+
 export interface ChatOverview {
   models: ChatModel[]
   conversations: Conversation[]
@@ -628,6 +646,31 @@ export function parseStepPage(value: unknown): StepPage {
   )
     throw new Error('步骤分页顺序无效')
   return { steps, afterSequence, nextSequence, hasMore: v.hasMore, revision: integer(v.revision) }
+}
+export function parseStepPreview(value: unknown): StepPreview {
+  const v = record(value)
+  if (typeof v.textTruncated !== 'boolean' || typeof v.reasoningTruncated !== 'boolean')
+    throw new Error('步骤预览格式无效')
+  const text = string(v.text),
+    reasoning = string(v.reasoning)
+  const encoder = new TextEncoder()
+  if (
+    [text, reasoning].some(
+      (part) =>
+        part.length > MAX_STEP_PREVIEW_BYTES ||
+        encoder.encode(part).byteLength > MAX_STEP_PREVIEW_BYTES,
+    )
+  )
+    throw new Error('步骤预览过长')
+  return {
+    id: id(v.id),
+    conversationId: id(v.conversationId),
+    runId: id(v.runId),
+    text,
+    textTruncated: v.textTruncated,
+    reasoning,
+    reasoningTruncated: v.reasoningTruncated,
+  }
 }
 export function parseStepDetails(value: unknown): StepDetails {
   const v = record(value)

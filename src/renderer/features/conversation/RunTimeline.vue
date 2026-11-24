@@ -532,7 +532,7 @@ async function hydrateComments(): Promise<void> {
       if (!step) break
       commentPending.value = step.id
       try {
-        const result = await getDesktopApi().getStepDetails(
+        const result = await getDesktopApi().getStepPreview(
           props.conversationId,
           props.runId,
           step.id,
@@ -544,14 +544,10 @@ async function hydrateComments(): Promise<void> {
           result.value.runId !== props.runId ||
           result.value.conversationId !== props.conversationId
         )
-          throw new Error('步骤详情归属不匹配')
+          throw new Error('步骤预览归属不匹配')
         commentVersions.set(step.id, version(step))
-        records?.setText(step.id, result.value.text ?? '', result.value.textTruncated)
-        records?.setReasoning(
-          step.id,
-          result.value.reasoning ?? '',
-          result.value.reasoningTruncated ?? false,
-        )
+        records?.setText(step.id, result.value.text, result.value.textTruncated)
+        records?.setReasoning(step.id, result.value.reasoning, result.value.reasoningTruncated)
         updateRows()
       } catch (value) {
         if (alive(token) && current(step)) failures.value[step.id] = fail(value)
@@ -798,11 +794,7 @@ onScopeDispose(() => {
               正在读取过程说明…
             </p>
             <p v-if="item.step.textTruncated" class="text-xs text-muted-foreground">
-              {{
-                item.step.text
-                  ? '概述较长，已截取；完整记录保留在服务中。'
-                  : '原始结果超过读取范围，过程说明暂无法恢复。'
-              }}
+              概述较长，已截取。完整记录保留在服务中。
             </p>
             <p v-if="failures[item.step.id]" role="alert" class="text-xs text-destructive">
               {{ failures[item.step.id] }}

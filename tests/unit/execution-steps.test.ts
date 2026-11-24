@@ -9,12 +9,14 @@ import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts
 import { startModelServer } from '../helpers/model-server.ts'
 import type { ChatEvent, ChatApproval } from '../../src/shared/chat.ts'
 import { stepFromRpc } from '../../src/main/backend/protocol-mapper.ts'
-import { StepOutput, readStepDetails } from '../../src/main/backend/step-data.ts'
+import { StepOutput, readStepDetails, readStepPreview } from '../../src/main/backend/step-data.ts'
 import {
   MAX_REASONING_BYTES,
+  MAX_STEP_PREVIEW_BYTES,
   parseChatEvent,
   parseReasoningText,
   parseStepPage,
+  parseStepPreview,
   record,
 } from '../../src/shared/chat.ts'
 import {
@@ -240,6 +242,48 @@ test('步骤结果按服务端字节偏移拼接，只从统一消息恢复文�
   assert.equal(details.reasoningTruncated, false)
   assert.equal(details.output.length, 256 * 1024)
   assert.equal(details.outputTruncated, true)
+})
+
+test('步骤预览只读取正文和思考的首个字节窗口', async () => {
+  const current = { ...step(), type: 'model_call' }
+  const text = '正在核对🙂'
+  const reasoning = 'a'.repeat(MAX_STEP_PREVIEW_BYTES - 2)
+  const fields: unknown[] = []
+  const result = await readStepPreview(async (method, params) => {
+    const p = record(params)
+    assert.equal(method, 'step.data')
+    assert.equal(p.step_id, current.id)
+    assert.equal(p.offset, 0)
+    assert.equal(p.limit, MAX_STEP_PREVIEW_BYTES)
+    assert.ok(p.field === 'text' || p.field === 'reasoning', '预览不应请求原始结果')
+    fields.push(p.field)
+    const fragment = p.field === 'text' ? text : reasoning
+    const next = Buffer.byteLength(fragment)
+    return {
+      step_id: current.id,
+      field: p.field,
+      present: true,
+      offset: 0,
+      next_offset: next,
+      total_bytes: next + (p.field === 'reasoning' ? Buffer.byteLength('🙂末尾') : 0),
+      done: p.field === 'text',
+      fragment,
+    }
+  }, current)
+  assert.deepEqual(fields, ['text', 'reasoning'])
+  assert.deepEqual(parseStepPreview(result), {
+    id: current.id,
+    runId: current.runId,
+    conversationId: current.conversationId,
+    text,
+    textTruncated: false,
+    reasoning,
+    reasoningTruncated: true,
+  })
+  assert.throws(
+    () => parseStepPreview({ ...result, text: '中'.repeat(MAX_STEP_PREVIEW_BYTES / 2) }),
+    /预览过长/,
+  )
 })
 
 test('结果查询拒绝错误归属和无进展分页，不绕过数据边界', async () => {

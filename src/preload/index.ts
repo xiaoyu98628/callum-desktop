@@ -10,6 +10,7 @@ import {
   parseChatEvent,
   parseStepPage,
   parseStepDetails,
+  parseStepPreview,
   parseReasoningText,
   parseDetail,
   parseConversationHistory,
@@ -240,6 +241,12 @@ const desktopApi: DesktopApi = {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.listRunSteps, conversationId, runId, afterSequence),
       parseStepPage,
+    )
+  },
+  async getStepPreview(conversationId, runId, stepId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getStepPreview, conversationId, runId, stepId),
+      parseStepPreview,
     )
   },
   async getStepDetails(conversationId, runId, stepId) {

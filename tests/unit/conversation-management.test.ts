@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
 import { ChatService } from '../../src/main/backend/chat-service.ts'
+import { ListPagination } from '../../src/renderer/features/conversation/state-utils.ts'
+import { upsert } from '../../src/shared/keyed-list.ts'
 import {
   comparePinnedItems,
   parseConversation,
@@ -21,6 +23,110 @@ import { resourceRoot, seedModel, supportedBackend } from '../helpers/backend.ts
 import { startModelServer } from '../helpers/model-server.ts'
 
 const uuid = '019a4f39-0000-7000-8000-000000000001'
+
+test('按 ID 更新列表时移除所有旧项，其余项保持原顺序且输入不变', () => {
+  const old = { id: 'same', value: 1 }
+  const duplicate = { id: 'same', value: 2 }
+  const first = { id: 'first', value: 3 }
+  const last = { id: 'last', value: 4 }
+  const items = Object.freeze([old, first, duplicate, last])
+  const replacement = { id: 'same', value: 5 }
+  const added = { id: 'new', value: 6 }
+  assert.deepEqual(upsert(items, replacement), [first, last, replacement])
+  assert.deepEqual(upsert(items, added), [old, first, duplicate, last, added])
+  assert.deepEqual(items, [old, first, duplicate, last])
+})
+
+test('加载更多期间旧页失效，补读首屏已没有下一页时结束', async () => {
+  const pagination = new ListPagination()
+  const commits: boolean[] = []
+  const offsets: number[] = []
+  const commit = (hasMore: boolean, append: boolean): boolean => {
+    commits.push(append)
+    return hasMore
+  }
+  await pagination.load(
+    false,
+    () => true,
+    async () => ({ ok: true, value: true }),
+    commit,
+  )
+  const loaded = await pagination.load(
+    true,
+    () => true,
+    async (offset) => {
+      offsets.push(offset)
+      if (offset > 0) {
+        pagination.invalidate()
+        return { ok: false, error: '旧页已经失效' }
+      }
+      return { ok: true, value: false }
+    },
+    commit,
+  )
+  assert.equal(loaded, true)
+  assert.deepEqual(offsets, [50, 0])
+  assert.deepEqual(commits, [false, false])
+})
+
+test('连续失效达到恢复上限时保留原列表，下一次加载仍能补读和追加', async () => {
+  const pagination = new ListPagination()
+  const commits: boolean[] = []
+  const offsets: number[] = []
+  const commit = (hasMore: boolean, append: boolean): boolean => {
+    commits.push(append)
+    return hasMore
+  }
+  await pagination.load(
+    false,
+    () => true,
+    async () => ({ ok: true, value: true }),
+    commit,
+  )
+  const loaded = await pagination.load(
+    true,
+    () => true,
+    async (offset) => {
+      offsets.push(offset)
+      assert.equal(pagination.invalidate(), true)
+      return { ok: true, value: true }
+    },
+    commit,
+  )
+  assert.equal(loaded, false)
+  assert.deepEqual(offsets, [50, 0, 0])
+  assert.deepEqual(commits, [false])
+  await pagination.load(
+    true,
+    () => true,
+    async (offset) => {
+      offsets.push(offset)
+      return { ok: true, value: offset === 0 }
+    },
+    commit,
+  )
+  assert.deepEqual(offsets, [50, 0, 0, 0, 50])
+  assert.deepEqual(commits, [false, false, true])
+})
+
+test('列表切换时丢弃迟到的补读首屏，也不发起下一页', async () => {
+  const pagination = new ListPagination()
+  let current = true
+  const offsets: number[] = []
+  const loaded = await pagination.load(
+    true,
+    () => current,
+    async (offset) => {
+      offsets.push(offset)
+      current = false
+      return { ok: true, value: true }
+    },
+    () => assert.fail('迟到的首屏不应提交'),
+  )
+  assert.equal(loaded, false)
+  assert.deepEqual(offsets, [0])
+})
+
 test('置顶快照按后端顺序排序，跨进程拒绝损坏的状态和版本', () => {
   const item = parseConversation({
     id: uuid,

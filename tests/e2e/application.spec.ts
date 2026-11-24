@@ -220,6 +220,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'listArchivedConversations',
     'getConversationHistory',
     'listRunSteps',
+    'getStepPreview',
     'getStepDetails',
     'getStepReasoning',
     'previewAttachment',
@@ -854,6 +855,25 @@ test.describe('后续消息', () => {
       .click()
     await expect(result).toBeVisible()
     await verifyOrder()
+    const stepId = await overview
+      .locator('[data-step-id]')
+      .filter({ hasText: '收到问题，我先查看目录。' })
+      .getAttribute('data-step-id')
+    if (!stepId) throw new Error('缺少过程说明步骤')
+    const { preview, wrongRun } = await page.evaluate(async (id) => {
+      const listing = await window.callum.getChatOverview(0)
+      if (!listing.ok) throw new Error(listing.error)
+      const conversationId = listing.value.conversations[0]!.id
+      const detail = await window.callum.getConversation(conversationId)
+      if (!detail.ok) throw new Error(detail.error)
+      const runId = detail.value.runs.at(-1)!.id
+      return {
+        preview: await window.callum.getStepPreview(conversationId, runId, id),
+        wrongRun: await window.callum.getStepPreview(conversationId, id, id),
+      }
+    }, stepId)
+    expect(preview).toMatchObject({ ok: true, value: { text: '收到问题，我先查看目录。' } })
+    expect(wrongRun.ok).toBe(false)
   })
 
   test('模型无法处理引导时提示并退回待发区', async ({ desktop, modelEndpoint }) => {
@@ -7610,6 +7630,7 @@ test.describe('Codex 风格过程展示', () => {
     const terminal = answer.locator('.activity-terminal')
     const pendingCommand = answer.getByRole('button', { name: /^工具详情：运行命令 · 等待审批/ })
     const openDetails = answer.getByRole('button', { name: '调用过程', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
     await input.fill('命令取消步骤')
     await input.press('Enter')
     await expect(approval).toBeVisible()
@@ -7661,11 +7682,12 @@ test.describe('Codex 风格过程展示', () => {
       /command-out\s+\[stderr\]\s+command-err/,
     )
     const raw = answer.locator('.activity-command-record')
+    const workingDirectory = raw.locator('p').filter({ hasText: '工作目录' })
     await expect(raw.getByText('退出码 3', { exact: true })).toHaveClass('text-destructive')
-    await expect(raw.getByText('工作目录', { exact: false })).not.toBeVisible()
+    await expect(workingDirectory).not.toBeVisible()
     await raw.getByText('原始记录', { exact: true }).click()
     await expect(raw).toHaveAttribute('open', '')
-    await expect(raw.getByText('工作目录', { exact: false })).toBeVisible()
+    await expect(workingDirectory).toBeVisible()
     await expect(raw).toContainText('execution_boundary')
 
     const saved = await page.evaluate(async () => {
@@ -8435,6 +8457,80 @@ test('项目分页在删除通知后重读首屏并补齐前移项', async ({ de
   await expect(removed).toHaveCount(0)
   await more.click()
   await expect(moved).toBeVisible()
+})
+
+test('项目加载更多遇到删除通知时一次点击即可补读并继续翻页', async ({ desktop }) => {
+  test.setTimeout(90_000)
+  const page = await desktop.firstWindow()
+  await expect(page.getByRole('heading', { name: '开始一段新对话' })).toBeVisible({
+    timeout: 60_000,
+  })
+  const fixtures = await page.evaluate(async () => {
+    for (let index = 0; index < 53; index++) {
+      const created = await window.callum.createWorkspace(
+        { name: `并发分页项目 ${index}`, rootPath: '' },
+        '',
+      )
+      if (!created.ok) throw new Error(created.error)
+    }
+    const first = await window.callum.listWorkspaces(0)
+    const second = await window.callum.listWorkspaces(50)
+    if (
+      !first.ok ||
+      !second.ok ||
+      first.value.workspaces.length !== 50 ||
+      second.value.workspaces.length !== 3
+    )
+      throw new Error('分页测试数据不足')
+    return { first: first.value, second: second.value }
+  })
+  const item = (name: string) => page.getByRole('button', { name, exact: true })
+  const removed = fixtures.first.workspaces[0]!
+  const [moved, ...tail] = fixtures.second.workspaces
+  const more = page.getByRole('button', { name: '加载更多项目', exact: true })
+  await page.reload()
+  await expect(item(removed.name)).toBeVisible()
+  await expect(more).toBeEnabled()
+  await expect(item(moved!.name)).toHaveCount(0)
+
+  await desktop.evaluate(
+    ({ ipcMain }, { channel, first, second }) => {
+      const offsets: number[] = []
+      Reflect.set(globalThis, 'concurrentWorkspaceOffsets', offsets)
+      const remaining = [...first.workspaces.slice(1), ...second.workspaces]
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, (_event, offset: number) => {
+        offsets.push(offset)
+        if (offsets.length === 1)
+          return new Promise((resolve) =>
+            Reflect.set(globalThis, 'releaseConcurrentWorkspacePage', () =>
+              resolve({ ok: true, value: second }),
+            ),
+          )
+        return {
+          ok: true,
+          value: {
+            workspaces: remaining.slice(offset, offset + 50),
+            hasMore: remaining.length > offset + 50,
+            revision: second.revision + 1,
+          },
+        }
+      })
+    },
+    { channel: IPC_CHANNELS.listWorkspaces, ...fixtures },
+  )
+  const offsets = () =>
+    desktop.evaluate(() => Reflect.get(globalThis, 'concurrentWorkspaceOffsets'))
+  await more.click()
+  await expect.poll(offsets).toEqual([50])
+  const deleted = await page.evaluate((id) => window.callum.deleteWorkspace(id), removed.id)
+  expect(deleted.ok).toBe(true)
+  await expect(item(removed.name)).toHaveCount(0)
+  await desktop.evaluate(() => Reflect.get(globalThis, 'releaseConcurrentWorkspacePage')())
+
+  for (const workspace of [moved!, ...tail]) await expect(item(workspace.name)).toHaveCount(1)
+  await expect(more).toHaveCount(0)
+  expect(await offsets()).toEqual([50, 0, 50])
 })
 
 test('清除 OAuth 凭据后移除旧授权成功提示', async ({ desktop }) => {

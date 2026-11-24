@@ -1,4 +1,5 @@
 import { compareMessages } from '../../shared/chat.ts'
+import { upsert } from '../../shared/keyed-list.ts'
 import { followUpFromRpc } from '../../shared/follow-up.ts'
 import type {
   FollowUpInput,
@@ -37,7 +38,6 @@ import {
   string,
 } from '../../shared/chat.ts'
 import type {
-  ChatChange,
   ApprovalScope,
   DirectoryGrant,
   ChatEvent,
@@ -48,6 +48,7 @@ import type {
   ChatStep,
   StepPage,
   StepDetails,
+  StepPreview,
   ChatUserInput,
   UserInputAnswer,
   Conversation,
@@ -88,12 +89,14 @@ import {
   STEP_TEXT_LIMIT,
   truncateStepText,
 } from '../../shared/steps.ts'
-import { StepOutput, readStepDetails, readStepReasoning } from './step-data.ts'
+import { StepOutput, readStepDetails, readStepPreview, readStepReasoning } from './step-data.ts'
 import { executionSettingsFromRpc, parseExecutionSettings } from '../../shared/execution.ts'
 import type { ExecutionSettings } from '../../shared/execution.ts'
 import { generalSettingsFromRpc } from '../../shared/general-settings.ts'
 import type { GeneralSettings } from '../../shared/general-settings.ts'
 import { isManualCompactionStep } from '../../shared/manual-compaction.ts'
+import { ChatEventHistory } from './chat-event-history.ts'
+import type { SnapshotChange } from './chat-event-history.ts'
 import { ConversationHistoryReader } from './conversation-history.ts'
 import { WorkspaceCatalog } from './workspace-catalog.ts'
 import { MutationGate } from './mutation-gate.ts'
@@ -103,10 +106,6 @@ import type { ContextUsage, ContextUsageInput } from '../../shared/context-usage
 import type { ServiceState } from '../../shared/desktop-api.ts'
 import { parseSkills } from '../../shared/skills.ts'
 import type { Skill } from '../../shared/skills.ts'
-
-function upsert<T extends { id: string }>(items: T[], item: T): T[] {
-  return [...items.filter((current) => current.id !== item.id), item]
-}
 
 function startupError(error: unknown, phase: string): string {
   if (error instanceof RpcConnectionError) return error.message
@@ -148,8 +147,7 @@ export class ChatService {
   private state: ServiceState = { status: 'starting' }
   private readonly stateListeners = new Set<(state: ServiceState) => void>()
   private error: string | null = null
-  private revision = 0
-  private readonly listeners = new Set<(event: ChatEvent) => void>()
+  private readonly events = new ChatEventHistory()
   private readonly messages = new Map<string, ChatMessage>()
   private readonly runs = new Map<string, ChatRun>()
   private readonly dirty = new Map<string, ChatMessage>()
@@ -157,6 +155,7 @@ export class ChatService {
   private readonly dirtySteps = new Map<string, ChatStep>()
   private readonly stepOutputs = new Map<string, StepOutput>()
   private readonly stepReads = new Map<string, Promise<StepDetails>>()
+  private readonly previewReads = new Map<string, Promise<StepPreview>>()
   private readonly reasoningReads = new Map<string, Promise<string>>()
   private readonly historyReader = new ConversationHistoryReader(
     (method, params) => this.request(method, params),
@@ -166,19 +165,12 @@ export class ChatService {
   private readonly contextReads = new Map<string, Promise<ContextUsage>>()
   private skillRead: Promise<Skill[]> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | undefined
-  private readonly history: { event: ChatEvent; bytes: number }[] = []
-  private historyBytes = 0
-  private droppedRevision = 0
   private readonly persistenceFailures = new Set<string>()
   private readonly gate = new MutationGate()
   private readonly workspaceCatalog = new WorkspaceCatalog(
     (method, params) => this.request(method, params),
     this.gate,
-    {
-      revision: () => this.revision,
-      since: (revision) => this.since(revision),
-      publish: (change) => this.publish(change),
-    },
+    this.events,
   )
   private stagingDirectory = ''
   private readonly transfers = new Set<Promise<unknown>>()
@@ -265,7 +257,7 @@ export class ChatService {
             '对话服务连接已中断，未完成请求的结果可能未知。请重新打开应用核对历史，避免重复发送。'
           this.setState({ status: 'failed', error: this.error })
           this.flush()
-          this.publish({ kind: 'service', error: this.error })
+          this.events.publish({ kind: 'service', error: this.error })
         },
       )
       this.client = client
@@ -349,10 +341,7 @@ export class ChatService {
     for (const listener of this.stateListeners) listener(this.getState())
   }
   subscribe(listener: (event: ChatEvent) => void): () => void {
-    this.listeners.add(listener)
-    return () => {
-      this.listeners.delete(listener)
-    }
+    return this.events.subscribe(listener)
   }
   private async request(method: string, params: unknown): Promise<unknown> {
     const ready = this.ready
@@ -363,23 +352,19 @@ export class ChatService {
     return this.client.request(method, params)
   }
   async overview(offset: number): Promise<ChatOverview> {
-    const start = this.revision
+    const start = this.events.revision
     const [models, rows] = await Promise.all([
       this.request('model.list', { selectable_only: true }),
       this.request('conversation.list', { unbound: true, limit: PAGE_SIZE, offset }),
     ])
     let conversations = array(rows ?? [], conversationFromRpc)
     const hasMore = conversations.length === PAGE_SIZE
-    for (const event of this.since(start)) {
-      if (event.change.kind === 'service') throw new Error(event.change.error)
+    for (const change of this.events.changesSince(start)) {
       if (
-        event.change.kind === 'conversation' &&
-        (offset === 0 ||
-          conversations.some(
-            (item) => event.change.kind === 'conversation' && item.id === event.change.value.id,
-          ))
+        change.kind === 'conversation' &&
+        (offset === 0 || conversations.some((item) => item.id === change.value.id))
       )
-        conversations = upsert(conversations, event.change.value)
+        conversations = upsert(conversations, change.value)
     }
     return {
       models: array(models ?? [], (item) => {
@@ -394,7 +379,7 @@ export class ChatService {
         .filter((item) => item.workspaceId === null && isVisible(item))
         .sort(comparePinnedItems),
       hasMore,
-      revision: this.revision,
+      revision: this.events.revision,
     }
   }
   async generalSettings(): Promise<GeneralSettings> {
@@ -469,7 +454,7 @@ export class ChatService {
           title: parseName(title),
         }),
       )
-      this.publish({ kind: 'conversation', value })
+      this.events.publish({ kind: 'conversation', value })
       return value
     })
   }
@@ -478,7 +463,7 @@ export class ChatService {
       const value = conversationFromRpc(
         await this.request('conversation.delete', { id: id(conversationId) }),
       )
-      this.publish({ kind: 'conversation', value })
+      this.events.publish({ kind: 'conversation', value })
       return value
     })
   }
@@ -516,20 +501,19 @@ export class ChatService {
       const conversation = conversationFromRpc(
         await this.request('conversation.update', { id: identifier, ...change }),
       )
-      this.publish({ kind: 'conversation', value: conversation })
-      return { conversation, revision: this.revision }
+      this.events.publish({ kind: 'conversation', value: conversation })
+      return { conversation, revision: this.events.revision }
     })
   }
   async archivedConversations(offset: number): Promise<ConversationPage> {
-    const start = this.revision
+    const start = this.events.revision
     let conversations = array(
       (await this.request('conversation.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
       conversationFromRpc,
     )
     const hasMore = conversations.length === PAGE_SIZE
     const hiddenWorkspaces = new Set<string>()
-    for (const { change } of this.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (change.kind === 'workspace' && change.value.deletedAt !== null)
         hiddenWorkspaces.add(change.value.id)
       if (
@@ -548,7 +532,7 @@ export class ChatService {
         )
         .sort(comparePinnedItems),
       hasMore,
-      revision: this.revision,
+      revision: this.events.revision,
     }
   }
   async listSkills(): Promise<Skill[]> {
@@ -590,7 +574,7 @@ export class ChatService {
   }
 
   async detail(conversationId: string): Promise<ConversationDetail> {
-    const start = this.revision
+    const start = this.events.revision
     const [conversation, history] = await Promise.all([
       this.request('conversation.get', { id: conversationId }),
       this.historyReader.page(conversationId),
@@ -632,7 +616,7 @@ export class ChatService {
         )
       : null
     // 项目读取也属于详情快照，所有异步读取结束后再合并期间发生的事件。
-    for (const { change } of this.since(start)) {
+    for (const change of this.events.changesSince(start)) {
       this.mergeDetail(result, change)
       if (change.kind === 'workspace' && change.value.id === workspace?.id) workspace = change.value
     }
@@ -646,14 +630,14 @@ export class ChatService {
         result.messages = upsert(result.messages, message)
     result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-    result.revision = this.revision
+    result.revision = this.events.revision
     return result
   }
   async listSteps(conversationId: string, runId: string, afterSequence: number): Promise<StepPage> {
     const run = runFromRpc(await this.request('run.get', { id: runId }))
     if (run.id !== runId || run.conversationId !== conversationId)
       throw new Error('步骤执行归属不匹配')
-    const start = this.revision
+    const start = this.events.revision
     const rows = array(
       await this.request('step.list', {
         run_id: runId,
@@ -675,8 +659,7 @@ export class ChatService {
       const live = this.steps.get(step.id)
       return live && live.updatedAt >= step.updatedAt ? live : step
     })
-    for (const { change } of this.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (
         change.kind === 'step' &&
         change.value.runId === runId &&
@@ -696,8 +679,14 @@ export class ChatService {
       afterSequence,
       nextSequence: steps.at(-1)?.sequence ?? afterSequence,
       hasMore,
-      revision: this.revision,
+      revision: this.events.revision,
     }
+  }
+  async stepPreview(conversationId: string, runId: string, stepId: string): Promise<StepPreview> {
+    return this.readOwnedStep(this.previewReads, conversationId, runId, stepId, (step) => {
+      if (step.type !== 'model_call') throw new Error('该步骤没有模型预览。')
+      return readStepPreview((method, params) => this.request(method, params), step)
+    })
   }
   async stepDetails(conversationId: string, runId: string, stepId: string): Promise<StepDetails> {
     return this.readOwnedStep(this.stepReads, conversationId, runId, stepId, (step) =>
@@ -720,8 +709,8 @@ export class ChatService {
     const key = `${conversationId}:${runId}:${stepId}`
     const pending = reads.get(key)
     if (pending) return pending
-    if (this.stepReads.size + this.reasoningReads.size >= 16)
-      throw new Error('步骤详情查询较多，请稍后重试。')
+    if (this.stepReads.size + this.previewReads.size + this.reasoningReads.size >= 16)
+      throw new Error('步骤查询较多，请稍后重试。')
     const task = (async () => {
       const step = stepFromRpc(await this.request('step.get', { id: stepId }))
       if (step.id !== stepId || step.runId !== runId || step.conversationId !== conversationId)
@@ -747,10 +736,9 @@ export class ChatService {
       }
   }
   async historyPage(conversationId: string, beforeRunId: string): Promise<ConversationHistory> {
-    const start = this.revision
+    const start = this.events.revision
     const result = await this.historyReader.page(conversationId, beforeRunId)
-    for (const { change } of this.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (change.kind === 'messages-removed') {
         if (change.value.steeringRequeued) {
           result.messages = result.messages.filter(
@@ -777,7 +765,7 @@ export class ChatService {
     }
     result.messages.sort(compareMessages)
     result.runs.sort((a, b) => a.id.localeCompare(b.id))
-    result.revision = this.revision
+    result.revision = this.events.revision
     return result
   }
   private async resetAttachmentStaging(): Promise<void> {
@@ -1000,8 +988,10 @@ export class ChatService {
         const item = (await this.followUps(run.conversationId)).find(
           (item) => item.state === 'queued',
         )
-        if (!item || connection !== this.ready || attempted.has(item.id)) return
-        attempted.add(item.id)
+        if (!item || connection !== this.ready) return
+        const version = `${item.id}:${item.revision}`
+        if (attempted.has(version)) break
+        attempted.add(version)
         try {
           await this.startFollowUp(
             { id: item.id, conversationId: item.conversationId, revision: item.revision },
@@ -1009,18 +999,18 @@ export class ChatService {
           )
           return
         } catch (error) {
-          // 取出和出队之间的事务冲突允许重新核对队首，避免让其余消息停在队列。
+          // 受理冲突后重新核对队首，同一条消息的新版本也能参与下一次受理。
           if (!(error instanceof RpcError) || error.code !== 1003) throw error
         }
       }
     } catch {
-      // 受理冲突、容量不足或连接变化时，Go 事务仍保留队列。
-      if (connection === this.ready)
-        this.publish({
-          kind: 'follow-ups',
-          value: { id: run.conversationId, conversationId: run.conversationId },
-        })
+      // 读取或受理失败时由界面刷新 Go 保存的队列。
     }
+    if (connection === this.ready)
+      this.events.publish({
+        kind: 'follow-ups',
+        value: { id: run.conversationId, conversationId: run.conversationId },
+      })
   }
   async compact(input: CompactConversationInput): Promise<SendMessageResult> {
     const parsed = parseCompactInput(input)
@@ -1086,7 +1076,7 @@ export class ChatService {
         this.dirty.delete(messageId)
       }
       if (removedMessageIds.length)
-        this.publish({
+        this.events.publish({
           kind: 'messages-removed',
           value: {
             id: runId,
@@ -1152,7 +1142,7 @@ export class ChatService {
   private receive(method: string, value: unknown): void {
     const p = record(value)
     if (method === 'conversation.steering_requeued') {
-      this.publish({
+      this.events.publish({
         kind: 'messages-removed',
         value: {
           id: id(p.run_id),
@@ -1163,14 +1153,14 @@ export class ChatService {
       })
     } else if (method === 'conversation.follow_ups_updated') {
       const conversationId = id(p.conversation_id)
-      this.publish({ kind: 'follow-ups', value: { id: conversationId, conversationId } })
+      this.events.publish({ kind: 'follow-ups', value: { id: conversationId, conversationId } })
     } else if (method === 'conversation.context_usage.updated') {
       const value = contextUsageFromRpc(p.context_usage)
       if (value.conversationId !== id(p.conversation_id) || value.runId !== id(p.run_id))
         throw new Error('上下文占用通知归属不匹配')
-      this.publish({ kind: 'context-usage', value })
+      this.events.publish({ kind: 'context-usage', value })
     } else if (method === 'conversation.created' || method === 'conversation.updated') {
-      this.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
+      this.events.publish({ kind: 'conversation', value: conversationFromRpc(p.conversation) })
     } else if (method === 'message.created' || method === 'message.updated') {
       const message = messageFromRpc(p.message)
       this.checkOwner(p, message)
@@ -1178,7 +1168,7 @@ export class ChatService {
         this.messages.set(message.id, message)
         this.dirty.delete(message.id)
       }
-      this.publish({ kind: 'message', value: message })
+      this.events.publish({ kind: 'message', value: message })
     } else if (method === 'step.created' || method === 'step.updated') {
       let step = stepFromRpc(p.step)
       if (
@@ -1207,16 +1197,16 @@ export class ChatService {
         if (run.conversationId !== step.conversationId) throw new Error('压缩执行归属不匹配')
         const updated = { ...run, compaction: { stepId: step.id, outcome: null, error: null } }
         this.runs.set(run.id, updated)
-        this.publish({ kind: 'run', value: updated, persisted: true })
+        this.events.publish({ kind: 'run', value: updated, persisted: true })
       }
-      this.publish({ kind: 'step', value: step })
+      this.events.publish({ kind: 'step', value: step })
       if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
         const parent = this.steps.get(step.parentStepId)
         if (parent && !parent.commentary) {
           const commentary = { ...parent, commentary: true }
           this.saveStep(commentary)
           this.dirtySteps.delete(parent.id)
-          this.publish({ kind: 'step', value: commentary })
+          this.events.publish({ kind: 'step', value: commentary })
         }
       }
       if (!['pending', 'running', 'awaiting_approval', 'awaiting_user_input'].includes(step.status))
@@ -1300,9 +1290,9 @@ export class ChatService {
         if (this.persistenceFailures.size > 128) throw new Error('执行状态持续保存失败')
       }
       this.flush()
-      this.publish({ kind: 'run', value: run, persisted: p.persisted !== false })
+      this.events.publish({ kind: 'run', value: run, persisted: p.persisted !== false })
       if (!isActiveRun(run)) {
-        this.publish({
+        this.events.publish({
           kind: 'follow-ups',
           value: { id: run.conversationId, conversationId: run.conversationId },
         })
@@ -1316,11 +1306,11 @@ export class ChatService {
       const approval = approvalFromRpc(p.approval, id(p.conversation_id))
       if (approval.runId !== id(p.run_id) || approval.id !== id(p.approval_id))
         throw new Error('审批归属不匹配')
-      this.publish({ kind: 'approval', value: approval })
+      this.events.publish({ kind: 'approval', value: approval })
     } else if (method === 'directory_grant.updated') {
       const grant = directoryGrantFromRpc(p.directory_grant)
       if (grant.conversationId !== id(p.conversation_id)) throw new Error('目录授权归属不匹配')
-      this.publish({ kind: 'directory-grant', value: grant })
+      this.events.publish({ kind: 'directory-grant', value: grant })
     } else if (method === 'user_input.requested' || method === 'user_input.updated') {
       const input = userInputFromRpc(p.user_input)
       if (
@@ -1330,7 +1320,7 @@ export class ChatService {
         input.stepId !== id(p.step_id)
       )
         throw new Error('问题归属不匹配')
-      this.publish({ kind: 'user-input', value: input })
+      this.events.publish({ kind: 'user-input', value: input })
     }
     if (this.messages.size > 32 || this.runs.size > 64) throw new Error('活动消息超出限制')
   }
@@ -1345,32 +1335,13 @@ export class ChatService {
   private flush(): void {
     clearTimeout(this.flushTimer)
     this.flushTimer = undefined
-    for (const message of this.dirty.values()) this.publish({ kind: 'message', value: message })
+    for (const message of this.dirty.values())
+      this.events.publish({ kind: 'message', value: message })
     this.dirty.clear()
-    for (const step of this.dirtySteps.values()) this.publish({ kind: 'step', value: step })
+    for (const step of this.dirtySteps.values()) this.events.publish({ kind: 'step', value: step })
     this.dirtySteps.clear()
   }
-  private publish(change: ChatChange): void {
-    const event = { revision: ++this.revision, change }
-    const bytes = Buffer.byteLength(JSON.stringify(event))
-    this.history.push({ event, bytes })
-    this.historyBytes += bytes
-    while (this.history.length > 512 || this.historyBytes > 16 * 1024 * 1024) {
-      const oldest = this.history.shift()
-      if (!oldest) break
-      this.historyBytes -= oldest.bytes
-      this.droppedRevision = oldest.event.revision
-    }
-    for (const listener of this.listeners) listener(event)
-  }
-  private since(revision: number): ChatEvent[] {
-    if (revision < this.droppedRevision) throw new Error('对话内容变化较快，请重新加载。')
-    return this.history
-      .filter((entry) => entry.event.revision > revision)
-      .map((entry) => entry.event)
-  }
-  private mergeDetail(detail: ConversationDetail, change: ChatChange): void {
-    if (change.kind === 'service') throw new Error(change.error)
+  private mergeDetail(detail: ConversationDetail, change: SnapshotChange): void {
     if (change.kind === 'workspace') {
       if (change.value.id === detail.conversation.workspaceId && !isVisible(change.value))
         throw new Error('项目已被删除或归档。')
@@ -1431,8 +1402,7 @@ export class ChatService {
       this.dirtySteps.clear()
       this.stepOutputs.clear()
       this.persistenceFailures.clear()
-      this.history.length = 0
-      this.listeners.clear()
+      this.events.close()
       this.stateListeners.clear()
     }
   }

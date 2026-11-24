@@ -4,6 +4,7 @@ import type {
   ChatEvent,
   StepPage,
   StepDetails,
+  StepPreview,
   ApprovalScope,
   DirectoryGrant,
   ChatUserInput,
@@ -117,6 +118,11 @@ export interface DesktopApi {
     runId: string,
     afterSequence: number,
   ): Promise<ChatResult<StepPage>>
+  getStepPreview(
+    conversationId: string,
+    runId: string,
+    stepId: string,
+  ): Promise<ChatResult<StepPreview>>
   getStepDetails(
     conversationId: string,
     runId: string,

@@ -38,6 +38,7 @@ export const IPC_CHANNELS = {
   listSkills: 'callum:skills:list',
   getConversationHistory: 'callum:chat:history',
   listRunSteps: 'callum:chat:steps',
+  getStepPreview: 'callum:chat:step-preview',
   getStepDetails: 'callum:chat:step-details',
   getStepReasoning: 'callum:chat:step-reasoning',
   previewAttachment: 'callum:chat:attachment-preview',
