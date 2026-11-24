@@ -18,6 +18,7 @@ import {
 } from '../helpers/markdown-fixture'
 import { IPC_CHANNELS } from '../../src/shared/ipc-channels'
 import type { ChatResult, SendMessageInput, SendMessageResult } from '../../src/shared/chat'
+import type { ServiceState } from '../../src/shared/desktop-api'
 
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -123,6 +124,23 @@ const test = base.extend<{
 // 在声明阶段跳过非目标平台，避免为跳过的用例创建无须运行的应用资源。
 const testOnMacOS = process.platform === 'darwin' ? test : test.skip
 const testOnWindows = process.platform === 'win32' ? test : test.skip
+
+/** 首次安装使用独立的就绪预算，服务结束启动后再执行界面断言。 */
+async function waitForCallumReady(page: Page): Promise<void> {
+  let state: ServiceState | undefined
+  await expect
+    .poll(
+      async () => {
+        state = await page.evaluate(() => window.callum?.getServiceState())
+        return state?.status ?? 'starting'
+      },
+      { message: '等待 Callum 服务结束启动', timeout: 60_000 },
+    )
+    .not.toBe('starting')
+  if (state?.status === 'ready') return
+  if (state && 'error' in state) throw new Error(state.error)
+  throw new Error('Callum 在服务就绪前开始关闭。')
+}
 
 async function prepareManualCompaction(page: Page, title: string, turns = 6) {
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
@@ -310,7 +328,9 @@ test.describe('服务生命周期页面', () => {
   })
 
   test('迟到的启动快照不能覆盖较新的关闭通知', async ({ desktop }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
+    await waitForCallumReady(page)
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
     await desktop.evaluate(({ ipcMain }, channel) => {
       ipcMain.removeHandler(channel)
@@ -344,7 +364,9 @@ test.describe('服务生命周期页面', () => {
   })
 
   test('实际退出服务时以整页 loading 替换主界面', async ({ desktop }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
+    await waitForCallumReady(page)
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await desktop.evaluate(({ app }) => {
@@ -385,6 +407,13 @@ test.describe('启动失败页面与重试', () => {
     const heading = page.getByRole('heading', { name: 'Callum 启动失败', exact: true })
     const retry = page.getByRole('button', { name: '重试启动', exact: true })
     await expect(heading).toBeVisible()
+    await test.step(
+      '启动等待立即报告数据目录占用',
+      async () => {
+        await expect(waitForCallumReady(page)).rejects.toThrow('该数据目录已有运行中的 Callum 服务')
+      },
+      { timeout: 2_000 },
+    )
     await expect(page.getByRole('alert')).toContainText('该数据目录已有运行中的 Callum 服务')
     await expect(retry).toBeFocused()
     await expect(page.locator('#app-sidebar')).toHaveCount(0)
@@ -5201,8 +5230,10 @@ test.describe('会话与项目管理', () => {
   })
 
   test('删除与切换后丢弃迟到的详情和项目列表', async ({ desktop, profile }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
     const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await waitForCallumReady(page)
     await expect(input).toBeEnabled()
     for (const text of ['会话甲', '会话乙']) {
       await page.getByRole('button', { name: '新对话', exact: true }).click()

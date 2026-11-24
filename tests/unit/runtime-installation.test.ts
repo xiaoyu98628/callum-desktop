@@ -65,11 +65,17 @@ async function source(directory: string, content: string): Promise<void> {
   )
 }
 
+type InstallOptions = {
+  signal?: AbortSignal
+  verifyCopies?: boolean
+  beforeValidate?: (directory: string, digest: string) => Promise<void>
+}
+
 async function withInstaller(
   run: (
     resources: string,
     data: string,
-    install: (signal?: AbortSignal) => Promise<string>,
+    install: (options?: InstallOptions) => Promise<string>,
   ) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'callum-flat-install-'))
@@ -82,12 +88,25 @@ async function withInstaller(
     () => {},
     () => {},
   )
-  const install = (signal = new AbortController().signal) =>
-    installRuntimeAssets(resources, data, signal, async (directory) => {
-      const check = record(await guard.request('runtime.validate', { name: basename(directory) }))
-      assert.equal(typeof check.valid, 'boolean')
-      return check.valid === true
-    })
+  const install = ({
+    signal = new AbortController().signal,
+    verifyCopies = false,
+    beforeValidate,
+  }: InstallOptions = {}) =>
+    installRuntimeAssets(
+      resources,
+      data,
+      signal,
+      async (directory, digest) => {
+        await beforeValidate?.(directory, digest)
+        const name = basename(directory)
+        const params = verifyCopies ? { name } : { name, manifest_sha256: digest }
+        const check = record(await guard.request('runtime.validate', params))
+        assert.equal(typeof check.valid, 'boolean')
+        return check.valid === true
+      },
+      { verifyCopies },
+    )
   try {
     await guard.ready
     await run(resources, data, install)
@@ -131,6 +150,8 @@ test(
       await assert.rejects(install(), /校验失败/)
       assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'new')
       assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+      await assert.rejects(install({ verifyCopies: true }), /运行时复制校验失败/)
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'new')
       if (!windows) {
         await source(resources, 'valid-bytes-but-not-executable')
         await chmod(join(resources, pythonPath), 0o600)
@@ -140,10 +161,103 @@ test(
       }
       const controller = new AbortController()
       controller.abort()
-      await assert.rejects(install(controller.signal), {
+      await assert.rejects(install({ signal: controller.signal }), {
         name: 'AbortError',
       })
       assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+    })
+  },
+)
+
+test(
+  '暂存文件和清单同时变更时不激活，校验期间取消也保留旧目录',
+  { skip: !supportedBackend },
+  async () => {
+    await withInstaller(async (resources, data, install) => {
+      await source(resources, 'old')
+      const runtime = await install()
+      const installed = await stat(runtime)
+      await source(resources, 'new')
+      await assert.rejects(
+        install({
+          beforeValidate: async (directory) => {
+            const path = join(directory, pythonPath)
+            const content = 'bad'
+            await chmod(path, 0o700)
+            await writeFile(path, content)
+            const manifestPath = join(directory, 'manifest.json')
+            const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+              files: { path: string; sha256: string }[]
+            }
+            const file = manifest.files.find((entry) => entry.path === pythonPath)
+            assert.ok(file)
+            file.sha256 = createHash('sha256').update(content).digest('hex')
+            await writeFile(manifestPath, JSON.stringify(manifest))
+          },
+        }),
+        /待安装运行时资源完整校验失败/,
+      )
+      assert.equal((await stat(runtime)).ino, installed.ino)
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'old')
+      assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+
+      const controller = new AbortController()
+      await assert.rejects(
+        install({
+          signal: controller.signal,
+          beforeValidate: async () => controller.abort(),
+        }),
+        { name: 'AbortError' },
+      )
+      assert.equal((await stat(runtime)).ino, installed.ino)
+      assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+      await install()
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'new')
+    })
+  },
+)
+
+test(
+  '激活后恢复按安装记录校验，通信异常保留备份和记录供重试',
+  { skip: !supportedBackend },
+  async () => {
+    await withInstaller(async (resources, data, install) => {
+      await source(resources, 'old')
+      const runtime = await install()
+      const stage = '.runtimes-install-ABC123'
+      const backup = `${stage}-previous`
+      const journal = '.runtimes-install.json'
+      await rename(runtime, join(data, backup))
+      await source(runtime, 'activated')
+      await chmod(runtime, 0o700)
+      const activated = await stat(runtime)
+      const digest = createHash('sha256')
+        .update(await readFile(join(runtime, 'manifest.json')))
+        .digest('hex')
+      await writeFile(join(data, journal), JSON.stringify({ stage, backup, digest }))
+      await source(resources, 'newer')
+      await writeFile(join(resources, 'unlisted.txt'), '阻止恢复后的下一次安装')
+
+      await assert.rejects(
+        install({
+          beforeValidate: async (directory, expected) => {
+            assert.equal(await stat(directory).then((entry) => entry.ino), activated.ino)
+            assert.equal(expected, digest)
+            throw new Error('资源锁通信中断')
+          },
+        }),
+        /资源锁通信中断/,
+      )
+      assert.equal(await readFile(join(data, backup, pythonPath), 'utf8'), 'old')
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'activated')
+      assert.equal(JSON.parse(await readFile(join(data, journal), 'utf8')).digest, digest)
+
+      await assert.rejects(install(), /清单外文件/)
+      assert.equal((await stat(runtime)).ino, activated.ino)
+      assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+      await rm(join(resources, 'unlisted.txt'))
+      await install()
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'newer')
     })
   },
 )
@@ -190,6 +304,32 @@ test(
       await install()
       assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'old')
       assert.deepEqual(await readdir(data), ['callum.db.lock', 'runtimes'])
+
+      await rename(runtime, join(data, `${stage}-previous`))
+      await source(runtime, 'uncertain')
+      await chmod(runtime, 0o700)
+      const manifestPath = join(runtime, 'manifest.json')
+      const original = await readFile(manifestPath, 'utf8')
+      const expectedDigest = createHash('sha256').update(original).digest('hex')
+      await writeFile(
+        join(data, '.runtimes-install.json'),
+        JSON.stringify({ stage, backup: `${stage}-previous`, digest: expectedDigest }),
+      )
+      await install({
+        beforeValidate: async (directory, expected) => {
+          if (expected === expectedDigest) {
+            await writeFile(join(directory, 'manifest.json'), original + '\n')
+          }
+        },
+      })
+      assert.equal(await readFile(join(runtime, pythonPath), 'utf8'), 'old')
+      const unverified = (await readdir(data)).find((item) =>
+        item.startsWith(`${stage}-unverified-`),
+      )
+      assert.ok(unverified)
+      assert.equal(await readFile(join(data, unverified, pythonPath), 'utf8'), 'uncertain')
+      await rm(join(data, unverified), { recursive: true })
+
       await writeFile(join(resources, 'extra'), 'unlisted')
       await assert.rejects(install(), /清单外/)
       await writeFile(

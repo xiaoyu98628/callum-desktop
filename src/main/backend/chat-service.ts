@@ -223,17 +223,19 @@ export class ChatService {
       let runtimeDirectory: string
       this.installing = true
       try {
+        const verifyCopies = this.developmentExecutable !== undefined
         runtimeDirectory = await installRuntimeAssets(
           sourceRuntime,
           canonicalData,
           this.startupAbort.signal,
-          async (directory) => {
-            const result = record(
-              await guard.request('runtime.validate', { name: basename(directory) }, 35_000),
-            )
+          async (directory, manifestSHA256) => {
+            const name = basename(directory)
+            const params = verifyCopies ? { name } : { name, manifest_sha256: manifestSHA256 }
+            const result = record(await guard.request('runtime.validate', params, 35_000))
             if (typeof result.valid !== 'boolean') throw new Error('运行时校验响应无效')
             return result.valid
           },
+          { verifyCopies },
         )
         phase = 'skills'
         await installSkillAssets(resourceRoot, canonicalData, this.startupAbort.signal)
