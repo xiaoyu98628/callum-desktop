@@ -1,5 +1,6 @@
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
+import { upsert } from '../../shared/keyed-list.ts'
 import {
   array,
   comparePinnedItems,
@@ -10,8 +11,6 @@ import {
   parseWorkspaceChange,
 } from '../../shared/chat.ts'
 import type {
-  ChatChange,
-  ChatEvent,
   ConversationPage,
   Workspace,
   WorkspaceInput,
@@ -20,20 +19,14 @@ import type {
   WorkspaceUpdate,
 } from '../../shared/chat.ts'
 import { conversationFromRpc, workspaceFromRpc } from './protocol-mapper.ts'
+import type { ChatEventHistory } from './chat-event-history.ts'
 import type { MutationGate } from './mutation-gate.ts'
-function upsert<T extends { id: string }>(items: T[], item: T): T[] {
-  return [...items.filter((current) => current.id !== item.id), item]
-}
 
 /** 项目管理适配：目录复核及列表快照协调，不持有连接和执行缓存。 */
 export class WorkspaceCatalog {
   private readonly request: (method: string, params: unknown) => Promise<unknown>
   private readonly gate: MutationGate
-  private readonly events: {
-    revision: () => number
-    since: (revision: number) => ChatEvent[]
-    publish: (change: ChatChange) => void
-  }
+  private readonly events: Pick<ChatEventHistory, 'revision' | 'changesSince' | 'publish'>
   constructor(
     request: (method: string, params: unknown) => Promise<unknown>,
     gate: MutationGate,
@@ -44,7 +37,7 @@ export class WorkspaceCatalog {
     this.events = events
   }
   async workspaceConversations(workspaceId: string, offset: number): Promise<ConversationPage> {
-    const start = this.events.revision()
+    const start = this.events.revision
     const [workspace, rows] = await Promise.all([
       this.request('workspace.get', { id: workspaceId }),
       this.request('conversation.list', { workspace_id: workspaceId, limit: PAGE_SIZE, offset }),
@@ -52,8 +45,7 @@ export class WorkspaceCatalog {
     if (!isVisible(workspaceFromRpc(workspace))) throw new Error('项目已被删除或归档。')
     let conversations = array(rows ?? [], conversationFromRpc)
     const hasMore = conversations.length === PAGE_SIZE
-    for (const { change } of this.events.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (
         change.kind === 'workspace' &&
         change.value.id === workspaceId &&
@@ -71,18 +63,17 @@ export class WorkspaceCatalog {
         .filter((item) => item.workspaceId === workspaceId && isVisible(item))
         .sort(comparePinnedItems),
       hasMore,
-      revision: this.events.revision(),
+      revision: this.events.revision,
     }
   }
   async listWorkspaces(offset: number): Promise<WorkspacePage> {
-    const start = this.events.revision()
+    const start = this.events.revision
     let workspaces = array(
       (await this.request('workspace.list', { limit: PAGE_SIZE, offset })) ?? [],
       workspaceFromRpc,
     )
     const hasMore = workspaces.length === PAGE_SIZE
-    for (const { change } of this.events.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (
         change.kind === 'workspace' &&
         (offset === 0 || workspaces.some((item) => item.id === change.value.id))
@@ -92,7 +83,7 @@ export class WorkspaceCatalog {
     return {
       workspaces: workspaces.filter(isVisible).sort(comparePinnedItems),
       hasMore,
-      revision: this.events.revision(),
+      revision: this.events.revision,
     }
   }
   async createWorkspace(
@@ -168,7 +159,7 @@ export class WorkspaceCatalog {
         }),
       )
       this.events.publish({ kind: 'workspace', value: workspace })
-      return { workspace, revision: this.events.revision() }
+      return { workspace, revision: this.events.revision }
     })
   }
   async deleteWorkspace(workspaceId: string): Promise<Workspace> {
@@ -198,18 +189,17 @@ export class WorkspaceCatalog {
         await this.request('workspace.update', { id: identifier, ...change }),
       )
       this.events.publish({ kind: 'workspace', value: workspace })
-      return { workspace, revision: this.events.revision() }
+      return { workspace, revision: this.events.revision }
     })
   }
   async archivedWorkspaces(offset: number): Promise<WorkspacePage> {
-    const start = this.events.revision()
+    const start = this.events.revision
     let workspaces = array(
       (await this.request('workspace.list', { archived: true, limit: PAGE_SIZE, offset })) ?? [],
       workspaceFromRpc,
     )
     const hasMore = workspaces.length === PAGE_SIZE
-    for (const { change } of this.events.since(start)) {
-      if (change.kind === 'service') throw new Error(change.error)
+    for (const change of this.events.changesSince(start)) {
       if (
         change.kind === 'workspace' &&
         (offset === 0 || workspaces.some((item) => item.id === change.value.id))
@@ -221,7 +211,7 @@ export class WorkspaceCatalog {
         .filter((item) => item.archivedAt !== null && item.deletedAt === null)
         .sort(comparePinnedItems),
       hasMore,
-      revision: this.events.revision(),
+      revision: this.events.revision,
     }
   }
 }

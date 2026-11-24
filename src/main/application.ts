@@ -5,6 +5,7 @@ import { app, session } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { registerAppHandlers } from './ipc/register-app-handlers'
 import { registerChatHandlers } from './ipc/register-chat-handlers'
+import { registerMcpHandlers } from './ipc/register-mcp-handlers'
 import { ChatService } from './backend/chat-service'
 import { resolveBackendDataDirectory } from './backend/data-directory'
 import {
@@ -56,10 +57,14 @@ export async function startApplication(): Promise<void> {
     app.isPackaged
       ? process.resourcesPath
       : fileURLToPath(new URL('../../resources/', import.meta.url)),
+    !app.isPackaged && isolatedUserDataDirectory
+      ? process.env.CALLUM_BACKEND_EXECUTABLE || undefined
+      : undefined,
   )
   const disposeProtocol = registerApplicationProtocol(rendererRoot)
   const disposeHandlers = registerAppHandlers(() => mainWindow, rendererUrl, service)
   const disposeChatHandlers = registerChatHandlers(() => mainWindow, rendererUrl, service)
+  const disposeMcpHandlers = registerMcpHandlers(() => mainWindow, rendererUrl, service.mcp)
   let shutdownComplete = false
   let shutdownTask: Promise<void> | null = null
   app.on('before-quit', (event) => {
@@ -117,6 +122,7 @@ export async function startApplication(): Promise<void> {
   app.once('will-quit', () => {
     disposeHandlers()
     disposeChatHandlers()
+    disposeMcpHandlers()
     disposeProtocol()
   })
 

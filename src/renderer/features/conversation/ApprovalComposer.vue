@@ -32,13 +32,15 @@ const target = computed(() =>
 const filename = computed(() => target.value?.value.split(/[\\/]/).filter(Boolean).at(-1) ?? '')
 const otherFields = computed(() => summary.value.fields.filter((field) => field !== target.value))
 const heading = computed(() =>
-  props.approval.toolName === 'read_file'
-    ? '允许读取文件？'
-    : props.approval.toolName === 'apply_patch'
-      ? '允许修改文件？'
-      : props.approval.toolName === 'run_command'
-        ? '允许运行命令？'
-        : `允许 ${props.approval.toolName} 吗？`,
+  summary.value.mcpTool
+    ? `允许调用 ${summary.value.mcpTool}？`
+    : props.approval.toolName === 'read_file'
+      ? '允许读取文件？'
+      : props.approval.toolName === 'apply_patch'
+        ? '允许修改文件？'
+        : props.approval.toolName === 'run_command'
+          ? '允许运行命令？'
+          : `允许 ${props.approval.toolName} 吗？`,
 )
 const busy = computed(() => props.deciding || props.cancelling)
 const disabled = computed(() => busy.value || props.unavailable)

@@ -1,3 +1,4 @@
+import { parseMcpRequest, parseMcpResponse } from '../shared/mcp'
 import { parseFollowUpItem } from '../shared/follow-up'
 import { contextBridge, ipcRenderer } from 'electron'
 import { parseAppInfo, parseServiceState } from '../shared/desktop-api'
@@ -9,6 +10,8 @@ import {
   parseChatEvent,
   parseStepPage,
   parseStepDetails,
+  parseStepPreview,
+  parseReasoningText,
   parseDetail,
   parseConversationHistory,
   parseOverview,
@@ -71,6 +74,12 @@ const desktopApi: DesktopApi = {
   },
   async getModelCatalog() {
     return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.getModelCatalog), parseCatalog)
+  },
+  async mcp(input) {
+    const request = parseMcpRequest(input)
+    return parseResult(await ipcRenderer.invoke(IPC_CHANNELS.mcp, request), (value) =>
+      parseMcpResponse(request.action, value),
+    )
   },
   async getGeneralSettings() {
     return parseResult(
@@ -234,10 +243,22 @@ const desktopApi: DesktopApi = {
       parseStepPage,
     )
   },
+  async getStepPreview(conversationId, runId, stepId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getStepPreview, conversationId, runId, stepId),
+      parseStepPreview,
+    )
+  },
   async getStepDetails(conversationId, runId, stepId) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.getStepDetails, conversationId, runId, stepId),
       parseStepDetails,
+    )
+  },
+  async getStepReasoning(conversationId, runId, stepId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.getStepReasoning, conversationId, runId, stepId),
+      parseReasoningText,
     )
   },
   async previewAttachment(input) {

@@ -45,7 +45,7 @@ const itemClass =
         ref="trigger"
         variant="ghost"
         size="icon"
-        class="mr-1 size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100"
+        class="mr-1 size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:opacity-100 data-[state=open]:opacity-100"
         :aria-label="`${label}的操作`"
         :disabled="disabled"
       >

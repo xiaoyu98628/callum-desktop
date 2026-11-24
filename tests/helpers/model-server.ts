@@ -16,6 +16,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     reasoningReturned: boolean
     summaryRequest: boolean
     contextSummary: boolean
+    continuation: boolean
     messageCount: number
     images?: string[]
   }[] = []
@@ -63,8 +64,12 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       const summaryRequest =
         typeof messages[0]?.content === 'string' &&
         messages[0].content.startsWith('You are performing a CONTEXT CHECKPOINT COMPACTION.')
+      const continuation =
+        typeof messages[0]?.content === 'string' &&
+        messages[0].content.includes('用户通过「继续任务」')
       requests.push({
         summaryRequest,
+        continuation,
         contextSummary: messages.some(
           (message) =>
             typeof message.content === 'string' &&
@@ -158,6 +163,37 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       response.setHeader('Content-Type', 'text/event-stream')
       response.setHeader('Cache-Control', 'no-cache')
       response.flushHeaders()
+      if (
+        messages.some(
+          (message) => message.role === 'user' && message.content === 'MCP 回归：执行回显',
+        )
+      ) {
+        if (role === 'tool') {
+          if (!text.includes('mcp-bundled-result')) throw new Error('未收到随附服务调用的 MCP 结果')
+          emit(response, { content: '随附 MCP 工具已完成。' })
+          finish(response, 'stop')
+          return
+        }
+        const mcp = array(input.tools, record)
+          .map((definition) => record(definition.function))
+          .find((definition) => string(definition.name).startsWith('mcp_'))
+        if (!mcp) throw new Error('随附服务未向模型提供已允许的 MCP 工具')
+        emit(response, {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call-bundled-mcp',
+              type: 'function',
+              function: {
+                name: string(mcp.name),
+                arguments: JSON.stringify({ text: 'bundled-fixture' }),
+              },
+            },
+          ],
+        })
+        finish(response, 'tool_calls')
+        return
+      }
       const deliveredFollowUp =
         messages.findLast((message) => message.role === 'user')?.content === '读取已交付文件'
       if (deliveredFollowUp) {
@@ -240,7 +276,7 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         })
         return
       }
-      if (text === '继续任务') {
+      if (continuation && role === 'tool' && last.tool_call_id === 'continue-read') {
         if (
           !messages.some((item) => item.role === 'user' && item.content === '先读取文件再核对') ||
           !messages.some(
@@ -252,6 +288,11 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
         )
           throw new Error('续跑请求没有恢复原要求和读取结果')
         emit(response, { content: '已根据原有读取结果完成剩余核对。' })
+        finish(response)
+        return
+      }
+      if (continuation && text === '等待服务中断') {
+        emit(response, { content: '已在原任务中完成回答。' })
         finish(response)
         return
       }
@@ -423,6 +464,24 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
       }
       const lastUser = messages.findLast((message) => message.role === 'user')
       const prompt = typeof lastUser?.content === 'string' ? lastUser.content : ''
+      if (prompt === '读取后异常') {
+        if (role === 'tool') {
+          emit(response, { reasoning_content: '这是独立推理，等待后续结果。' })
+          streamingResponses.add(response)
+          response.once('close', () => streamingResponses.delete(response))
+        } else {
+          emit(response, {
+            tool_calls: Array.from({ length: 2 }, (_, index) => ({
+              index,
+              id: `call-before-failure-${index}`,
+              type: 'function',
+              function: { name: 'read_file', arguments: JSON.stringify({ path: fixturePath }) },
+            })),
+          })
+          finish(response, 'tool_calls')
+        }
+        return
+      }
       if (prompt === '长过程折叠') {
         if (role === 'tool') {
           emit(response, { content: '长过程检查已完成。' })
@@ -864,8 +923,8 @@ export async function startModelServer(fixturePath: string, expectedApiKey?: str
     appendReasoning(text: string) {
       for (const response of streamingResponses) emit(response, { reasoning_content: text })
     },
-    finishStream() {
-      for (const response of streamingResponses) finish(response)
+    finishStream(reason = 'stop') {
+      for (const response of streamingResponses) finish(response, reason)
       streamingResponses.clear()
     },
     finishSteeredAnswer() {

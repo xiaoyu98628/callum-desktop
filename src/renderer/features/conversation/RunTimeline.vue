@@ -28,6 +28,8 @@ import ReasoningItem from './ReasoningItem.vue'
 import OperationGroup from './OperationGroup.vue'
 import RunStatus from './RunStatus.vue'
 import CompactionStatus from './CompactionStatus.vue'
+import { activityFade } from './activity-fade'
+import { streamFadeDuration } from './markdown/stream-fade'
 
 const props = defineProps<{
   run: ChatRun | null
@@ -56,7 +58,49 @@ const detailPending = ref<string | null>(null),
 const failures = ref<Record<string, string>>({})
 const commentVersions = new Map<string, string>()
 const followTail = ref(true)
+const vActivityFade = activityFade()
+type StepMotion = { arrival?: number; status?: number; commentary?: number }
+const stepMotion = shallowRef(new Map<string, StepMotion>())
+let observedSequence = 0
 const version = (step: ChatStep): string => `${step.status}:${step.updatedAt}`
+const runFailed = computed(
+  () => props.run?.status === 'failed' || props.run?.status === 'interrupted',
+)
+const retainedReasoningId = computed(() => {
+  if (!props.active && !runFailed.value) return null
+  const lastAnswer = rows.value.findLast(
+    (row) => row.type === 'model_call' && row.purpose === 'answer',
+  )
+  // 模型步骤通常先于运行终态到达，避免两条事件之间先隐藏已显示的思考。
+  if (
+    (lastAnswer?.status === 'failed' || lastAnswer?.status === 'interrupted') &&
+    (lastAnswer.reasoning || lastAnswer.reasoningTruncated)
+  )
+    return lastAnswer.id
+  if (!runFailed.value) return null
+  return (
+    rows.value.findLast(
+      (row) =>
+        row.type === 'model_call' &&
+        row.purpose === 'answer' &&
+        (row.reasoning || row.reasoningTruncated),
+    )?.id ?? null
+  )
+})
+const liveReasoning = computed(() => {
+  const result = new Map<string, string>()
+  if (!props.active && !runFailed.value) return result
+  for (const step of props.snapshots) {
+    if (
+      step.conversationId === props.conversationId &&
+      step.runId === props.runId &&
+      step.reasoning &&
+      !step.reasoningTruncated
+    )
+      result.set(step.id, step.reasoning)
+  }
+  return result
+})
 const visible = computed(() =>
   rows.value.filter(
     (step) =>
@@ -84,7 +128,7 @@ const items = computed(() => {
   return groupTimeline(visible.value, steering)
 })
 const currentGroupId = computed(() => {
-  if (!props.active) return null
+  if (!props.active && !runFailed.value) return null
   const latest = [...rows.value, ...props.snapshots]
     .filter(
       (step) =>
@@ -98,6 +142,29 @@ const currentGroupId = computed(() => {
     )
   return currentOperationGroup(items.value, latest)
 })
+function latestMotion(steps: ChatStep[], ...kinds: ('arrival' | 'status')[]): number | undefined {
+  if (!props.connected || browsingHistory) return undefined
+  let latest = -1
+  for (const step of steps) {
+    const motion = stepMotion.value.get(step.id)
+    for (const kind of kinds) latest = Math.max(latest, motion?.[kind] ?? -1)
+  }
+  return latest < 0 ? undefined : latest
+}
+function toolMotion(step: ChatStep, kind: 'arrival' | 'status', after: number): number | undefined {
+  const at = latestMotion([step], kind)
+  return at !== undefined && at > after ? at : undefined
+}
+function streamCommentary(step: ChatStep): boolean {
+  const at = stepMotion.value.get(step.id)?.commentary
+  return (
+    props.active &&
+    props.connected &&
+    !browsingHistory &&
+    at !== undefined &&
+    performance.now() - at < streamFadeDuration
+  )
+}
 const now = ref(Date.now())
 const summaries = computed(
   () =>
@@ -376,6 +443,8 @@ async function start(): Promise<void> {
   detail.value = null
   failures.value = {}
   commentVersions.clear()
+  stepMotion.value = new Map()
+  observedSequence = 0
   hasMore.value = false
   hasPrevious.value = false
   error.value = ''
@@ -397,6 +466,7 @@ async function start(): Promise<void> {
     const snapshots = props.snapshots
       .filter((step) => step.runId === props.runId && step.conversationId === props.conversationId)
       .sort((a, b) => a.sequence - b.sequence)
+    observedSequence = snapshots.at(-1)?.sequence ?? 0
     const cursor =
       props.active && snapshots.length > STEP_PAGE_SIZE
         ? snapshots.at(-STEP_PAGE_SIZE)!.sequence - 1
@@ -462,7 +532,7 @@ async function hydrateComments(): Promise<void> {
       if (!step) break
       commentPending.value = step.id
       try {
-        const result = await getDesktopApi().getStepDetails(
+        const result = await getDesktopApi().getStepPreview(
           props.conversationId,
           props.runId,
           step.id,
@@ -474,14 +544,10 @@ async function hydrateComments(): Promise<void> {
           result.value.runId !== props.runId ||
           result.value.conversationId !== props.conversationId
         )
-          throw new Error('步骤详情归属不匹配')
+          throw new Error('步骤预览归属不匹配')
         commentVersions.set(step.id, version(step))
-        records?.setText(step.id, result.value.text ?? '', result.value.textTruncated)
-        records?.setReasoning(
-          step.id,
-          result.value.reasoning ?? '',
-          result.value.reasoningTruncated ?? false,
-        )
+        records?.setText(step.id, result.value.text, result.value.textTruncated)
+        records?.setReasoning(step.id, result.value.reasoning, result.value.reasoningTruncated)
         updateRows()
       } catch (value) {
         if (alive(token) && current(step)) failures.value[step.id] = fail(value)
@@ -567,6 +633,7 @@ function release(): void {
   if (showContent.value) return
   records = undefined
   rows.value = []
+  stepMotion.value = new Map()
   detail.value = null
   opened.value = null
   failures.value = {}
@@ -574,10 +641,52 @@ function release(): void {
   hasMore.value = false
   hasPrevious.value = false
 }
+function trackLiveMotion(snapshots: ChatStep[], previous: ChatStep[]): void {
+  const seen = new Map(previous.map((step) => [step.id, step]))
+  const current = snapshots.filter(
+    (step) => step.runId === props.runId && step.conversationId === props.conversationId,
+  )
+  const byId = new Map(current.map((step) => [step.id, step]))
+  const motion = new Map([...stepMotion.value].filter(([id]) => byId.has(id)))
+  const at = performance.now()
+  if (props.active && props.connected && !browsingHistory) {
+    for (const step of current) {
+      const old = seen.get(step.id)
+      if (step === old) continue
+      const changes = { ...motion.get(step.id) }
+      if (!old && step.sequence > observedSequence) {
+        changes.arrival = at
+        if (step.parentStepId && (step.type === 'tool_call' || step.type === 'user_input')) {
+          const parent = byId.get(step.parentStepId)
+          if (parent?.text && !seen.get(parent.id)?.commentary)
+            motion.set(parent.id, { ...motion.get(parent.id), commentary: at })
+        }
+      } else if (
+        old &&
+        step.status !== old.status &&
+        (changes.arrival === undefined || at - changes.arrival >= 100)
+      ) {
+        // 短时间连续到达的创建和状态合并在行淡入中，避免文字叠乘透明度。
+        changes.status = at
+      }
+      if (step.commentary && step.text && (!old?.commentary || step.text !== old.text))
+        changes.commentary = at
+      if (
+        changes.arrival !== undefined ||
+        changes.status !== undefined ||
+        changes.commentary !== undefined
+      )
+        motion.set(step.id, changes)
+    }
+  }
+  for (const step of current) observedSequence = Math.max(observedSequence, step.sequence)
+  stepMotion.value = motion
+}
 watch(
   () => props.snapshots,
-  () => {
+  (snapshots, previous) => {
     if (!showContent.value || !records) return
+    trackLiveMotion(snapshots, previous)
     updateRows()
     if (props.active && followTail.value)
       void nextTick(() => {
@@ -635,7 +744,6 @@ onScopeDispose(() => {
       <template #label>
         <RunStatus v-if="run" :run="run" :connected="connected" />
         <span v-else>处理过程</span>
-        <slot v-if="active" name="actions" />
       </template>
       <div
         ref="viewport"
@@ -667,6 +775,9 @@ onScopeDispose(() => {
             <ReasoningItem
               v-if="item.step.reasoning || item.step.reasoningTruncated"
               :step="item.step"
+              :live-reasoning="liveReasoning.get(item.step.id)"
+              :keep-open="retainedReasoningId === item.step.id"
+              :error-below="runFailed"
               :active="active"
               :connected="connected"
               @inspect="inspect"
@@ -676,18 +787,14 @@ onScopeDispose(() => {
               v-if="item.step.commentary && item.step.text"
               class="activity-commentary"
               :content="[{ type: 'text', text: item.step.text, path: '' }]"
-              :streaming="false"
+              :streaming="streamCommentary(item.step)"
               @rendered="emit('changed')"
             />
             <p v-else-if="commentPending === item.step.id" class="text-xs text-muted-foreground">
               正在读取过程说明…
             </p>
             <p v-if="item.step.textTruncated" class="text-xs text-muted-foreground">
-              {{
-                item.step.text
-                  ? '概述较长，已截取；完整记录保留在服务中。'
-                  : '原始结果超过读取范围，过程说明暂无法恢复。'
-              }}
+              概述较长，已截取。完整记录保留在服务中。
             </p>
             <p v-if="failures[item.step.id]" role="alert" class="text-xs text-destructive">
               {{ failures[item.step.id] }}
@@ -699,15 +806,19 @@ onScopeDispose(() => {
           <CompactionStatus
             v-else-if="item.kind === 'compaction'"
             :status="compactionStatus(item.steps, connected, run?.status ?? null)"
+            :arrival-at="latestMotion(item.steps, 'arrival')"
+            :status-at="latestMotion(item.steps, 'status')"
             :data-step-id="item.steps[0]?.id"
           />
           <slot v-else-if="item.kind === 'steering'" name="steering" :message="item.message" />
           <OperationGroup
             v-else
+            v-slot="{ animateAfter }"
             :group="item"
             :data-step-id="item.steps[0]?.id"
             :current="item.id === currentGroupId"
             :connected="connected"
+            :fade-at="latestMotion(item.steps, 'arrival', 'status')"
             :partial="(index === 0 && hasPrevious) || (index === items.length - 1 && hasMore)"
             @inspect="inspect"
             @changed="changed"
@@ -716,6 +827,11 @@ onScopeDispose(() => {
             <ActivityDisclosure
               v-for="step in item.steps"
               :key="step.id"
+              v-activity-fade="{
+                id: step.id,
+                at: toolMotion(step, 'arrival', animateAfter),
+                part: 'row',
+              }"
               class="activity-tool"
               :data-step-id="step.id"
               :expanded="opened === step.id"
@@ -733,17 +849,25 @@ onScopeDispose(() => {
                   <FolderOpenIcon v-else-if="step.name === 'list_directory'" aria-hidden="true" />
                   <BookOpenIcon v-else aria-hidden="true" />
                   <span
-                    class="shrink-0"
-                    :class="{
-                      'activity-shimmer': active && summary(step).running,
-                      'text-destructive': step.status === 'failed',
-                      'activity-tool-waiting': [
-                        'awaiting_approval',
-                        'awaiting_user_input',
-                      ].includes(step.status),
+                    v-activity-fade="{
+                      id: `status:${step.id}`,
+                      at: toolMotion(step, 'status', animateAfter),
+                      part: 'label',
                     }"
-                    >{{ summary(step).label }}</span
+                    class="shrink-0"
                   >
+                    <span
+                      :class="{
+                        'activity-shimmer': active && summary(step).running,
+                        'text-destructive': step.status === 'failed',
+                        'activity-tool-waiting': [
+                          'awaiting_approval',
+                          'awaiting_user_input',
+                        ].includes(step.status),
+                      }"
+                      >{{ summary(step).label }}</span
+                    >
+                  </span>
                   <span
                     v-if="step.targetLabel && !summary(step).hideTarget"
                     class="activity-tool-target"

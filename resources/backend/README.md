@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含通用技能加载、附件工具及内置 Python/Node/Git 资源接入的同一后端工作区构建。源码指纹 SHA-256 为 `790331a3ea2c4d84afcc99efc78d0fe17f2f6a6b1e854e5a2d71adcadc05f486`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `98feef0bef0c8f49df1753a18d1ee2952b7da7caadb4e426d0be6909617eba7a`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
-| 平台                | 构建参数（Go 1.27.3）                                             | SHA-256                                                            |
-| ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath`  | `8c0ef18158107342c255d7869ebd1e47fda44a7a6582c2c885312ddabaf9e14d` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath`  | `95ba046ab871b75b6847b8111707c63249cc4147e4f239b2751707b99c3326e4` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath` | `7f0b71c8cdcbd06dc4a70349570660f3a63bc24ad0d803ec891e2e96b2853343` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath` | `f34c5143976b5c4c48c9e8e42c2ee9cbaeae4c47e7324c14d10ea3a6dab1d316` |
+| 平台                | 构建参数（Go 1.27.3）                                                             | SHA-256                                                            |
+| ------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `8567f8a3da17411281d5fd6e75322472b8eda705c83351b37ae41cfcae76ed9e` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `33263978fe505895695181d4e6ea29e4ab6ecb9c82a26caaeddab639b0c216e5` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `e84c114b0742b14660f210811c160c164dbe600415347a43757d04fcc5492edc` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `7923d0413fff1b352081db765f6a27933cd00d4912ef4f97888de52eef317a91` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -39,16 +39,18 @@ resources/backend/
 
 单项工具参数超过 16 KiB 时保留明确的工具名和已接收字节数，流式读取及时关闭；确认整批尚未执行且没有取消、传输或保存错误后，反馈模型拆分小补丁或使用脚本生成大文件。相同超限参数无进展时结束，不执行部分批次。`apply_patch` 定义版本为 `2`，同步提示单次参数容量；不提高资源边界、不重放已完成操作。
 
-当前随附程序使用数据库结构版本 `6`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。版本 `5` 的旧队列表会被拒绝，原数据库文件保留。旧随附程序不支持打开已升级的数据库。升级实现与失败处理由后端维护。
+当前随附程序使用数据库结构版本 `8`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 和版本 `6` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。版本 `5` 的旧队列表会被拒绝，原数据库文件保留。版本 `7` 校验后只更新版本标记，保留已有表、设置、范围和凭据。旧随附程序不支持打开已升级的数据库，避免旧程序重写 MCP 配置时丢失权限范围。升级实现与失败处理由后端维护。
 
 随附服务为后续消息提供持久队列、附件保管和当前执行引导。支持 `conversation.continue` 显式继续最新停止或中断的任务，恢复原需求和已经保存的工具结果。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
+
+随附服务提供本地 stdio 和远程 Streamable HTTP MCP。MCP 设置位于 `app_settings` 的 `mcp` 组，访问令牌及加密环境变量保存在 `mcp_credentials` 表。本机 Go 服务接收 OAuth 授权回调、换取并刷新令牌，桌面端打开系统浏览器并展示授权状态。远程 OAuth 可通过 JSON 的 `scope` 字段限制授权和刷新使用的权限。同一连接身份的旧客户端更新省略该字段时，服务保留原范围。新版客户端可明确恢复自动发现。浏览器回调页在凭据保存后显示授权结果，加载时清理地址栏中的回调参数。工具选择和逐次审批沿用服务端权限校验。
 
 | 接入能力     | 随附程序基线与客户端约束                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 项目目录     | `workspace.update` 接受完整目录列表和原目录快照，支持无目录项目、目录增删及主要目录切换；冲突、活动执行或原快照变化时拒绝保存，磁盘文件不移动或删除                      |
 | 执行权限     | 支持用户审核、AI 审核和显式完全访问；macOS 使用 Seatbelt，Windows 已接入 AppContainer，但 Windows 原生启动、隔离强度与外部工具兼容性尚未验收；四平台程序使用本次相同源码 |
 | 历史与凭据   | `conversation.history` 同页返回完整执行及消息，包含独立手动压缩；API Key 使用 AES-GCM，系统凭据库持有主密钥，无明文回退                                                  |
-| 独立推理     | `reasoning.delta` 与统一 `output.reasoning` 和回答正文分开；旧记录缺失时保持缺失，不改写实际 usage                                                                       |
+| 独立推理     | `reasoning.delta` 与统一 `output.reasoning` 和回答正文分开。桌面端通过 `step.data` 的 `reasoning` 字段分段读取思考正文，无须读取整个供应商响应。                         |
 | 长任务与恢复 | 支持完整工具批次自动压缩、摘要来源及检查点恢复。保留原始轨迹，恢复不重放工具操作。摘要与正文按各自模型请求期限等待响应，摘要超时提示保留历史。                           |
 | 上下文统计   | 支持 `conversation.context_usage` 只读查询与 `conversation.context_usage.updated` 通知；草稿仅参与估算，不调用模型或持久化，实际输入与估算分别提供                       |
 | 协议接口     | 消息历史统一使用 `conversation.history`；`conversation.messages` 已移除并返回 `-32601`，现有事件字段及步骤的 `context_message`、`reasoning`、`operation` 保持原有格式    |

@@ -33,7 +33,7 @@ interface Installation {
   digest: string
 }
 
-type ValidateRuntime = (directory: string) => Promise<boolean>
+type ValidateRuntime = (directory: string, manifestSHA256: string) => Promise<boolean>
 
 export function installedRuntimeDirectory(dataDirectory: string): string {
   if (!isAbsolute(dataDirectory)) throw new Error('运行时安装根目录必须是绝对路径')
@@ -76,6 +76,17 @@ async function manifestBytes(directory: string): Promise<Buffer> {
   if (!info.isFile() || info.isSymbolicLink() || info.size > 8 * 1024 * 1024)
     throw new Error('运行时清单必须是有界普通文件')
   return readFile(path)
+}
+
+function manifestSHA256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+async function matchesManifest(directory: string, digest: string): Promise<boolean> {
+  return (
+    (await exists(join(directory, 'manifest.json'))) &&
+    manifestSHA256(await manifestBytes(directory)) === digest
+  )
 }
 
 function inventory(bytes: Buffer): FileEntry[] {
@@ -132,6 +143,25 @@ async function durableFile(path: string, data: Uint8Array): Promise<void> {
     async () => {
       await file.writeFile(data)
       await file.sync()
+    },
+    () => file.close(),
+  )
+}
+
+/** 联调可显式选择旧后端。旧资源锁无法绑定清单摘要，保留复制后的逐文件读回。 */
+async function verifyCopy(path: string, entry: FileEntry, signal: AbortSignal): Promise<void> {
+  const file = await open(path, 'r')
+  await withCleanup(
+    async () => {
+      const hash = createHash('sha256')
+      let length = 0
+      for await (const chunk of file.createReadStream({ autoClose: false, signal })) {
+        length += chunk.length
+        if (length > entry.size) throw new Error('运行时复制超过声明大小')
+        hash.update(chunk)
+      }
+      if (length !== entry.size || hash.digest('hex') !== entry.sha256)
+        throw new Error('运行时复制校验失败')
     },
     () => file.close(),
   )
@@ -198,14 +228,11 @@ async function recover(dataDirectory: string, validate: ValidateRuntime): Promis
     let accepted = false
     if (await exists(target)) {
       await privateRoot(target)
-      const bytes = (await exists(join(target, 'manifest.json')))
-        ? await manifestBytes(target)
-        : null
-      const matches =
-        bytes !== null && createHash('sha256').update(bytes).digest('hex') === state.digest
-      accepted = matches && (await validate(target))
+      const matches = await matchesManifest(target, state.digest)
+      accepted = matches && (await validate(target, state.digest))
       if (!accepted) {
-        if (matches) await removeTree(target)
+        // 校验期间清单也可能变化，删除前仍须确认该目录属于这次安装。
+        if (matches && (await matchesManifest(target, state.digest))) await removeTree(target)
         else await rename(target, join(dataDirectory, `${state.stage}-unverified-${randomUUID()}`))
       }
     }
@@ -226,6 +253,7 @@ export async function installRuntimeAssets(
   dataDirectory: string,
   signal: AbortSignal,
   validate: ValidateRuntime,
+  { verifyCopies = false }: { verifyCopies?: boolean } = {},
 ): Promise<string> {
   if (!isAbsolute(source) || !isAbsolute(dataDirectory))
     throw new Error('运行时资源路径必须是绝对路径')
@@ -236,6 +264,7 @@ export async function installRuntimeAssets(
   if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink())
     throw new Error('运行时资源必须是普通目录')
   const bytes = await manifestBytes(source)
+  const digest = manifestSHA256(bytes)
   const files = inventory(bytes)
   const expected = new Set(files.map((entry) => entry.path))
   const directories = ['']
@@ -262,7 +291,7 @@ export async function installRuntimeAssets(
   if (await exists(destination)) {
     await privateRoot(destination)
     const installed = await manifestBytes(destination)
-    if (bytes.equals(installed) && (await validate(destination))) return destination
+    if (bytes.equals(installed) && (await validate(destination, digest))) return destination
     // 无清单或非普通目录不会被当作可替换的客户端资源。
     inventory(installed)
   }
@@ -270,7 +299,7 @@ export async function installRuntimeAssets(
   const state = {
     stage: relative(dataDirectory, stage),
     backup: `${relative(dataDirectory, stage)}-previous`,
-    digest: createHash('sha256').update(bytes).digest('hex'),
+    digest,
   }
   const journal = join(dataDirectory, journalName)
   try {
@@ -278,9 +307,10 @@ export async function installRuntimeAssets(
     await durableFile(pendingJournal, Buffer.from(JSON.stringify(state)))
     await rename(pendingJournal, journal)
     await syncDirectory(dataDirectory)
+    // 源目录扫描按父目录在先的顺序收集目录，复制工作者共用这棵已建好的目录树。
     for (const directory of directories) {
       signal.throwIfAborted()
-      if (directory) await mkdir(join(stage, directory), { recursive: true, mode: 0o700 })
+      if (directory) await mkdir(join(stage, directory), { mode: 0o700 })
     }
     let next = 0
     const copyController = new AbortController()
@@ -298,28 +328,8 @@ export async function installRuntimeAssets(
             const info = await lstat(original)
             if (!info.isFile() || info.isSymbolicLink() || info.size !== entry.size)
               throw new Error('运行时资源在安装期间发生变化')
-            await mkdir(dirname(output), { recursive: true, mode: 0o700 })
             await copyFile(original, output, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE)
-            const file = await open(output, 'r')
-            await withCleanup(
-              async () => {
-                const hash = createHash('sha256')
-                let length = 0
-                for await (const chunk of file.createReadStream({
-                  autoClose: false,
-                  signal: copyingSignal,
-                })) {
-                  length += chunk.length
-                  if (length > entry.size) throw new Error('运行时复制超过声明大小')
-                  hash.update(chunk)
-                }
-                if (length !== entry.size || hash.digest('hex') !== entry.sha256)
-                  throw new Error('运行时复制校验失败')
-                // 程序资源可从客户端重建；逐文件验证内容，目录及安装记录单独同步。
-                // 后续启动仍校验全部文件，残缺副本会重新安装，不把资源当作业务数据提交。
-              },
-              () => file.close(),
-            )
+            if (verifyCopies) await verifyCopy(output, entry, copyingSignal)
             await chmod(output, info.mode & 0o111 ? 0o500 : 0o400)
           }
         } catch (error) {
@@ -335,7 +345,6 @@ export async function installRuntimeAssets(
       const original = join(source, entry.path)
       if ((await readlink(original)) !== entry.link) throw new Error('运行时资源链接发生变化')
       const output = join(stage, entry.path)
-      await mkdir(dirname(output), { recursive: true, mode: 0o700 })
       await symlink(entry.link, output)
     }
     await durableFile(join(stage, 'manifest.json'), bytes)
@@ -343,7 +352,7 @@ export async function installRuntimeAssets(
       signal.throwIfAborted()
       await syncDirectory(join(stage, directory))
     }
-    if (!(await validate(stage))) throw new Error('待安装运行时资源完整校验失败')
+    if (!(await validate(stage, digest))) throw new Error('待安装运行时资源完整校验失败')
     signal.throwIfAborted()
     if (await exists(destination)) await rename(destination, join(dataDirectory, state.backup))
     await rename(stage, destination)

@@ -21,9 +21,11 @@ test('协议映射与 IPC 保留真实的创建、结束时间，缺失结束时
     conversation_id: uuid,
     status: 'completed',
     created_at: 10_000,
+    resumed_at: 50_000,
     finished_at: 51_250,
   })
   assert.equal(mapped.createdAt, 10_000)
+  assert.equal(mapped.resumedAt, 50_000)
   assert.equal(mapped.finishedAt, 51_250)
   const event = parseChatEvent({
     revision: 1,
@@ -37,6 +39,15 @@ test('协议映射与 IPC 保留真实的创建、结束时间，缺失结束时
   )
   for (const invalid of [-1, '51250', NaN, Infinity, 12.5, undefined])
     assert.throws(() => parseRun({ ...run, finishedAt: invalid }))
+})
+
+test('恢复执行以最近一次受理为起点，暂停期间不计入用时', () => {
+  const resumed = { ...run, resumedAt: 50_000 }
+  assert.equal(elapsedRunTime(resumed, 51_250), 1250)
+  assert.equal(
+    elapsedRunTime({ ...resumed, status: 'completed', finishedAt: 52_000 }, 90_000),
+    2000,
+  )
 })
 
 test('活动执行按原始创建时间计时，等待审批和切换状态不会重置起点', () => {

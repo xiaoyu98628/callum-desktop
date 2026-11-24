@@ -8,7 +8,8 @@ import type {
 import type { ExecutionSettings } from '../../../shared/execution.ts'
 import { getDesktopApi } from '../../lib/desktop.ts'
 import type { ConversationState } from './state.ts'
-import { unwrap, upsert } from './state-utils.ts'
+import { upsert } from '../../../shared/keyed-list.ts'
+import { unwrap } from './state-utils.ts'
 
 /** 执行交互由根作用域持有；异步结果必须核对会话选择和销毁状态。 */
 export function createExecutionInteractions(

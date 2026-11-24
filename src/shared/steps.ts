@@ -1,5 +1,6 @@
 import type { ChatStep } from './chat.ts'
 import { elapsedStepTime } from './run-time.ts'
+import { record } from './validation.ts'
 
 export const STEP_PAGE_SIZE = 50
 export const STEP_TEXT_LIMIT = 512 * 1024
@@ -33,6 +34,24 @@ export function boundSteps(steps: ChatStep[]): ChatStep[] {
   return result.reverse()
 }
 
+/** MCP 来源来自 Go 固定并保存的操作快照。 */
+function mcpStepTitle(step: ChatStep): string | null {
+  if (step.type !== 'tool_call' || !step.name.startsWith('mcp_')) return null
+  try {
+    const request = record(record(JSON.parse(step.input) as unknown).request)
+    const details = record(request.details)
+    if (
+      details.kind === 'mcp' &&
+      typeof details.server_name === 'string' &&
+      typeof details.tool_name === 'string'
+    )
+      return `${details.server_name} · ${details.tool_name}`
+  } catch {
+    /* 参数被拒绝或历史快照缺失时仍显示通用 MCP 标签。 */
+  }
+  return 'MCP 工具'
+}
+
 export function stepLabel(step: ChatStep): string {
   const actions: Record<string, string> = {
     read_file: '读取文件',
@@ -43,7 +62,10 @@ export function stepLabel(step: ChatStep): string {
     request_user_input: '补充输入',
   }
   if (step.type === 'user_input' && step.status === 'completed') return '补充输入已结束'
-  const action = step.type === 'user_input' ? '补充输入' : (actions[step.name] ?? step.name)
+  const action =
+    step.type === 'user_input'
+      ? '补充输入'
+      : (mcpStepTitle(step) ?? actions[step.name] ?? step.name)
   const labels: Record<string, string> = {
     pending: `等待${action}`,
     running: `正在${action}`,
@@ -92,6 +114,7 @@ export function toolStepSummary(
 }
 
 export function stepTarget(step: ChatStep): string {
+  if (mcpStepTitle(step)) return ''
   try {
     const input: unknown = JSON.parse(step.input)
     if (typeof input !== 'object' || input === null || !('arguments' in input)) return ''

@@ -118,6 +118,20 @@
 .activity-tool .activity-label {
   display: flex;
 }
+@media (prefers-reduced-motion: no-preference) {
+  [data-activity-fade] {
+    animation: activity-stream-reveal var(--activity-stream-duration) var(--activity-stream-easing)
+      both;
+  }
+}
+@keyframes activity-stream-reveal {
+  from {
+    opacity: 0.22;
+  }
+  to {
+    opacity: 1;
+  }
+}
 .activity-operation-group > .activity-heading {
   color: var(--foreground);
 }

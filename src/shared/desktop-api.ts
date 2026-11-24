@@ -1,8 +1,10 @@
+import type { McpRequest, McpResponse } from './mcp.ts'
 import type { FollowUpInput, FollowUpItem, FollowUpChange, FollowUpStart } from './follow-up.ts'
 import type {
   ChatEvent,
   StepPage,
   StepDetails,
+  StepPreview,
   ApprovalScope,
   DirectoryGrant,
   ChatUserInput,
@@ -64,6 +66,7 @@ export interface DesktopApi {
   copyCode(text: string): Promise<ChatResult<boolean>>
   copyMessage(text: string): Promise<ChatResult<boolean>>
   openWebLink(url: string): Promise<ChatResult<boolean>>
+  mcp(input: McpRequest): Promise<ChatResult<McpResponse>>
   getGeneralSettings(): Promise<ChatResult<GeneralSettings>>
   updateGeneralSettings(input: GeneralSettings): Promise<ChatResult<GeneralSettings>>
   getExecutionSettings(): Promise<ChatResult<ExecutionSettings>>
@@ -115,11 +118,21 @@ export interface DesktopApi {
     runId: string,
     afterSequence: number,
   ): Promise<ChatResult<StepPage>>
+  getStepPreview(
+    conversationId: string,
+    runId: string,
+    stepId: string,
+  ): Promise<ChatResult<StepPreview>>
   getStepDetails(
     conversationId: string,
     runId: string,
     stepId: string,
   ): Promise<ChatResult<StepDetails>>
+  getStepReasoning(
+    conversationId: string,
+    runId: string,
+    stepId: string,
+  ): Promise<ChatResult<string>>
   previewAttachment(input: AttachmentPreviewInput): Promise<ChatResult<AttachmentPreview>>
   saveAttachment(input: AttachmentSaveInput): Promise<ChatResult<boolean>>
   previewDraftAttachment(input: AttachmentInput): Promise<ChatResult<AttachmentPreview>>

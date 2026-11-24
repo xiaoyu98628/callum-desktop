@@ -1,6 +1,13 @@
 import { StringDecoder } from 'node:string_decoder'
-import { id, integer, record, string } from '../../shared/chat.ts'
-import type { ChatStep, StepDetails } from '../../shared/chat.ts'
+import {
+  id,
+  integer,
+  MAX_REASONING_BYTES,
+  MAX_STEP_PREVIEW_BYTES,
+  record,
+  string,
+} from '../../shared/chat.ts'
+import type { ChatStep, StepDetails, StepPreview } from '../../shared/chat.ts'
 import { STEP_OUTPUT_LIMIT, STEP_TEXT_LIMIT, truncateStepText } from '../../shared/steps.ts'
 
 type Request = (method: string, params: unknown) => Promise<unknown>
@@ -42,52 +49,88 @@ export class StepOutput {
   }
 }
 
-async function readOutput(
+type StepDataField = 'output' | 'text' | 'reasoning'
+
+async function readStepWindow(
   request: Request,
   stepId: string,
+  field: StepDataField,
+  offset: number,
+  limit: number,
+): Promise<{ fragment: string; next: number; done: boolean }> {
+  const v = record(await request('step.data', { step_id: stepId, field, offset, limit }))
+  if (
+    id(v.step_id) !== stepId ||
+    v.field !== field ||
+    integer(v.offset) !== offset ||
+    typeof v.done !== 'boolean' ||
+    typeof v.present !== 'boolean'
+  )
+    throw new Error('步骤数据归属无效')
+  const fragment = string(v.fragment),
+    next = integer(v.next_offset),
+    total = integer(v.total_bytes)
+  if (
+    next < offset ||
+    next > total ||
+    next - offset > limit ||
+    Buffer.byteLength(fragment) !== next - offset ||
+    v.done !== (next === total) ||
+    (!v.done && next === offset)
+  )
+    throw new Error('步骤数据分页无效')
+  if (!v.present && (total !== 0 || fragment !== '' || !v.done))
+    throw new Error('步骤数据缺失状态无效')
+  return { fragment, next, done: v.done }
+}
+
+async function readStepField(
+  request: Request,
+  stepId: string,
+  field: StepDataField,
+  maxBytes: number,
 ): Promise<{ raw: string; truncated: boolean }> {
   const fragments: string[] = []
   let offset = 0
   for (;;) {
-    const limit = Math.min(65536, DATA_LIMIT - offset)
+    const limit = Math.min(65536, maxBytes - offset)
     if (limit < 4) return { raw: fragments.join(''), truncated: true }
-    const v = record(
-      await request('step.data', { step_id: stepId, field: 'output', offset, limit }),
-    )
-    if (
-      id(v.step_id) !== stepId ||
-      v.field !== 'output' ||
-      integer(v.offset) !== offset ||
-      typeof v.done !== 'boolean' ||
-      typeof v.present !== 'boolean'
-    )
-      throw new Error('步骤数据归属无效')
-    const fragment = string(v.fragment),
-      next = integer(v.next_offset),
-      total = integer(v.total_bytes)
-    if (
-      next < offset ||
-      next > total ||
-      next - offset > limit ||
-      Buffer.byteLength(fragment) !== next - offset ||
-      (v.done && next !== total) ||
-      (!v.done && next === offset)
-    )
-      throw new Error('步骤数据分页无效')
-    if (!v.present && (total !== 0 || fragment !== '' || !v.done))
-      throw new Error('步骤数据缺失状态无效')
+    const { fragment, next, done } = await readStepWindow(request, stepId, field, offset, limit)
     fragments.push(fragment)
     offset = next
-    if (v.done || offset >= DATA_LIMIT) return { raw: fragments.join(''), truncated: !v.done }
+    if (done || offset >= maxBytes) return { raw: fragments.join(''), truncated: !done }
   }
+}
+
+/** 概述每个字段只读取一个窗口，完整思考和原始结果由各自的详情入口读取。 */
+export async function readStepPreview(request: Request, step: ChatStep): Promise<StepPreview> {
+  const text = await readStepWindow(request, step.id, 'text', 0, MAX_STEP_PREVIEW_BYTES)
+  const reasoning = await readStepWindow(request, step.id, 'reasoning', 0, MAX_STEP_PREVIEW_BYTES)
+  return {
+    id: step.id,
+    conversationId: step.conversationId,
+    runId: step.runId,
+    text: text.fragment,
+    textTruncated: !text.done,
+    reasoning: reasoning.fragment,
+    reasoningTruncated: !reasoning.done,
+  }
+}
+
+/** 思考正文独立于原始模型响应分段读取。 */
+export async function readStepReasoning(request: Request, stepId: string): Promise<string> {
+  const result = await readStepField(request, stepId, 'reasoning', MAX_REASONING_BYTES)
+  if (result.truncated) throw new Error('思考内容超出数据限制。')
+  return result.raw
 }
 
 /** 查询仅使用统一 context_message，界面不解析供应商响应。原始结果展示保持有界。 */
 export async function readStepDetails(request: Request, step: ChatStep): Promise<StepDetails> {
-  const { raw, truncated } = await readOutput(request, step.id)
+  const { raw, truncated } = await readStepField(request, step.id, 'output', DATA_LIMIT)
   let output = raw,
     text: string | null = null
   let reasoning = ''
+  let reasoningTruncated = false
   if (!truncated && raw) {
     const v = record(JSON.parse(raw) as unknown)
     output = JSON.stringify(v, null, 2)
@@ -97,6 +140,12 @@ export async function readStepDetails(request: Request, step: ChatStep): Promise
       if (message.role === 'assistant' && typeof message.content === 'string')
         text = message.content
     }
+  }
+  if (step.type === 'model_call' && truncated) {
+    // 原始响应过大时只探查是否有思考，完整正文由打开的思考面板读取。
+    const preview = await readStepField(request, step.id, 'reasoning', 4)
+    reasoning = preview.raw
+    reasoningTruncated = preview.truncated
   }
   return {
     id: step.id,
@@ -109,6 +158,6 @@ export async function readStepDetails(request: Request, step: ChatStep): Promise
     text: text === null ? null : truncateStepText(text, STEP_TEXT_LIMIT),
     textTruncated: truncated || (text?.length ?? 0) > STEP_TEXT_LIMIT,
     reasoning: truncateStepText(reasoning, STEP_TEXT_LIMIT),
-    reasoningTruncated: truncated || reasoning.length > STEP_TEXT_LIMIT,
+    reasoningTruncated: reasoningTruncated || reasoning.length > STEP_TEXT_LIMIT,
   }
 }

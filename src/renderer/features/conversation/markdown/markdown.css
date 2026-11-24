@@ -28,6 +28,23 @@
 .markdown-plain-text {
   white-space: pre-wrap;
 }
+.markdown-stream-paragraph {
+  white-space: pre-line;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .markdown-message .markdown-stream-fragment {
+    animation: markdown-stream-reveal var(--markdown-stream-duration) var(--markdown-stream-easing)
+      both;
+  }
+}
+@keyframes markdown-stream-reveal {
+  from {
+    opacity: 0.22;
+  }
+  to {
+    opacity: 1;
+  }
+}
 .markdown-plain-text,
 .markdown-part > :is(p, ul, ol, blockquote) {
   max-width: 72ch;

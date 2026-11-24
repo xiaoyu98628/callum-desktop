@@ -6,6 +6,19 @@ import { parseSkillReference } from './skills.ts'
 import type { SkillReference } from './skills.ts'
 import { array, id, integer, record, string } from './validation.ts'
 export { array, id, integer, record, string } from './validation.ts'
+// 对应 Go 执行接收的文本字节上限，独立于步骤概述和 Markdown 的展示预算。
+export const MAX_REASONING_BYTES = 1024 * 1024
+export const MAX_STEP_PREVIEW_BYTES = 64 * 1024
+
+export function parseReasoningText(value: unknown): string {
+  const text = string(value)
+  if (
+    text.length > MAX_REASONING_BYTES ||
+    new TextEncoder().encode(text).byteLength > MAX_REASONING_BYTES
+  )
+    throw new Error('思考内容过长')
+  return text
+}
 
 /** 客户端对话契约；仅包含界面需要的业务数据，不暴露厂商配置或传输方法。 */
 export interface ChatModel {
@@ -114,6 +127,7 @@ export interface ChatRun {
   status: RunStatus
   error: string | null
   createdAt: number
+  resumedAt?: number
   finishedAt: number | null
   /** 仅在首个持久化步骤明确标记为手动压缩时提供。 */
   compaction?: {
@@ -155,6 +169,15 @@ export interface StepPage {
   nextSequence: number
   hasMore: boolean
   revision: number
+}
+export interface StepPreview {
+  id: string
+  conversationId: string
+  runId: string
+  text: string
+  textTruncated: boolean
+  reasoning: string
+  reasoningTruncated: boolean
 }
 export interface StepDetails {
   id: string
@@ -235,6 +258,14 @@ export interface ChatEvent {
   revision: number
   change: ChatChange
 }
+
+/** 快照可按实体覆盖，消息移除只包含本次的 ID，需按版本逐条回放。 */
+export function chatEventBufferKey({ revision, change }: ChatEvent): string {
+  if (change.kind === 'service') return 'service'
+  if (change.kind === 'messages-removed') return `messages-removed:${revision}`
+  return `${change.kind}:${change.value.id}`
+}
+
 export interface ChatOverview {
   models: ChatModel[]
   conversations: Conversation[]
@@ -523,6 +554,7 @@ export function parseRun(value: unknown): ChatRun {
     status: status as RunStatus,
     error: v.error === null ? null : string(v.error),
     createdAt: integer(v.createdAt),
+    ...(v.resumedAt !== undefined ? { resumedAt: integer(v.resumedAt) } : {}),
     finishedAt: v.finishedAt === null ? null : integer(v.finishedAt),
     ...(compaction
       ? {
@@ -541,7 +573,7 @@ function reasoningProjection(v: Record<string, unknown>): {
 } {
   if (v.reasoning === undefined && v.reasoningTruncated === undefined) return {}
   const reasoning = string(v.reasoning)
-  if (reasoning.length > 512 * 1024 || typeof v.reasoningTruncated !== 'boolean')
+  if (reasoning.length > MAX_REASONING_BYTES || typeof v.reasoningTruncated !== 'boolean')
     throw new Error('思考内容格式无效或过长')
   return { reasoning, reasoningTruncated: v.reasoningTruncated }
 }
@@ -614,6 +646,31 @@ export function parseStepPage(value: unknown): StepPage {
   )
     throw new Error('步骤分页顺序无效')
   return { steps, afterSequence, nextSequence, hasMore: v.hasMore, revision: integer(v.revision) }
+}
+export function parseStepPreview(value: unknown): StepPreview {
+  const v = record(value)
+  if (typeof v.textTruncated !== 'boolean' || typeof v.reasoningTruncated !== 'boolean')
+    throw new Error('步骤预览格式无效')
+  const text = string(v.text),
+    reasoning = string(v.reasoning)
+  const encoder = new TextEncoder()
+  if (
+    [text, reasoning].some(
+      (part) =>
+        part.length > MAX_STEP_PREVIEW_BYTES ||
+        encoder.encode(part).byteLength > MAX_STEP_PREVIEW_BYTES,
+    )
+  )
+    throw new Error('步骤预览过长')
+  return {
+    id: id(v.id),
+    conversationId: id(v.conversationId),
+    runId: id(v.runId),
+    text,
+    textTruncated: v.textTruncated,
+    reasoning,
+    reasoningTruncated: v.reasoningTruncated,
+  }
 }
 export function parseStepDetails(value: unknown): StepDetails {
   const v = record(value)

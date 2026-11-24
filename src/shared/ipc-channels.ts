@@ -1,4 +1,5 @@
 export const IPC_CHANNELS = {
+  mcp: 'callum:mcp',
   getAppInfo: 'callum:app:get-info',
   getServiceState: 'callum:app:get-service-state',
   retryServiceStart: 'callum:app:retry-service-start',
@@ -37,7 +38,9 @@ export const IPC_CHANNELS = {
   listSkills: 'callum:skills:list',
   getConversationHistory: 'callum:chat:history',
   listRunSteps: 'callum:chat:steps',
+  getStepPreview: 'callum:chat:step-preview',
   getStepDetails: 'callum:chat:step-details',
+  getStepReasoning: 'callum:chat:step-reasoning',
   previewAttachment: 'callum:chat:attachment-preview',
   saveAttachment: 'callum:chat:attachment-save',
   previewDraftAttachment: 'callum:chat:draft-attachment-preview',

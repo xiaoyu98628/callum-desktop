@@ -69,7 +69,7 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 项目目录选择由主进程的系统选择器记录实际路径和目录身份，新增目录在提交前再次复核。固定的 `updateWorkspace` IPC 将名称、完整目录列表及原目录快照交给服务端；Go 在写事务中检查快照、活动执行和路径冲突，原子保存结果。仅改名不提交目录字段。目录解除关联不移动或删除磁盘文件，无目录项目不提供隐含相对路径基准。
 
-项目、会话、置顶、归档、软删除、模型配置和审批由 Go 持久化，客户端只维护有界快照及窗口内草稿。数据库结构和升级实现由后端维护，随附版本的兼容说明保存在资源清单，不在客户端重复实现迁移。
+项目、会话、置顶、归档、软删除、模型配置和审批由 Go 持久化，客户端只维护有界快照及窗口内草稿。数据库结构和升级实现由后端维护，随附版本的兼容说明保存在资源清单，不在客户端重复实现迁移。 MCP 设置读取 `mcp.list` 的 `scope_update` 能力标识，兼容保存相同连接身份时旧客户端不传 `scope`。新编辑器清除原范围时提交 `clear_scope: true`。使用缺少该能力的联调后端时，桌面界面会拒绝修改或清除显式权限范围。
 
 ## 历史分页
 
@@ -82,13 +82,13 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 `protocol-mapper.ts` 将 Go 字段转换为界面需要的类型，不传递厂商配置。`chat-service.ts` 负责调用固定方法、拼接文本增量、处理归属并构造一致快照：
 
 - `conversation.send` 首次提问创建会话；历史上下文、模型调用和标题均由 Go 管理。
-- `continueConversation` 是固定 IPC 入口，通过 `conversation.continue` 传入会话、来源执行及当前模型 ID。Go 在事务内校验来源仍为最新的已停止或中断任务，追加新执行并恢复保存的工具轨迹。桌面端将受理结果合入同一会话，沿用事件和历史恢复流程。原任务待发送的队列仍等待新执行成功。
+- `continueConversation` 是固定 IPC 入口，通过 `conversation.continue` 传入会话、来源执行及当前模型 ID，并发送 `resume_in_place: true` 以确保使用支持原地继续的后端。Go 在事务内校验来源仍为最新的已停止或中断任务，复用执行和原消息 ID。桌面端收到 `run.resumed`、原回复的 `message.updated` 及后续步骤，将它们合入原时间线。待发送的队列仍等待该执行成功。
 - `conversation.resend` 使用固定会话、用户消息及模型 ID，Go 校验最后一条提问和活动执行。适配层校验受理结果及 `removed_message_ids`，排空旧增量、清理内存旧回答，并发布按新执行标识关联的 `messages-removed` 客户端通知；通知参与同一有界队列和快照回放，查询期间的旧回答不能覆盖已移除状态。旧执行步骤及审计仍由 Go 保存。协议及 Go 服务实现保持现有契约。
 - `message.delta` 追加到指定消息和内容块，`message.updated` 使用完整消息替换本地内容，工具调用前的中间文本可以被清空。
 - 消息的 `created_at`、`completed_at` 经查询和完整消息事件分别映射为 `createdAt`、`completedAt`，以毫秒时间戳传递并校验；缺失或空值保留为未知，不用 `updated_at` 或客户端当前时间补造完成时间。
 - 活动消息在主进程持有，界面关闭后仍消费流；重新打开窗口可读取尚未完全落库的回答。终态时释放对应活动缓存。
-- 完整消息通知按约 16ms 合并（完成、取消和断连前立即排空增量）；快照协调记录最多 512 条、16 MiB，超出恢复窗口时要求重新加载，不返回不一致快照。
-- `ChatEventDelivery` 每次向窗口发送一条通知，preload 在处理后通过固定内部通道确认。等待期间按实体合并最新快照，队列最多 128 个实体、16 MiB；积压超限时提示重新查询。确认和订阅通道同样校验来源，不暴露给业务界面。
+- 完整消息通知按约 16ms 合并（完成、取消和断连前立即排空增量）。`ChatEventHistory` 统一分配事件版本、分发实时通知并保留快照回放记录，最多 512 条、16 MiB。项目与会话查询读取数据库后按发布顺序回放期间发生的变更，超出恢复窗口时要求重新加载，回放遇到断连时返回连接错误。应用退出时释放历史和订阅。
+- `ChatEventDelivery` 每次向窗口发送一条通知，preload 在处理后通过固定内部通道确认。等待期间按实体合并最新快照，消息移除通知按版本逐条保留，队列最多 128 条、16 MiB。渲染层加载会话或历史期间使用同一合并规则，最多缓冲 500 条，随后按版本回放。积压超限时提示重新查询。确认和订阅通道同样校验来源，不暴露给业务界面。
 - 正常结束、失败、取消、重启后的中断与连接断开分别处理。`persisted:false` 保留落库失败提示，不把内存中的终态当作已安全保存。
 
 补充输入的 `user_input.requested/updated` 事件映射为 `ChatUserInput`，校验会话、执行、步骤和问题标识；`user_input.list` 恢复等待快照，回复通过固定 `submitUserInput` IPC 提交。问题与回答由 Go 保存在 `user_input` 步骤中，等待不持有模型调用槽位或数据库事务；服务重启只恢复中断状态，不自动继续。
@@ -97,13 +97,15 @@ Electron 的缓存与外观偏好仍独立保存，开发及本地构建预览�
 
 「常规」通过固定 IPC 读写 `settings.get` 和 `settings.update` 的 `general` 组，由 Go 持久化到 `app_settings`。客户端携带读取到的 revision 保存，冲突后重新读取。桌面只在数据库记录仍为版本 1 的默认排队时迁入旧的本地引导偏好，成功后清理旧键。
 
-主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。「编辑」通过版本校验将待发记录取出为持久草稿，主进程只从待发记录自动续发。竞态导致队首失效时，重新查询当前队首。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按受理时的 `steering_after_step` 插入所属调用过程，后续步骤不会改变气泡位置。同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
+主进程通过固定 IPC 调用 `conversation.follow_ups`、`conversation.follow_up_add`、`conversation.follow_up_change` 和 `conversation.follow_up_start`。附件沿用消息暂存与持久保管。「编辑」通过版本校验将待发记录取出为持久草稿，主进程只从待发记录自动续发。受理冲突后重新查询队首，同一条消息的新版本也可参与受理。每次自动续发最多提交 32 个不同的消息与版本组合，遇到已尝试的版本或达到上限时结束尝试并刷新待发列表。Go 接受引导后发布 `message.created` 和待发列表变更，并主动取消该执行中的旧模型请求。会话历史和实时消息从同一记录恢复，按受理时的 `steering_after_step` 插入所属调用过程，后续步骤不会改变气泡位置。同一位置按 `steering_order` 排序。模型步骤以 `steered` 标记旧请求因引导切换。成功处理引导后更新同一气泡；未成功处理的引导退回待发区，前端移除临时气泡并展示提示。仅当前连接的成功终态触发自动续发，Go 同时校验前序执行、队首及其版本。客户端在连接更换后等待用户继续。
 
 ## 步骤查询与输出
 
 `ChatService` 通过既有 `step.created`、`step.updated` 和 `tool.output` 通知维护有界的步骤快照。`message.delta` 同时按 `step_id` 保存模型说明文字，工具调用轮清空回答消息时不会清除对应步骤文字。工具或提问步骤通过 `parent_step_id` 标记产生它的模型步骤；首个回答模型步骤可以缺少 `purpose`，后续回答、辅助标题及摘要仍按已有用途字段区分。工具输出为 base64 字节，每个步骤的 stdout/stderr 独立增量解码 UTF-8，缺片或超出缓存时标记截取，不将片段当成最终结果。
 
-preload 只暴露固定的 `listRunSteps(conversationId, runId, afterSequence)` 和 `getStepDetails(conversationId, runId, stepId)`，主进程校验运行或步骤的会话归属。列表复用 `step.list` 并合并查询期间的实时快照，每页 50 条；详情按 `step.data` 返回的 UTF-8 字节偏移分页拼接，最多读取 8 MiB，展示最多 256 Ki 字符。过程文字从统一 `context_message` 恢复，不让界面解析厂商响应；原始工具输出、审批及操作事实仍来自服务记录。
+preload 提供固定的 `listRunSteps(conversationId, runId, afterSequence)`、`getStepPreview(conversationId, runId, stepId)`、`getStepDetails(conversationId, runId, stepId)` 和 `getStepReasoning(conversationId, runId, stepId)`。主进程校验会话、执行和步骤归属，预览、详情与思考全文共用查询并发上限。列表复用 `step.list` 并合并实时快照，每页 50 条。
+
+时间线加载已保存的过程说明时通过 `step.data` 读 `text` 和 `reasoning`，每个字段只读一个至多 64 KiB 的 UTF-8 窗口。展开思考时按需读取思考全文，展开原始详情时才分片读取 `output`。原始详情最多读取 8 MiB，展示最多 256 Ki 字符。过程正文来自统一的 `context_message`，其读取容量与供应商原始响应的大小无关。使用开发环境的自定义服务程序时，服务需支持 `step.data` 的 `text` 字段。
 
 过程分组、思考预览、压缩状态与滚动窗口见 [调用过程展示](architecture.md#调用过程展示)。原始工具输出和步骤终态由服务端保存，实时片段不承诺重放；断线后重新查询有界最终结果，不将片段视为成功凭据。
 
@@ -146,3 +148,18 @@ Electron 从用户选择、粘贴和拖放的文件取得有界字节，主进�
 联调使用绝对路径的 `CALLUM_USER_DATA_DIR`，不访问日常数据库，不复制凭据。数据库迁移、命令权限与后台资源恢复由 Go 验证；客户端测试关注协议适配、状态展示和连接生命周期。开发检查命令见 [桌面端开发](development.md#开发与检查命令)。
 
 内置 run_command v9 在服务端拒绝不必要的简单 sh/bash 包装，失败步骤显示字段级参数原因。完整工具参数 JSON 损坏时，Go 保留失败模型步骤及 usage，在不执行本批工具的前提下带纠正反馈继续请求；客户端沿用既有步骤、运行状态和错误消息处理，无需自动重发用户消息。相同坏参数无进展时仍明确失败。
+
+## MCP
+
+桌面端通过 `main/backend/mcp-service.ts` 复用现有 Go JSON-RPC 连接。授权链接仅交给 Electron 主进程，由其验证 HTTPS 地址并打开系统浏览器。Go 持有本机回调、远端会话、子进程和加密凭据。 浏览器回调由 Go 提供结果页，在凭据保存后才显示授权成功，取消和失败有对应状态。页面会清理地址栏的回调参数。设置界面只获得授权状态、到期时间和已设置的环境变量键名。第三方工具审批复用现有对话审批接口。
+
+常规启动按当前架构从 `resources/backend/` 加载随附程序。MCP 桌面回归使用独立数据目录、实际随附程序、受控 stdio 服务和受控模型，验证 JSON 导入和编辑、凭据状态、工具发现、允许清单、审批与调用结果。
+
+临时联调还未同步到客户端的 Go 程序时，在非打包应用中同时设置 `CALLUM_USER_DATA_DIR` 和 `CALLUM_BACKEND_EXECUTABLE`，后者为从 Go 源码构建的绝对可执行文件路径。随附运行时及技能仍按现有资源目录加载。显式覆盖服务程序时，复制后沿用 Electron 的逐文件校验及 Go 资源锁的原有请求格式，兼容未经同步的后端。隔离用户目录避免把既有数据升级成随附旧程序无法打开的版本。
+
+在桌面仓库启动联调时，使用自己的 Go 仓库绝对路径替换示例路径。
+
+```sh
+CALLUM_USER_DATA_DIR="$(mktemp -d)" \
+CALLUM_BACKEND_EXECUTABLE="/绝对路径/callum/bin/callum" npm run dev
+```
