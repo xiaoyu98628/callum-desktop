@@ -14,14 +14,14 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `98feef0bef0c8f49df1753a18d1ee2952b7da7caadb4e426d0be6909617eba7a`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `2fb85e2b580111e166e0040e1a25ea0af0737b738a2b959bfe162d7bca731031`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                                             | SHA-256                                                            |
 | ------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `8567f8a3da17411281d5fd6e75322472b8eda705c83351b37ae41cfcae76ed9e` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `33263978fe505895695181d4e6ea29e4ab6ecb9c82a26caaeddab639b0c216e5` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `e84c114b0742b14660f210811c160c164dbe600415347a43757d04fcc5492edc` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `7923d0413fff1b352081db765f6a27933cd00d4912ef4f97888de52eef317a91` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `a3b322663a444d0f0406015b898fd45b5bf208a995097b932a7e88b4f1a17d84` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `a038faad89da0989127ab14e02bca4c158008cbacd201a1e5055baed8c7eec5e` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `d837fe06fac3e715f463f48018c4bd25e035c870ed382810e20e4e21f058808e` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `65cf287905325d91301e58d65c246ad419b351a5e15a70c5dfdbb01e6d0e9970` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
@@ -41,7 +41,7 @@ resources/backend/
 
 当前随附程序使用数据库结构版本 `8`，新库按纯文本摘要约束初始化。仍要求 JSON 摘要的旧库在启动时会被拒绝，原库数据保留。桌面联调使用 `CALLUM_USER_DATA_DIR` 指向新的独立数据目录。符合当前摘要约束的版本 `1` 至 `4` 和版本 `6` 会在启动实例锁保护下事务升级，保留原有项目、目录、会话、消息、步骤、审批、索引和触发器；结构升级失败回滚；旧 API Key 在系统凭据库可用后按事务加密，失败阻止启动并保留重试状态。外键设置在返回前恢复，其他不兼容结构明确拒绝打开。版本 `5` 的旧队列表会被拒绝，原数据库文件保留。版本 `7` 校验后只更新版本标记，保留已有表、设置、范围和凭据。旧随附程序不支持打开已升级的数据库，避免旧程序重写 MCP 配置时丢失权限范围。升级实现与失败处理由后端维护。
 
-随附服务为后续消息提供持久队列、附件保管和当前执行引导。支持 `conversation.continue` 显式继续最新停止或中断的任务，恢复原需求和已经保存的工具结果。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
+随附服务为后续消息提供持久队列、附件保管和当前执行引导。支持 `conversation.continue` 显式继续最新停止或中断的任务，恢复原需求和已经保存的工具结果。继续原执行时，待核实的同一内置命令须重新确认，原执行的拒绝决定继续生效。审批仍绑定本次实际命令快照。版本 `6` 的 `conversation_followups` 增加取出编辑的草稿状态。常规偏好保存到 `app_settings` 的 `general` 组。
 
 随附服务提供本地 stdio 和远程 Streamable HTTP MCP。MCP 设置位于 `app_settings` 的 `mcp` 组，访问令牌及加密环境变量保存在 `mcp_credentials` 表。本机 Go 服务接收 OAuth 授权回调、换取并刷新令牌，桌面端打开系统浏览器并展示授权状态。远程 OAuth 可通过 JSON 的 `scope` 字段限制授权和刷新使用的权限。同一连接身份的旧客户端更新省略该字段时，服务保留原范围。新版客户端可明确恢复自动发现。浏览器回调页在凭据保存后显示授权结果，加载时清理地址栏中的回调参数。工具选择和逐次审批沿用服务端权限校验。
 
