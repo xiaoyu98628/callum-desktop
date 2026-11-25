@@ -96,6 +96,10 @@ export interface DesktopApi {
   setWorkspaceArchived(workspaceId: string, archived: boolean): Promise<ChatResult<WorkspaceUpdate>>
   listArchivedWorkspaces(offset: number): Promise<ChatResult<WorkspacePage>>
   renameConversation(conversationId: string, title: string): Promise<ChatResult<Conversation>>
+  moveConversation(
+    conversationId: string,
+    workspaceId: string | null,
+  ): Promise<ChatResult<ConversationUpdate>>
   deleteConversation(conversationId: string): Promise<ChatResult<Conversation>>
   setConversationPinned(
     conversationId: string,

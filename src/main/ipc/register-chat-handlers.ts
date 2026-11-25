@@ -225,6 +225,9 @@ export function registerChatHandlers(
   handle(IPC_CHANNELS.renameConversation, 2, (conversationId, title) =>
     service.renameConversation(id(conversationId), parseName(title)),
   )
+  handle(IPC_CHANNELS.moveConversation, 2, (conversationId, workspaceId) =>
+    service.moveConversation(id(conversationId), workspaceId === null ? null : id(workspaceId)),
+  )
   handle(IPC_CHANNELS.deleteConversation, 1, (conversationId) =>
     service.deleteConversation(id(conversationId)),
   )

@@ -46,6 +46,7 @@ const {
   updateWorkspace,
   deleteWorkspace,
   renameConversation,
+  moveConversation,
   deleteConversation,
   setConversationPinned,
   setConversationArchived,
@@ -59,6 +60,68 @@ const creatingProject = ref(false)
 const sidebarError = ref('')
 const projectsOpen = ref(true)
 const recentOpen = ref(true)
+const conversationDragType = 'application/x-callum-conversation'
+const draggedConversation = ref<Conversation | null>(null)
+const dropTarget = ref<{ workspaceId: string | null } | null>(null)
+const dropTargetStyle = 'bg-primary/5 outline -outline-offset-1 outline-primary'
+
+function startConversationDrag(item: Conversation, event: DragEvent): void {
+  const transfer = event.dataTransfer
+  if (!transfer || state.managing || state.serviceError) {
+    event.preventDefault()
+    return
+  }
+  transfer.setData(conversationDragType, item.id)
+  transfer.effectAllowed = 'move'
+  draggedConversation.value = item
+}
+function endConversationDrag(): void {
+  draggedConversation.value = null
+  dropTarget.value = null
+}
+function canDropConversation(workspaceId: string | null, event: DragEvent): boolean {
+  const source = draggedConversation.value
+  return (
+    !!source &&
+    (source.workspaceId === null) !== (workspaceId === null) &&
+    !!event.dataTransfer?.types.includes(conversationDragType) &&
+    !state.managing &&
+    !state.serviceError
+  )
+}
+function markConversationDrop(workspaceId: string | null, event: DragEvent): void {
+  if (!canDropConversation(workspaceId, event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  if (dropTarget.value?.workspaceId !== workspaceId) dropTarget.value = { workspaceId }
+}
+function leaveConversationDrop(workspaceId: string | null, event: DragEvent): void {
+  if (dropTarget.value?.workspaceId !== workspaceId) return
+  if (
+    event.currentTarget instanceof Element &&
+    event.relatedTarget instanceof Node &&
+    event.currentTarget.contains(event.relatedTarget)
+  )
+    return
+  dropTarget.value = null
+}
+async function dropConversation(workspaceId: string | null, event: DragEvent): Promise<void> {
+  const source = draggedConversation.value
+  if (
+    !source ||
+    !canDropConversation(workspaceId, event) ||
+    event.dataTransfer?.getData(conversationDragType) !== source.id
+  )
+    return
+  event.preventDefault()
+  endConversationDrag()
+  sidebarError.value = ''
+  try {
+    await moveConversation(source, workspaceId)
+  } catch (error) {
+    sidebarError.value = error instanceof Error ? error.message : '无法移动对话，请重试。'
+  }
+}
 // 点击已由键盘聚焦的按钮时，浏览器可能继续匹配 :focus-visible。
 const sidebarKeyboardFocus = ref(true)
 const scrollbarVisible = ref(false)
@@ -253,6 +316,7 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
     @pointerdown.capture="sidebarKeyboardFocus = false"
     @keydown.capture="sidebarKeyboardFocus = true"
     @focusin="restoreSidebarKeyboardFocus"
+    @dragend="endConversationDrag"
   >
     <div
       class="mb-7 flex shrink-0 items-center gap-3"
@@ -371,7 +435,14 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                 v-for="workspace in state.workspaces"
                 :key="workspace.id"
                 :aria-label="workspace.name"
-                class="mb-0.5"
+                class="mb-0.5 rounded-lg"
+                :class="dropTarget?.workspaceId === workspace.id ? dropTargetStyle : ''"
+                :data-conversation-drop-active="
+                  dropTarget?.workspaceId === workspace.id ? '' : undefined
+                "
+                @dragover="markConversationDrop(workspace.id, $event)"
+                @dragleave="leaveConversationDrop(workspace.id, $event)"
+                @drop="dropConversation(workspace.id, $event)"
               >
                 <div
                   class="group relative flex min-w-0 items-center rounded-lg has-[[data-state=open]]:bg-secondary"
@@ -388,7 +459,12 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                     :item="workspace"
                     :home-directory="appInfo?.homeDirectory ?? ''"
                     :disabled="state.managing || !!state.serviceError"
-                    :suspended="!!managementTarget || creatingProject || !projectsOpen"
+                    :suspended="
+                      !!draggedConversation ||
+                      !!managementTarget ||
+                      creatingProject ||
+                      !projectsOpen
+                    "
                     @pin="pinWorkspace(workspace)"
                     @edit="manageWorkspace(workspace, false, $event)"
                   >
@@ -462,6 +538,7 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                         :loading="state.workspaceGroups[workspace.id]?.loading ?? false"
                         :workspace-name="workspace.name"
                         :preview-suspended="
+                          !!draggedConversation ||
                           !!managementTarget ||
                           creatingProject ||
                           !projectsOpen ||
@@ -477,6 +554,7 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                         @delete="(item, trigger) => manageConversation(item, true, trigger)"
                         @pin="pinConversation"
                         @archive="archiveConversation"
+                        @drag-conversation="startConversationDrag"
                         @load-more="loadWorkspaceConversations(workspace.id, true)"
                       />
                       <p
@@ -522,7 +600,15 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
           </div>
         </section>
 
-        <section aria-labelledby="conversations-heading">
+        <section
+          aria-labelledby="conversations-heading"
+          class="rounded-lg"
+          :class="dropTarget?.workspaceId === null ? dropTargetStyle : ''"
+          :data-conversation-drop-active="dropTarget?.workspaceId === null ? '' : undefined"
+          @dragover="markConversationDrop(null, $event)"
+          @dragleave="leaveConversationDrop(null, $event)"
+          @drop="dropConversation(null, $event)"
+        >
           <div
             class="group/recent mb-2 flex h-7 items-center gap-1"
             :class="collapsed ? '' : 'pr-2'"
@@ -589,7 +675,9 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                 :items="state.conversations"
                 :has-more="state.hasMore"
                 :loading="state.loadingList"
-                :preview-suspended="!!managementTarget || creatingProject || !recentOpen"
+                :preview-suspended="
+                  !!draggedConversation || !!managementTarget || creatingProject || !recentOpen
+                "
                 :selected-id="state.selectedId"
                 :active="activePage === 'conversation'"
                 :collapsed="collapsed"
@@ -599,6 +687,7 @@ async function archiveWorkspace(item: Workspace): Promise<void> {
                 @delete="(item, trigger) => manageConversation(item, true, trigger)"
                 @pin="pinConversation"
                 @archive="archiveConversation"
+                @drag-conversation="startConversationDrag"
                 @load-more="refreshOverview(true)"
               />
             </div>

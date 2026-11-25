@@ -460,6 +460,28 @@ export class ChatService {
       return value
     })
   }
+  async moveConversation(
+    conversationId: string,
+    workspaceId: string | null,
+  ): Promise<ConversationUpdate> {
+    const identifier = id(conversationId)
+    const destination = workspaceId === null ? null : id(workspaceId)
+    return this.gate.run(`conversation:${identifier}`, async () => {
+      const current = conversationFromRpc(
+        await this.request('conversation.get', { id: identifier }),
+      )
+      if (!isVisible(current) || (current.workspaceId === null) === (destination === null))
+        throw new Error('对话已不在可移动的来源列表中。')
+      const conversation = conversationFromRpc(
+        await this.request('conversation.update', {
+          id: identifier,
+          ...(destination === null ? { detach_workspace: true } : { workspace_id: destination }),
+        }),
+      )
+      this.events.publish({ kind: 'conversation', value: conversation })
+      return { conversation, revision: this.events.revision }
+    })
+  }
   async deleteConversation(conversationId: string): Promise<Conversation> {
     return this.gate.run(`conversation:${conversationId}`, async () => {
       const value = conversationFromRpc(

@@ -37,6 +37,7 @@ const emit = defineEmits<{
   delete: [item: Conversation, trigger: HTMLElement | null]
   pin: [item: Conversation]
   archive: [item: Conversation]
+  dragConversation: [item: Conversation, event: DragEvent]
   loadMore: []
 }>()
 
@@ -201,6 +202,7 @@ onScopeDispose(() => titleObserver?.disconnect())
                       : 'px-3 group-hover:pr-14 in-[[data-sidebar-keyboard]]:group-has-[:focus-visible]:pr-14 group-has-[[aria-expanded=true]]:pr-14'
                   "
                   :data-conversation-id="item.id"
+                  :draggable="!disabled"
                   :aria-current="active && selectedId === item.id ? 'page' : undefined"
                   :aria-haspopup="disabled ? undefined : 'menu'"
                   :aria-expanded="disabled ? undefined : openMenuId === item.id"
@@ -210,6 +212,7 @@ onScopeDispose(() => titleObserver?.disconnect())
                   @dblclick="rename(item, $event)"
                   @keydown="handleMenuKey(item.id, $event)"
                   @contextmenu="disabled && $event.preventDefault()"
+                  @dragstart="emit('dragConversation', item, $event)"
                 >
                   <MessageSquareIcon
                     v-if="collapsed"

@@ -12,7 +12,7 @@ Callum 的 Electron 桌面客户端，使用 TypeScript、Vue 3 和 shadcn-vue�
 - 固定版本 Python 3.12.14、Node 26.13.0、Git 2.56.1 资源，由 Go 服务在既有权限与沙箱下执行。
 - 外观设置、键盘操作及受限桌面通信。
 
-对话支持图片及普通文件附件、历史展示、编辑重发和交付文件另存。图片按模型所选输入类型启用；普通文件由 Agent 通过技能与命令按需读取。客户端携带 `resources/skills/.system/`，把自带技能安装到 `~/.callum/skills/.system/`，用户技能平铺在 `~/.callum/skills/<技能名>/`，同名用户技能优先。运行时安装到 `~/.callum/runtimes/{git,python,node,native}`，无版本或平台层级；指定数据根目录时同步改变。Go 不内嵌技能或 Office 解析实现。四个平台随附原生文档工具，技能依赖和原生验收状态见 [桌面端开发](docs/development.md#技能资源与安装)。已有会话移动项目尚未接入。
+对话支持图片及普通文件附件、历史展示、编辑重发和交付文件另存。图片按模型所选输入类型启用；普通文件由 Agent 通过技能与命令按需读取。客户端携带 `resources/skills/.system/`，把自带技能安装到 `~/.callum/skills/.system/`，用户技能平铺在 `~/.callum/skills/<技能名>/`，同名用户技能优先。运行时安装到 `~/.callum/runtimes/{git,python,node,native}`，无版本或平台层级；指定数据根目录时同步改变。Go 不内嵌技能或 Office 解析实现。四个平台随附原生文档工具，技能依赖和原生验收状态见 [桌面端开发](docs/development.md#技能资源与安装)。侧栏支持在「最近」和项目之间双向拖动已有对话。
 
 - 运行中支持后续消息排队、引导和单条切换快捷键，默认方式在常规设置中保存。
 

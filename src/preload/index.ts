@@ -207,6 +207,12 @@ const desktopApi: DesktopApi = {
       parseConversation,
     )
   },
+  async moveConversation(conversationId, workspaceId) {
+    return parseResult(
+      await ipcRenderer.invoke(IPC_CHANNELS.moveConversation, conversationId, workspaceId),
+      parseConversationUpdate,
+    )
+  },
   async deleteConversation(conversationId) {
     return parseResult(
       await ipcRenderer.invoke(IPC_CHANNELS.deleteConversation, conversationId),

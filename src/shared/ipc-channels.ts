@@ -29,6 +29,7 @@ export const IPC_CHANNELS = {
   setWorkspaceArchived: 'callum:workspace:set-archived',
   listArchivedWorkspaces: 'callum:workspace:archived',
   renameConversation: 'callum:chat:rename',
+  moveConversation: 'callum:chat:move',
   deleteConversation: 'callum:chat:delete',
   setConversationPinned: 'callum:chat:set-pinned',
   setConversationArchived: 'callum:chat:set-archived',

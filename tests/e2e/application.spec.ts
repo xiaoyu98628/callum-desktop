@@ -232,6 +232,7 @@ test('发布页面通过受限桥接读取真实应用信息', async ({ desktop 
     'setWorkspaceArchived',
     'listArchivedWorkspaces',
     'renameConversation',
+    'moveConversation',
     'deleteConversation',
     'setConversationPinned',
     'setConversationArchived',
@@ -2991,6 +2992,185 @@ async function createSidebarConversations(
 test.describe('会话与项目管理', () => {
   test.use({ withModel: true })
   test.skip(!supportedBackend, '需要随附的 macOS arm64 或 Windows x64 服务')
+
+  test('侧栏双向拖动在标题和列表保存归属，重启后保留历史与附件', async ({
+    desktop,
+    playwright,
+    profile,
+  }) => {
+    test.setTimeout(90_000)
+    const page = await desktop.firstWindow()
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    const created = await page.evaluate(() =>
+      window.callum.createWorkspace({ name: '拖动验收项目', rootPath: '' }, ''),
+    )
+    if (!created.ok) throw new Error(created.error)
+    const workspaceId = created.value.id
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    const project = page.getByRole('region', { name: '拖动验收项目', exact: true })
+    const recentHeading = recent.getByRole('button', { name: '最近', exact: true })
+    const projectHeading = project.getByRole('button', { name: '拖动验收项目', exact: true })
+    const exampleFile = join(profile, '拖动验收附件.txt')
+    await writeFile(exampleFile, '拖动前保存的附件。')
+    await page.locator('input[type=file]').setInputFiles(exampleFile)
+    await input.fill('这是拖动保留的原始消息。')
+    await input.press('Enter')
+    await expect(page.getByText('你好，这是受控回答。', { exact: true })).toBeVisible()
+    const conversationId = await recent
+      .locator('button[data-conversation-id]')
+      .first()
+      .getAttribute('data-conversation-id')
+    if (!conversationId) throw new Error('未找到拖动测试对话')
+    const row = (group: Locator) =>
+      group.locator(`button[data-conversation-id="${conversationId}"]`)
+    const expectWorkspace = async (owner: string | null) => {
+      await expect
+        .poll(async () => {
+          const detail = await page.evaluate(
+            (id) => window.callum.getConversation(id),
+            conversationId,
+          )
+          return detail.ok ? detail.value.conversation.workspaceId : detail.error
+        })
+        .toBe(owner)
+    }
+    const history = page.getByRole('article', { name: '你的消息', exact: true })
+    await expect(history.getByText('这是拖动保留的原始消息。', { exact: true })).toBeVisible()
+    await expect(history.getByRole('group', { name: '拖动验收附件.txt' })).toBeVisible()
+    await input.fill('当前对话草稿')
+
+    await test.step('目标高亮，取消或放到项目外保留原位置，收起项目可接收拖动', async () => {
+      await row(recent).hover()
+      await page.mouse.down()
+      try {
+        // Chromium 在第二次移入指针时投递 dragover。
+        await projectHeading.hover()
+        await projectHeading.hover()
+        await expect(project).toHaveAttribute('data-conversation-drop-active', '')
+        await expect(project).toHaveCSS('outline-style', 'solid')
+        await page.keyboard.press('Escape')
+      } finally {
+        await page.mouse.up()
+      }
+      await expect(project).not.toHaveAttribute('data-conversation-drop-active', '')
+      await expectWorkspace(null)
+      await expect(row(recent)).toBeVisible()
+      await row(recent).dragTo(page.getByRole('button', { name: '设置', exact: true }))
+      await expectWorkspace(null)
+      await expect(row(recent)).toBeVisible()
+      await expect(projectHeading).toHaveAttribute('aria-expanded', 'false')
+      await row(recent).dragTo(projectHeading)
+      await expect(row(recent)).toHaveCount(0)
+      await expectWorkspace(workspaceId)
+      await expect(projectHeading).toHaveAttribute('aria-expanded', 'false')
+      await projectHeading.click()
+      await expect(row(project)).toBeVisible()
+      await expect(row(project)).toHaveAttribute('aria-current', 'page')
+      await expect(input).toHaveValue('当前对话草稿')
+    })
+
+    await test.step('收起的最近标题及两个展开后的空列表均可放置', async () => {
+      await recentHeading.click()
+      await row(project).dragTo(recentHeading)
+      await expect(row(project)).toHaveCount(0)
+      await expectWorkspace(null)
+      await expect(recentHeading).toHaveAttribute('aria-expanded', 'false')
+      await recentHeading.click()
+      await row(recent).dragTo(project.getByText('暂无聊天', { exact: true }))
+      await expect(row(project)).toBeVisible()
+      await expectWorkspace(workspaceId)
+      await row(project).dragTo(recent.getByText('暂无对话', { exact: true }))
+      await expect(row(recent)).toBeVisible()
+      await expectWorkspace(null)
+    })
+
+    await test.step('可以放到展开列表的其他对话行，持续保持同一会话选中', async () => {
+      await createSidebarConversations(page, workspaceId, 1, '项目落点')
+      await createSidebarConversations(page, null, 1, '最近落点')
+      const projectRow = project.getByRole('button', { name: '分页-项目落点-1', exact: true })
+      const recentRow = recent.getByRole('button', { name: '分页-最近落点-1', exact: true })
+      await row(recent).dragTo(project.locator('[id^="workspace-conversations-"]'), {
+        targetPosition: { x: 4, y: 8 },
+      })
+      await expect(row(project)).toBeVisible()
+      await expect(row(recent)).toHaveCount(0)
+      await row(project).dragTo(recentRow)
+      await expect(row(recent)).toHaveAttribute('aria-current', 'page')
+      await expect(row(project)).toHaveCount(0)
+      await row(recent).dragTo(projectRow)
+      await expect(row(project)).toHaveAttribute('aria-current', 'page')
+      await expect(input).toHaveValue('当前对话草稿')
+      await expectWorkspace(workspaceId)
+      await projectRow.dragTo(recentRow)
+      await expect(
+        recent.getByRole('button', { name: '分页-项目落点-1', exact: true }),
+      ).toBeVisible()
+    })
+
+    await desktop.close()
+    const restarted = await playwright._electron.launch({
+      args: [projectRoot],
+      env: {
+        ...process.env,
+        CALLUM_USER_DATA_DIR: profile,
+        CALLUM_TEST_BACKGROUND: '1',
+        CALLUM_BACKEND_EXECUTABLE: '',
+      },
+    })
+    try {
+      const reopened = await restarted.firstWindow()
+      await waitForCallumReady(reopened)
+      const restoredProject = reopened.getByRole('region', { name: '拖动验收项目', exact: true })
+      const restoredRecent = reopened.getByRole('region', { name: '最近', exact: true })
+      await restoredProject.getByRole('button', { name: '拖动验收项目', exact: true }).click()
+      await row(restoredProject).click()
+      await expect(row(restoredRecent)).toHaveCount(0)
+      await expect(
+        restoredRecent.getByRole('button', { name: '分页-项目落点-1', exact: true }),
+      ).toBeVisible()
+      await expect(
+        restoredProject.getByRole('button', { name: '分页-项目落点-1', exact: true }),
+      ).toHaveCount(0)
+      const restoredHistory = reopened.getByRole('article', { name: '你的消息', exact: true })
+      await expect(
+        restoredHistory.getByText('这是拖动保留的原始消息。', { exact: true }),
+      ).toBeVisible()
+      await expect(restoredHistory.getByRole('group', { name: '拖动验收附件.txt' })).toBeVisible()
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test('会话运行时拒绝拖动，侧栏保留来源并显示错误', async ({ desktop }) => {
+    test.setTimeout(75_000)
+    const page = await desktop.firstWindow()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled({ timeout: 50_000 })
+    const created = await page.evaluate(() =>
+      window.callum.createWorkspace({ name: '忙碌拖动项目', rootPath: '' }, ''),
+    )
+    if (!created.ok) throw new Error(created.error)
+    const recent = page.getByRole('region', { name: '最近', exact: true })
+    const source = recent.locator('button[data-conversation-id]')
+    const target = page.getByRole('button', { name: '忙碌拖动项目', exact: true })
+    await input.fill('等待拖动验收结束')
+    await input.press('Enter')
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(stop).toBeEnabled()
+    await source.dragTo(target)
+    await expect(page.locator('#app-sidebar').getByRole('alert')).toHaveText('该会话正在执行')
+    await expect(source).toBeVisible()
+    await target.click()
+    const project = page.getByRole('region', { name: '忙碌拖动项目', exact: true })
+    await expect(project.getByText('暂无聊天', { exact: true })).toBeVisible()
+    await stop.click()
+    await expect(stop).toHaveCount(0)
+    await source.dragTo(project.getByText('暂无聊天', { exact: true }))
+    await expect(source).toHaveCount(0)
+    await expect(project.locator('button[data-conversation-id]')).toBeVisible()
+  })
 
   test('侧栏超过五条显示展开入口，各列表独立收放并保留当前会话', async ({ desktop }) => {
     test.setTimeout(90_000)

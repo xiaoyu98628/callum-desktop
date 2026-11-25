@@ -492,12 +492,16 @@ function createConversations() {
         if (event.revision > group.revision)
           group.items = mergeConversation(group.items, change.value, workspaceId)
       }
+      if (draftWorkspaces.has(change.value.id))
+        draftWorkspaces.set(change.value.id, change.value.workspaceId)
       if (
         event.revision > detailRevision &&
         state.detail?.conversation.id === change.value.id &&
-        visibleConversation(change.value, state.workspaceId)
-      )
+        visibleConversation(change.value, change.value.workspaceId)
+      ) {
         state.detail.conversation = change.value
+        state.workspaceId = change.value.workspaceId
+      }
       rememberConversationUpdate({ conversation: change.value, revision: event.revision })
       return
     }
@@ -813,6 +817,18 @@ function createConversations() {
     for (const [workspaceId, group] of Object.entries(state.workspaceGroups))
       group.items = mergeConversation(group.items, result, workspaceId)
     if (state.detail?.conversation.id === result.id) state.detail.conversation = result
+  }
+  async function moveConversation(item: Conversation, workspaceId: string | null): Promise<void> {
+    const result = await manage(() => getDesktopApi().moveConversation(item.id, workspaceId))
+    if (disposed) return
+    apply({
+      revision: result.revision,
+      change: { kind: 'conversation', value: result.conversation },
+    })
+    // 两边的成员变化会移动后续页的偏移，从首页重读并废弃在途分页。
+    void refreshOverview()
+    const projectId = result.conversation.workspaceId ?? item.workspaceId
+    if (projectId) void loadWorkspaceConversations(projectId)
   }
   async function updateWorkspaceFlag(
     workspaceId: string,
@@ -1421,6 +1437,7 @@ function createConversations() {
     updateWorkspace,
     deleteWorkspace,
     renameConversation,
+    moveConversation,
     deleteConversation,
     setConversationPinned,
     setConversationArchived,
