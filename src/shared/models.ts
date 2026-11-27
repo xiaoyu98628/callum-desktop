@@ -1,5 +1,5 @@
-import { array, id, integer, record, string } from './chat.ts'
 import type { ChatModel } from './chat.ts'
+import { array, byteBoundedArray, id, integer, record, string } from './validation.ts'
 
 /** 可配置的服务类型；增加选项时须同时核对 Go 服务的协议支持。 */
 export const PROVIDER_SERVICES = [{ value: 'chatcompletions', label: 'Chat Completions' }] as const
@@ -162,10 +162,12 @@ export function parseConfiguredModel(value: unknown): ConfiguredModel {
   }
 }
 export function parseCatalog(value: unknown): ModelCatalog {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_CATALOG_BYTES)
+    throw new Error('目录内容超出读取预算，请减少配置内容后重试。')
   const v = record(value)
   return {
-    providers: array(v.providers, parseProvider),
-    models: array(v.models, parseConfiguredModel),
+    providers: catalogArray(v.providers, parseProvider),
+    models: catalogArray(v.models, parseConfiguredModel),
   }
 }
 export function availableModels(catalog: ModelCatalog): ChatModel[] {
@@ -176,4 +178,10 @@ export function availableModels(catalog: ModelCatalog): ChatModel[] {
       name: model.name,
       ...(model.inputTypes.includes('image') ? { imageInput: true } : {}),
     }))
+}
+
+/** 配置目录跨页与跨进程共用 16 MiB 的 UTF-8 预算，不设置模型总条数上限。 */
+export const MAX_CATALOG_BYTES = 16 * 1024 * 1024
+export function catalogArray<T>(value: unknown, parse: (item: unknown) => T): T[] {
+  return byteBoundedArray(value, parse, MAX_CATALOG_BYTES)
 }

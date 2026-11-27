@@ -71,54 +71,63 @@ const test = base.extend<{
       await endpoint.close()
     }
   },
-  startupBlocker: async ({ blockServiceStartup, profile, modelEndpoint }, use) => {
-    void modelEndpoint
-    if (!blockServiceStartup) {
-      await use(null)
-      return
-    }
-    const service = new ChatService(join(profile, 'backend'), resourceRoot)
-    try {
-      await service.overview(0)
-      await use(service)
-    } finally {
-      await service.close()
-    }
-  },
-  desktop: async ({ playwright, profile, modelEndpoint, startupBlocker }, use) => {
-    void modelEndpoint
-    void startupBlocker
-    let application: ElectronApplication | undefined
-    let closed = false
-    try {
-      application = await playwright._electron.launch({
-        args: [projectRoot],
-        env: {
-          ...process.env,
-          CALLUM_USER_DATA_DIR: profile,
-          CALLUM_TEST_BACKGROUND: '1',
-          // 桌面回归必须启动仓库中的随附程序，即使开发者设置了联调覆盖路径。
-          CALLUM_BACKEND_EXECUTABLE: '',
-        },
-      })
-      application.on('close', () => {
-        closed = true
-      })
-      // 元素获得 DOM 焦点不应激活原生窗口；后台回归保持窗口隐藏。
-      await expect
-        .poll(() =>
-          application!.evaluate(({ BrowserWindow }) =>
-            BrowserWindow.getAllWindows().some(
-              (window) => window.isVisible() || window.isFocused(),
+  startupBlocker: [
+    async ({ blockServiceStartup, profile, modelEndpoint }, use) => {
+      void modelEndpoint
+      if (!blockServiceStartup) {
+        await use(null)
+        return
+      }
+      const service = new ChatService(join(profile, 'backend'), resourceRoot)
+      try {
+        await service.overview(0)
+        await use(service)
+      } finally {
+        await service.close()
+      }
+    },
+    { timeout: 90_000 },
+  ],
+  desktop: [
+    async ({ playwright, profile, modelEndpoint, startupBlocker }, use) => {
+      void modelEndpoint
+      void startupBlocker
+      let application: ElectronApplication | undefined
+      let closed = false
+      try {
+        application = await playwright._electron.launch({
+          args: [projectRoot],
+          env: {
+            ...process.env,
+            CALLUM_USER_DATA_DIR: profile,
+            CALLUM_TEST_BACKGROUND: '1',
+            // 桌面回归必须启动仓库中的随附程序，即使开发者设置了联调覆盖路径。
+            CALLUM_BACKEND_EXECUTABLE: '',
+          },
+        })
+        application.on('close', () => {
+          closed = true
+        })
+        // 元素获得 DOM 焦点不应激活原生窗口；后台回归保持窗口隐藏。
+        await expect
+          .poll(() =>
+            application!.evaluate(({ BrowserWindow }) =>
+              BrowserWindow.getAllWindows().some(
+                (window) => window.isVisible() || window.isFocused(),
+              ),
             ),
-          ),
-        )
-        .toBe(false)
-      await use(application)
-    } finally {
-      if (!closed) await application?.close()
-    }
-  },
+          )
+          .toBe(false)
+        // 首次隔离配置需要安装完整随附资源，先等待真实启动结束，再验证业务页面。
+        // 启动失败测试保留失败状态，仍由用例检查原因与重试行为。
+        await waitForCallumReady(await application.firstWindow(), true)
+        await use(application)
+      } finally {
+        if (!closed) await application?.close()
+      }
+    },
+    { timeout: 90_000 },
+  ],
 })
 
 // 在声明阶段跳过非目标平台，避免为跳过的用例创建无须运行的应用资源。
@@ -126,7 +135,7 @@ const testOnMacOS = process.platform === 'darwin' ? test : test.skip
 const testOnWindows = process.platform === 'win32' ? test : test.skip
 
 /** 首次安装使用独立的就绪预算，服务结束启动后再执行界面断言。 */
-async function waitForCallumReady(page: Page): Promise<void> {
+async function waitForCallumReady(page: Page, allowStartupFailure = false): Promise<void> {
   let state: ServiceState | undefined
   await expect
     .poll(
@@ -137,7 +146,8 @@ async function waitForCallumReady(page: Page): Promise<void> {
       { message: '等待 Callum 服务结束启动', timeout: 60_000 },
     )
     .not.toBe('starting')
-  if (state?.status === 'ready') return
+  if (state?.status === 'ready' || (allowStartupFailure && state?.status === 'startup-failed'))
+    return
   if (state && 'error' in state) throw new Error(state.error)
   throw new Error('Callum 在服务就绪前开始关闭。')
 }
@@ -5201,12 +5211,15 @@ test.describe('会话与项目管理', () => {
       )
     await expect.poll(titleOffset).toBeLessThan(-2)
     await expect
-      .poll(() =>
-        titleText.evaluate(
-          (element) =>
-            element.getBoundingClientRect().right -
-            element.parentElement!.getBoundingClientRect().right,
-        ),
+      // 末端仅停留约 800ms，默认逐步增至一秒的采样可能错过完整的停留窗口。
+      .poll(
+        () =>
+          titleText.evaluate(
+            (element) =>
+              element.getBoundingClientRect().right -
+              element.parentElement!.getBoundingClientRect().right,
+          ),
+        { intervals: [50, 100] },
       )
       .toBeLessThan(1)
     await expect.poll(titleOffset).toBeCloseTo(0)
@@ -5389,8 +5402,9 @@ test.describe('会话与项目管理', () => {
     await expect(deletion.getByRole('alert')).toBeVisible()
     await deletion.getByRole('button', { name: '取消', exact: true }).click()
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
-    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '继续任务', exact: true })).toBeVisible()
     await input.fill('将清除的草稿')
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: '等待甲', exact: true }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
     await page
@@ -8975,5 +8989,106 @@ for await (const line of input) {
     await expect(approval).toContainText('bundled-fixture')
     await approval.getByRole('button', { name: '仅本次允许', exact: true }).click()
     await expect(page.getByText('随附 MCP 工具已完成。', { exact: true })).toBeVisible()
+  })
+})
+
+test('真实随附服务通过分页向设置和对话提供 501 个模型，重载后仍能使用', async ({ desktop }) => {
+  test.setTimeout(60_000)
+  const page = await desktop.firstWindow()
+  await waitForCallumReady(page)
+  await page.evaluate(async () => {
+    const provider = await window.callum.saveModelProvider({
+      id: null,
+      name: '分页供应商',
+      protocol: 'chatcompletions',
+      baseUrl: 'https://example.invalid/v1',
+      keyMode: 'keep',
+    })
+    if (!provider.ok) throw new Error(provider.error)
+    for (let index = 0; index < 501; index++) {
+      const result = await window.callum.saveModel({
+        id: null,
+        providerId: provider.value,
+        name: `分页模型 ${index}`,
+        remoteModelId: `controlled-${index}`,
+        enabled: true,
+      })
+      if (!result.ok) throw new Error(result.error)
+    }
+    const catalog = await window.callum.getModelCatalog()
+    if (!catalog.ok) throw new Error(catalog.error)
+    if (catalog.value.models.length !== 501) throw new Error('模型目录分页不完整')
+    const overview = await window.callum.getChatOverview(0)
+    if (!overview.ok) throw new Error(overview.error)
+    if (overview.value.models.length !== 501) throw new Error('可选模型分页不完整')
+  })
+  await page.reload()
+  await waitForCallumReady(page)
+  await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeEnabled()
+  const catalog = await page.evaluate(() => window.callum.getModelCatalog())
+  expect(catalog.ok && catalog.value.models.length).toBe(501)
+})
+
+test.describe('窗口通知故障隔离', () => {
+  test.use({ withModel: true })
+  test('发送回调失败不关闭共享服务，重新加载后恢复流式事件', async ({ desktop, modelEndpoint }) => {
+    if (!modelEndpoint) throw new Error('缺少受控模型端点')
+    const page = await desktop.firstWindow()
+    await desktop.evaluate(({ BrowserWindow }, channel) => {
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents
+      const send = contents.send.bind(contents)
+      let failed = false
+      contents.send = (name, ...args) => {
+        if (name === channel && !failed) {
+          failed = true
+          Reflect.set(globalThis, 'injectedReceiverFailure', true)
+          throw new Error('controlled-private-receiver-failure')
+        }
+        send(name, ...args)
+      }
+    }, IPC_CHANNELS.chatEvent)
+    const first = await page.evaluate(async () => {
+      const overview = await window.callum.getChatOverview(0)
+      if (!overview.ok || !overview.value.models[0]) throw new Error('缺少模型')
+      return window.callum.sendMessage({
+        conversationId: null,
+        modelId: overview.value.models[0].id,
+        text: '通知故障前的普通提问',
+      })
+    })
+    if (!first.ok) throw new Error(first.error)
+    await expect
+      .poll(() => desktop.evaluate(() => Reflect.get(globalThis, 'injectedReceiverFailure')))
+      .toBe(true)
+    await expect
+      .poll(async () => {
+        const detail = await page.evaluate(
+          (id) => window.callum.getConversation(id),
+          first.value.conversationId,
+        )
+        return (
+          detail.ok &&
+          detail.value.runs.some(
+            (run) => run.id === first.value.runId && run.status === 'completed',
+          )
+        )
+      })
+      .toBe(true)
+    expect(await page.evaluate(() => window.callum.getServiceState())).toEqual({ status: 'ready' })
+    await page.reload()
+    const input = page.getByRole('textbox', { name: '消息', exact: true })
+    await expect(input).toBeEnabled()
+    await input.fill('思考等待')
+    await input.press('Enter')
+    const stop = page.getByRole('button', { name: '停止生成', exact: true })
+    await expect(stop).toBeEnabled()
+    await expect
+      .poll(() =>
+        modelEndpoint.requests.some((request) => request.stream && request.text === '思考等待'),
+      )
+      .toBe(true)
+    modelEndpoint.finishStream()
+    await expect(stop).toHaveCount(0)
+    await expect(input).toBeEnabled()
   })
 })

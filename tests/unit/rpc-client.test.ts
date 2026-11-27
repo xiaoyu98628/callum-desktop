@@ -107,6 +107,15 @@ for (const [name, diagnostic, expected] of [
     /内置 Python\/Node\/Git 资源校验失败/,
   ],
   [
+    '内置资源校验超时',
+    JSON.stringify({
+      level: 'ERROR',
+      module: 'main',
+      error: '加载内置运行时: secret-private-path: context deadline exceeded',
+    }),
+    /内置运行时资源校验超时/,
+  ],
+  [
     '诊断容量边界',
     'x'.repeat(16 * 1024) +
       '\n' +
@@ -153,6 +162,37 @@ test('启动超时结束等待并释放子进程', async (t) => {
     const rejected = assert.rejects(rpc.ready, /启动超时/)
     t.mock.timers.tick(15_000)
     await rejected
+  } finally {
+    await rpc.close()
+  }
+})
+
+test('完整服务启动可超过普通握手预算，仍在专属预算到期时失败并释放子进程', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const rpc = new RpcClient(
+    process.execPath,
+    ['-e', 'process.stdin.resume()'],
+    () => {},
+    () => {},
+    45_000,
+  )
+  let settled = false
+  void rpc.ready.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    },
+  )
+  try {
+    const rejected = assert.rejects(rpc.ready, /启动超时/)
+    t.mock.timers.tick(15_000)
+    await Promise.resolve()
+    assert.equal(settled, false)
+    t.mock.timers.tick(30_000)
+    await rejected
+    assert.equal(settled, true)
   } finally {
     await rpc.close()
   }

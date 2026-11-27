@@ -1,8 +1,6 @@
-import { app, clipboard, ipcMain, shell } from 'electron'
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
+import { app, clipboard, ipcMain, shell } from 'electron'
 import { parseAppInfo, parseServiceState } from '../../shared/desktop-api'
-import type { ChatService } from '../backend/chat-service'
-import { publicChatError } from '../backend/chat-service'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import {
   MAX_CODE_LENGTH,
@@ -11,6 +9,9 @@ import {
   parseMessageText,
   parseWebLink,
 } from '../../shared/message-actions'
+import type { ChatService } from '../backend/chat-service'
+import { publicChatError } from '../backend/chat-service'
+import { isTrustedIpcSource } from '../security/ipc-source'
 import { isTrustedRendererUrl } from '../security/renderer-policy'
 
 export function registerAppHandlers(
@@ -19,17 +20,9 @@ export function registerAppHandlers(
   service: ChatService,
 ): () => void {
   const validSource = (event: IpcMainInvokeEvent, args: unknown[], count: number): boolean => {
-    const window = getWindow()
-    return (
-      !!window &&
-      !window.isDestroyed() &&
-      event.sender === window.webContents &&
-      !!event.senderFrame &&
-      event.senderFrame === window.webContents.mainFrame &&
-      isTrustedRendererUrl(event.senderFrame.url, rendererUrl) &&
-      args.length === count
-    )
+    return args.length === count && isTrustedIpcSource(event, getWindow(), rendererUrl)
   }
+
   ipcMain.handle(IPC_CHANNELS.getAppInfo, (event, ...args: unknown[]) => {
     if (!validSource(event, args, 0)) throw new Error('拒绝无效的应用信息请求')
     return parseAppInfo({
@@ -53,14 +46,21 @@ export function registerAppHandlers(
   })
   // 通知只在生命周期切换时产生，不与可能积压的对话事件共用队列。
   const unsubscribeState = service.subscribeState((state) => {
-    const window = getWindow()
-    if (
-      window &&
-      !window.isDestroyed() &&
-      !window.webContents.isDestroyed() &&
-      isTrustedRendererUrl(window.webContents.mainFrame.url, rendererUrl)
-    )
-      window.webContents.send(IPC_CHANNELS.serviceState, parseServiceState(state))
+    try {
+      const window = getWindow()
+      if (
+        window &&
+        !window.isDestroyed() &&
+        !window.webContents.isDestroyed() &&
+        isTrustedRendererUrl(window.webContents.mainFrame.url, rendererUrl)
+      )
+        window.webContents.send(IPC_CHANNELS.serviceState, parseServiceState(state))
+    } catch {
+      // 窗口发送故障不撤销应用订阅，重建窗口仍可接收后续生命周期变化。
+      console.error(
+        JSON.stringify({ level: 'warn', module: 'app-ipc', message: '窗口状态通知未送达' }),
+      )
+    }
   })
   ipcMain.handle(IPC_CHANNELS.copyCode, async (event, ...args: unknown[]) => {
     if (!validSource(event, args, 1)) throw new Error('拒绝无效的代码复制请求')

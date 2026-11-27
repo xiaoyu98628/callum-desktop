@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { unwrap } from '../../lib/result'
 import { onMounted, onScopeDispose, ref } from 'vue'
 import { CpuIcon, PencilIcon, PlusIcon, Trash2Icon } from '@lucide/vue'
 import type { ChatModel, ChatResult } from '@shared/chat'
@@ -30,10 +31,7 @@ const editor = ref<Editor | null>(null),
   deletion = ref<Deletion | null>(null)
 let disposed = false,
   loadToken = 0
-function unwrap<T>(value: ChatResult<T>): T {
-  if (!value.ok) throw new Error(value.error)
-  return value.value
-}
+
 async function load(): Promise<boolean> {
   const token = ++loadToken
   loading.value = true

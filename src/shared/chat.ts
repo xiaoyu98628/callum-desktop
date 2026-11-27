@@ -1,9 +1,10 @@
-import { parseAttachments, MAX_ATTACHMENTS } from './attachments.ts'
 import type { AttachmentInput } from './attachments.ts'
-import { parseContextUsage } from './context-usage.ts'
+import { MAX_ATTACHMENTS, parseAttachments } from './attachments.ts'
 import type { ContextUsage } from './context-usage.ts'
-import { parseSkillReference } from './skills.ts'
+import { parseContextUsage } from './context-usage.ts'
+import { catalogArray } from './models.ts'
 import type { SkillReference } from './skills.ts'
+import { parseSkillReference } from './skills.ts'
 import { array, id, integer, record, string } from './validation.ts'
 export { array, id, integer, record, string } from './validation.ts'
 // 对应 Go 执行接收的文本字节上限，独立于步骤概述和 Markdown 的展示预算。
@@ -810,7 +811,7 @@ export function parseOverview(value: unknown): ChatOverview {
   const v = record(value)
   if (typeof v.hasMore !== 'boolean') throw new Error('分页格式无效')
   return {
-    models: array(v.models, parseModel),
+    models: catalogArray(v.models, parseModel),
     conversations: array(v.conversations, parseConversation),
     hasMore: v.hasMore,
     revision: integer(v.revision),

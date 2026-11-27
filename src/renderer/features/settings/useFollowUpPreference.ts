@@ -1,10 +1,10 @@
-import { computed, inject, onScopeDispose, provide, readonly, ref } from 'vue'
-import type { InjectionKey, Ref } from 'vue'
-import type { ChatResult } from '@shared/chat'
+import { getDesktopApi } from '@/lib/desktop'
 import type { DesktopApi } from '@shared/desktop-api'
 import type { FollowUpMode } from '@shared/follow-up'
 import type { GeneralSettings } from '@shared/general-settings'
-import { getDesktopApi } from '@/lib/desktop'
+import type { InjectionKey, Ref } from 'vue'
+import { computed, inject, onScopeDispose, provide, readonly, ref } from 'vue'
+import { unwrap } from '../../lib/result'
 
 interface FollowUpPreference {
   mode: Readonly<Ref<FollowUpMode>>
@@ -17,11 +17,6 @@ interface FollowUpPreference {
 
 const key: InjectionKey<FollowUpPreference> = Symbol('follow-up preference')
 const legacyKey = 'callum:follow-up-mode'
-
-function unwrap<T>(result: ChatResult<T>): T {
-  if (!result.ok) throw new Error(result.error)
-  return result.value
-}
 
 async function migrateLegacyPreference(
   api: DesktopApi,

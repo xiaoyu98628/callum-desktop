@@ -1,10 +1,10 @@
-import { ipcMain, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
+import { ipcMain, shell } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { parseMcpRequest } from '../../shared/mcp'
-import { isTrustedRendererUrl } from '../security/renderer-policy'
 import type { McpService } from '../backend/mcp-service'
 import { RpcError } from '../backend/rpc-client'
+import { isTrustedIpcSource } from '../security/ipc-source'
 
 export function registerMcpHandlers(
   getWindow: () => BrowserWindow | null,
@@ -12,16 +12,7 @@ export function registerMcpHandlers(
   service: McpService,
 ): () => void {
   ipcMain.handle(IPC_CHANNELS.mcp, async (event, ...args: unknown[]) => {
-    const window = getWindow()
-    const frame = event.senderFrame
-    if (
-      !window ||
-      window.isDestroyed() ||
-      event.sender !== window.webContents ||
-      frame !== window.webContents.mainFrame ||
-      !isTrustedRendererUrl(frame.url, rendererUrl) ||
-      args.length !== 1
-    )
+    if (!isTrustedIpcSource(event, getWindow(), rendererUrl) || args.length !== 1)
       throw new Error('拒绝无效的 MCP 请求')
     try {
       const input = parseMcpRequest(args[0])

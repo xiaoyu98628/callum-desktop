@@ -1,6 +1,8 @@
 import { array, id, record, string } from '../../shared/chat.ts'
 import {
   MODEL_INPUT_TYPES,
+  MAX_CATALOG_BYTES,
+  availableModels,
   parseConfiguredModel,
   parseInputTypes,
   parseProvider,
@@ -61,13 +63,53 @@ export class ModelCatalog {
     this.request = request
   }
   async list(): Promise<Catalog> {
+    const budget = { bytes: 0 }
     const [providers, models] = await Promise.all([
-      this.request('provider.list', {}),
-      this.request('model.list', { selectable_only: false }),
+      this.readPages('provider.list', {}, providerFromRpc, budget),
+      this.readPages('model.list', { selectable_only: false }, modelFromRpc, budget),
     ])
-    return {
-      providers: array(providers ?? [], providerFromRpc),
-      models: array(models ?? [], modelFromRpc),
+    return { providers, models }
+  }
+  async selectable() {
+    const models = await this.readPages('model.list', { selectable_only: true }, modelFromRpc, {
+      bytes: 0,
+    })
+    return availableModels({ providers: [], models })
+  }
+  private async readPages<T>(
+    method: 'provider.list' | 'model.list',
+    params: Record<string, unknown>,
+    parse: (value: unknown) => T,
+    budget: { bytes: number },
+  ): Promise<T[]> {
+    const items: T[] = []
+    let after = ''
+    for (;;) {
+      const raw = await this.request(method, { ...params, limit: 200, after_id: after })
+      if (Array.isArray(raw))
+        throw new Error('服务版本不支持目录分页，请使用客户端随附的新版服务。')
+      const page = record(raw)
+      budget.bytes += Buffer.byteLength(JSON.stringify(page))
+      if (budget.bytes > MAX_CATALOG_BYTES)
+        throw new Error('目录内容超出读取预算，请减少配置内容后重试。')
+      if (
+        !Array.isArray(page.items) ||
+        page.items.length > 200 ||
+        typeof page.has_more !== 'boolean'
+      )
+        throw new Error('目录分页格式无效')
+      let previous = after
+      for (const value of page.items) {
+        const identifier = id(record(value).id)
+        if (identifier <= previous) throw new Error('目录游标倒退或记录重复')
+        previous = identifier
+        items.push(parse(value))
+      }
+      const next = string(page.next_after_id)
+      if (page.has_more ? !page.items.length || next !== previous : next !== '')
+        throw new Error('目录分页游标无效')
+      if (!page.has_more) return items
+      after = next
     }
   }
   saveProvider(input: ProviderInput): Promise<string> {

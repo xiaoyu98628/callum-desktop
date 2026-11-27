@@ -46,7 +46,14 @@ export class RpcClient {
     args: string[],
     notify: (method: string, params: unknown) => void,
     disconnected: (error: RpcConnectionError) => void,
+    startupTimeoutMs = 15_000,
   ) {
+    if (
+      !Number.isSafeInteger(startupTimeoutMs) ||
+      startupTimeoutMs < 1 ||
+      startupTimeoutMs > 45_000
+    )
+      throw new Error('服务启动等待预算无效')
     this.notify = notify
     this.disconnected = disconnected
     this.ready = new Promise((resolve, reject) => {
@@ -57,7 +64,7 @@ export class RpcClient {
     void this.ready.catch(() => undefined)
     this.readyTimer = setTimeout(
       () => this.fail(new RpcConnectionError('对话服务启动超时，请重试启动。')),
-      15_000,
+      startupTimeoutMs,
     )
     this.child = spawn(executable, args, { stdio: 'pipe', windowsHide: true, shell: false })
     this.closed = new Promise((resolve) =>
@@ -117,6 +124,11 @@ export class RpcClient {
           continue
         if (value.error.split(/\r?\n/).includes('该数据目录已有运行中的 Callum 服务'))
           return '该数据目录已有运行中的 Callum 服务，请关闭占用该目录的服务后重试。'
+        if (
+          value.error.startsWith('加载内置运行时:') &&
+          value.error.includes('context deadline exceeded')
+        )
+          return '内置运行时资源校验超时，请稍后重试启动。'
         if (
           value.error.startsWith('加载内置运行时:') ||
           value.error === '运行时资源与私有数据目录不得重叠'

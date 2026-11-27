@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { setTimeout } from 'node:timers/promises'
 import assert from 'node:assert/strict'
 import {
   chmod,
@@ -79,6 +82,44 @@ test(
       )
     }
     await writeFile(join(resources, 'runtimes', 'sources.json'), JSON.stringify(sources))
+    // 真实准备程序持锁期间被强制终止，固定锁文件保留但不阻塞下一次准备。
+    const output = join(resources, 'runtimes', 'unpacked')
+    const child = spawn(
+      executable,
+      [
+        'prepare-runtimes',
+        '--sources',
+        join(resources, 'runtimes', 'sources.json'),
+        '--output',
+        output,
+        '--cache',
+        archives,
+        '--target',
+        target.directory,
+      ],
+      { stdio: 'ignore' },
+    )
+    const exited = once(child, 'exit')
+    try {
+      const lock = join(output, `.prepare-${target.directory}.lock`)
+      const deadline = Date.now() + 7000
+      while (
+        !(await stat(lock).then(
+          () => true,
+          () => false,
+        ))
+      ) {
+        if (child.exitCode !== null || Date.now() > deadline)
+          throw new Error('未观察到准备程序持锁')
+        await setTimeout(5)
+      }
+      assert.equal((await stat(lock)).isFile(), true)
+      assert.equal(child.kill('SIGKILL'), true)
+      await exited
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      await exited
+    }
     prepareRuntimes(resources)
     const manifest = join(resolveRuntimeDirectory(resources), 'manifest.json')
     const before = await stat(manifest)

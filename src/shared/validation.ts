@@ -23,3 +23,17 @@ export function array<T>(value: unknown, parse: (item: unknown) => T): T[] {
   if (!Array.isArray(value) || value.length > 500) throw new Error('列表格式无效')
   return value.map(parse)
 }
+
+/** 目录等按字节预算约束的集合，不套用一般交互列表的条数上限。 */
+export function byteBoundedArray<T>(
+  value: unknown,
+  parse: (item: unknown) => T,
+  maximumBytes: number,
+): T[] {
+  if (
+    !Array.isArray(value) ||
+    new TextEncoder().encode(JSON.stringify(value)).length > maximumBytes
+  )
+    throw new Error('目录内容超出读取预算，请减少配置内容后重试。')
+  return value.map(parse)
+}

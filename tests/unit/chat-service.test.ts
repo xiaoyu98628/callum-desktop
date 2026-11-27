@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
+import { setTimeout } from 'node:timers/promises'
+import { BackendLifecycle } from '../../src/main/backend/backend-lifecycle.ts'
 import { ChatService, resolveBackendExecutable } from '../../src/main/backend/chat-service.ts'
-import { isActiveRun } from '../../src/shared/chat.ts'
+import { RpcClient, RpcError } from '../../src/main/backend/rpc-client.ts'
 import type { ChatApproval, ChatEvent } from '../../src/shared/chat.ts'
+import { isActiveRun } from '../../src/shared/chat.ts'
 import type { ServiceState } from '../../src/shared/desktop-api.ts'
 import {
   backendExecutable,
@@ -15,7 +17,6 @@ import {
   seedModel,
   supportedBackend,
 } from '../helpers/backend.ts'
-import { RpcClient, RpcError } from '../../src/main/backend/rpc-client.ts'
 import { startModelServer } from '../helpers/model-server.ts'
 
 test('服务资源使用四个平台的匹配架构并拒绝不支持的目标', () => {
@@ -166,6 +167,15 @@ test(
   },
 )
 
+// 仅用于注入真实连接关闭故障，不暴露生产组件内部状态。
+function lifecycleClient(service: ChatService): RpcClient {
+  const lifecycle: unknown = Reflect.get(service, 'lifecycle')
+  assert.ok(lifecycle instanceof BackendLifecycle)
+  const client: unknown = Reflect.get(lifecycle, 'client')
+  assert.ok(client instanceof RpcClient)
+  return client
+}
+
 test('重试等待旧启动清理，期间退出不会再创建进程', { skip: !supportedBackend }, async (t) => {
   const profile = await mkdtemp(join(tmpdir(), 'callum-service-retry-close-'))
   const owner = new ChatService(join(profile, 'backend'), resourceRoot)
@@ -181,7 +191,7 @@ test('重试等待旧启动清理，期间退出不会再创建进程', { skip: 
     service.subscribeState((state) => {
       states.push(state.status)
       if (state.status !== 'startup-failed') return
-      const client: unknown = Reflect.get(service!, 'client')
+      const client = lifecycleClient(service!)
       assert.ok(client instanceof RpcClient)
       const close = client.close.bind(client)
       t.mock.method(client, 'close', async () => {
@@ -233,14 +243,14 @@ test(
       await owner.overview(0)
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       await assert.rejects(service.overview(0), /已有运行中的 Callum 服务/)
-      const client: unknown = Reflect.get(service, 'client')
+      const client = lifecycleClient(service)
       assert.ok(client instanceof RpcClient)
       const close = t.mock.method(client, 'close', async () => {
         throw new Error('受控清理失败')
       })
       try {
         assert.equal((await service.retryStart()).status, 'startup-failed')
-        assert.equal(Reflect.get(service, 'client'), client)
+        assert.equal(lifecycleClient(service), client)
         await assert.rejects(service.overview(0), /已有运行中的 Callum 服务/)
       } finally {
         close.mock.restore()
@@ -269,6 +279,11 @@ test(
       const modelId = await seedModel(profile, upstream.baseUrl, 'always')
       service = new ChatService(join(profile, 'backend'), resourceRoot)
       const events: ChatEvent[] = []
+      let failedSubscriberCalls = 0
+      service.subscribe(() => {
+        failedSubscriberCalls++
+        throw new Error('controlled-consumer-failure')
+      })
       service.subscribe((event) => events.push(event))
       assert.equal((await service.overview(0)).models[0]?.id, modelId)
       const first = await service.send({ conversationId: null, modelId, text: '你好' })
@@ -283,6 +298,8 @@ test(
       const detail = await service.detail(first.conversationId)
       assert.equal(detail.messages.length, 2)
       assert.equal(detail.messages[1]?.content[0]?.text, '你好，这是受控回答。')
+      assert.equal(failedSubscriberCalls, 1)
+      assert.equal(service.getState().status, 'ready')
       const completed = detail.runs.find((run) => run.id === first.runId)
       assert.ok(completed && completed.finishedAt !== null)
       assert.ok(completed.finishedAt >= completed.createdAt)

@@ -65,7 +65,7 @@ for (const scenario of [
     const changes: ChatChange[] = []
     let reads = 0
     const service = {
-      ready: Promise.resolve(),
+      lifecycle: { generation: 1 },
       async followUps(conversationId: string): Promise<FollowUpItem[]> {
         assert.equal(conversationId, run.conversationId)
         const revision = scenario.revisions[reads++]

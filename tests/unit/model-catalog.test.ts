@@ -7,7 +7,12 @@ import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { ModelCatalog } from '../../src/main/backend/model-catalog.ts'
 import { ChatService } from '../../src/main/backend/chat-service.ts'
-import { availableModels, parseModelInput, parseProviderInput } from '../../src/shared/models.ts'
+import {
+  availableModels,
+  parseCatalog,
+  parseModelInput,
+  parseProviderInput,
+} from '../../src/shared/models.ts'
 import type { ProviderInput } from '../../src/shared/models.ts'
 import { array, record, string } from '../../src/shared/chat.ts'
 import { supportedBackend, resourceRoot } from '../helpers/backend.ts'
@@ -93,7 +98,7 @@ test('编辑模型保留后端已有元数据，读取列表剔除非公开字�
       return { id: uuid }
     }
     if (method === 'provider.list')
-      return [
+      return page([
         {
           id: uuid,
           name: '供应商',
@@ -102,9 +107,9 @@ test('编辑模型保留后端已有元数据，读取列表剔除非公开字�
           has_api_key: true,
           api_key: 'must-not-return',
         },
-      ]
+      ])
     if (method === 'model.list')
-      return [
+      return page([
         {
           id: uuid,
           provider_id: uuid,
@@ -113,7 +118,7 @@ test('编辑模型保留后端已有元数据，读取列表剔除非公开字�
           enabled: true,
           private_field: 'must-not-return',
         },
-      ]
+      ])
     throw new Error('非预期方法')
   })
   await catalog.saveModel(basic)
@@ -135,9 +140,9 @@ test('图片输入按用户选中的类型回填，不从模型拥有的能力�
     [['text', 'image', 'audio', 'video'], null, true],
   ] as const) {
     const catalog = new ModelCatalog(async (method) => {
-      if (method === 'provider.list') return []
+      if (method === 'provider.list') return page([])
       if (method === 'model.list')
-        return [
+        return page([
           {
             id: uuid,
             provider_id: uuid,
@@ -147,7 +152,7 @@ test('图片输入按用户选中的类型回填，不从模型拥有的能力�
             model_type: modelType,
             capabilities,
           },
-        ]
+        ])
       throw new Error('非预期方法')
     })
     const models = await catalog.list()
@@ -318,3 +323,79 @@ test(
     }
   },
 )
+
+function page(items: unknown[], more = false, cursor = '') {
+  return { items, has_more: more, next_after_id: cursor }
+}
+
+test('目录 500、501 和多页读取共用容量约定，启用筛选与公开字段保持一致', async () => {
+  for (const count of [0, 500, 501, 1001]) {
+    const rows = Array.from({ length: count }, (_, index) => ({
+      id: `019a4f39-0000-7000-8000-${(index + 1).toString(16).padStart(12, '0')}`,
+      provider_id: uuid,
+      display_name: `模型${index}`,
+      remote_model_id: `remote${index}`,
+      enabled: true,
+    }))
+    const catalog = new ModelCatalog(async (method, input) => {
+      if (method === 'provider.list') return page([])
+      assert.equal(method, 'model.list')
+      const params = record(input)
+      const offset = params.after_id ? rows.findIndex((row) => row.id === params.after_id) + 1 : 0
+      const values = rows.slice(offset, offset + Number(params.limit))
+      const more = offset + values.length < rows.length
+      return page(values, more, more ? values.at(-1)!.id : '')
+    })
+    assert.equal(parseCatalog(await catalog.list()).models.length, count)
+    assert.equal((await catalog.selectable()).length, count)
+  }
+})
+
+test('目录分页拒绝重复、倒退、空进展和错误末页，失败后可重读', async () => {
+  const row = {
+    id: uuid,
+    provider_id: uuid,
+    display_name: '模型',
+    remote_model_id: 'remote',
+    enabled: true,
+  }
+  for (const bad of [page([], true, uuid), page([row], true, ''), page([row], false, uuid)]) {
+    const catalog = new ModelCatalog(async (method) =>
+      method === 'provider.list' ? page([]) : bad,
+    )
+    await assert.rejects(catalog.list(), /游标/)
+  }
+  let calls = 0
+  const catalog = new ModelCatalog(async (method) => {
+    if (method === 'provider.list') return page([])
+    calls++
+    return calls <= 2 ? page([row], true, uuid) : page([row])
+  })
+  await assert.rejects(catalog.list(), /重复|倒退/)
+  assert.equal((await catalog.list()).models.length, 1)
+})
+
+test('目录累计字节预算拒绝过量页面，未知字段同样计入传输预算', async () => {
+  let calls = 0
+  const catalog = new ModelCatalog(async (method) => {
+    if (method === 'provider.list') return page([])
+    calls++
+    const id = `019a4f39-0000-7000-8000-${String(calls).padStart(12, '0')}`
+    return page(
+      [
+        {
+          id,
+          provider_id: uuid,
+          display_name: '模型',
+          remote_model_id: 'remote',
+          enabled: true,
+          unknown: 'x'.repeat(1024 * 1024),
+        },
+      ],
+      true,
+      id,
+    )
+  })
+  await assert.rejects(catalog.list(), /预算/)
+  assert.ok(calls <= 16)
+})

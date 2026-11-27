@@ -257,3 +257,47 @@ test('同一执行的两次引导退回按版本保留和回放', () => {
   }
   assert.equal(visible.size, 0)
 })
+
+test('失败订阅只撤销自身，其他消费者和查询回放继续，诊断不含异常原文', () => {
+  let failures = 0,
+    healthy = 0,
+    bad = 0
+  const history = new ChatEventHistory(() => {
+    failures++
+  })
+  history.subscribe(() => {
+    bad++
+    throw new Error('private-token-must-not-leak')
+  })
+  history.subscribe(() => {
+    healthy++
+  })
+  assert.doesNotThrow(() => history.publish(event(1).change))
+  history.publish(event(2).change)
+  assert.equal(healthy, 2)
+  assert.equal(bad, 1)
+  assert.equal(failures, 1)
+  assert.equal([...history.changesSince(0)].length, 2)
+})
+
+test('会话重复快照只分配一个版本，内容变化和其他事件不被抑制', () => {
+  const history = new ChatEventHistory()
+  const value = {
+    id: uuid,
+    workspaceId: null,
+    title: 'a',
+    modelId: uuid,
+    modelName: 'm',
+    updatedAt: 1,
+    pinnedAt: null,
+    deletedAt: null,
+    archivedAt: null,
+  }
+  history.publish({ kind: 'conversation', value })
+  history.publish(event(2).change)
+  history.publish({ kind: 'conversation', value: { ...value } })
+  assert.equal(history.revision, 2)
+  history.publish({ kind: 'conversation', value: { ...value, title: 'b' } })
+  history.publish({ kind: 'conversation', value: { ...value } })
+  assert.equal(history.revision, 4)
+})

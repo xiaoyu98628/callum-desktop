@@ -1,5 +1,6 @@
+import type { ChatEvent, ChatMessage, ChatResult } from '../../../shared/chat.ts'
 import { chatEventBufferKey, compareMessages, PAGE_SIZE } from '../../../shared/chat.ts'
-import type { ChatEvent, ChatResult, ChatMessage } from '../../../shared/chat.ts'
+import { unwrap } from '../../lib/result.ts'
 
 /** 列表有增删或重排时，旧偏移不能继续使用。 */
 export class ListPagination {
@@ -99,10 +100,6 @@ export function mergeListPage<T extends { id: string }>(
   return [...new Map([...current, ...incoming].map((item) => [item.id, item])).values()]
 }
 
-export function unwrap<T>(result: ChatResult<T>): T {
-  if (!result.ok) throw new Error(result.error)
-  return result.value
-}
 /** 界面保留有界的消息窗口；更早内容仍通过后端分页读取。 */
 export function boundMessages(messages: ChatMessage[]): ChatMessage[] {
   const sorted = messages.toSorted(compareMessages)

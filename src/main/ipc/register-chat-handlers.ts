@@ -1,37 +1,37 @@
-import { parseFollowUpInput, parseFollowUpChange, parseFollowUpStart } from '../../shared/follow-up'
-import { dialog, ipcMain } from 'electron'
-import { basename } from 'node:path'
-import { dirname, join } from 'node:path'
-import { mkdtemp, open, rename, rm, lstat, link } from 'node:fs/promises'
-import { withCleanup } from '../resource-cleanup'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
+import { dialog, ipcMain } from 'electron'
+import { link, lstat, mkdtemp, open, rename, rm } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+import {
+  parseAttachmentPreviewInput,
+  parseAttachments,
+  parseAttachmentSaveInput,
+} from '../../shared/attachments'
 import {
   id,
   integer,
   MAX_WORKSPACE_FOLDERS,
-  parseName,
-  parseSendInput,
-  parseResendInput,
   parseCompactInput,
   parseContinueInput,
-  parseWorkspaceInput,
-  parseWorkspaceChange,
+  parseName,
+  parseResendInput,
+  parseSendInput,
   parseUserInputAnswer,
+  parseWorkspaceChange,
+  parseWorkspaceInput,
 } from '../../shared/chat'
-import {
-  parseAttachmentPreviewInput,
-  parseAttachmentSaveInput,
-  parseAttachments,
-} from '../../shared/attachments'
+import { parseContextUsageInput } from '../../shared/context-usage'
+import { parseExecutionSettings } from '../../shared/execution'
+import { parseFollowUpChange, parseFollowUpInput, parseFollowUpStart } from '../../shared/follow-up'
+import { parseGeneralSettings } from '../../shared/general-settings'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
+import { parseModelInput, parseProviderInput } from '../../shared/models'
 import type { ChatService } from '../backend/chat-service'
+import { publicChatError, resolveWorkspaceDirectory } from '../backend/chat-service'
+import { withCleanup } from '../resource-cleanup'
+import { isTrustedIpcSource } from '../security/ipc-source'
 import { isTrustedRendererUrl } from '../security/renderer-policy'
 import { ChatEventDelivery } from './chat-event-delivery'
-import { parseModelInput, parseProviderInput } from '../../shared/models'
-import { parseExecutionSettings } from '../../shared/execution'
-import { parseGeneralSettings } from '../../shared/general-settings'
-import { parseContextUsageInput } from '../../shared/context-usage'
 
 export function registerChatHandlers(
   getWindow: () => BrowserWindow | null,
@@ -50,21 +50,30 @@ export function registerChatHandlers(
     delivery.reset()
     selection = null
   }
-  const delivery = new ChatEventDelivery((token, event) => {
-    if (target && !target.isDestroyed() && active) target.send(IPC_CHANNELS.chatEvent, token, event)
-    else reset()
-  })
-  const validSource = (event: IpcMainInvokeEvent | IpcMainEvent): boolean => {
-    const window = getWindow()
-    return (
-      !!window &&
-      !window.isDestroyed() &&
-      event.sender === window.webContents &&
-      !!event.senderFrame &&
-      event.senderFrame === window.webContents.mainFrame &&
-      isTrustedRendererUrl(event.senderFrame.url, rendererUrl)
+  const failReceiver = (): void => {
+    reset()
+    console.error(
+      JSON.stringify({
+        level: 'warn',
+        module: 'chat-ipc',
+        message: '窗口通知接收已重置，请重新订阅',
+      }),
     )
   }
+  const delivery = new ChatEventDelivery((token, event) => {
+    try {
+      if (target && !target.isDestroyed() && active)
+        target.send(IPC_CHANNELS.chatEvent, token, event)
+      else reset()
+    } catch {
+      // 窗口销毁可发生在检查和发送之间；重置该窗口，保留应用订阅供重新加载。
+      failReceiver()
+    }
+  })
+  const validSource = (event: IpcMainInvokeEvent | IpcMainEvent): boolean => {
+    return isTrustedIpcSource(event, getWindow(), rendererUrl)
+  }
+
   const unbind = (): void => {
     target?.removeListener('did-start-loading', reset)
     target?.removeListener('destroyed', unbind)
@@ -372,16 +381,20 @@ export function registerChatHandlers(
     service.revokeDirectory(id(conversationId), id(grantId)),
   )
   const unsubscribe = service.subscribe((event) => {
-    const window = getWindow()
-    if (
-      window &&
-      !window.isDestroyed() &&
-      !window.webContents.isDestroyed() &&
-      isTrustedRendererUrl(window.webContents.getURL(), rendererUrl) &&
-      active &&
-      target === window.webContents
-    )
-      delivery.offer(event)
+    try {
+      const window = getWindow()
+      if (
+        window &&
+        !window.isDestroyed() &&
+        !window.webContents.isDestroyed() &&
+        isTrustedRendererUrl(window.webContents.getURL(), rendererUrl) &&
+        active &&
+        target === window.webContents
+      )
+        delivery.offer(event)
+    } catch {
+      failReceiver()
+    }
   })
   return () => {
     unsubscribe()

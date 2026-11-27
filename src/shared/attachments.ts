@@ -3,7 +3,6 @@ import { array, id, integer, record, string } from './validation.ts'
 export const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 export const MAX_ATTACHMENT_BATCH_BYTES = 32 * 1024 * 1024
 export const MAX_ATTACHMENTS = 8
-export const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,.png,.jpg,.jpeg,.gif,.webp'
 const types = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
 
 export interface AttachmentInput {
