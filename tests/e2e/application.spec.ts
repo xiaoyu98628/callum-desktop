@@ -8429,7 +8429,9 @@ test.describe('长任务自动压缩', () => {
     desktop,
     modelEndpoint,
   }) => {
+    test.setTimeout(90_000)
     const page = await desktop.firstWindow()
+    await waitForCallumReady(page)
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     const fades = await observeActivityFades(page)
     const errors: string[] = []

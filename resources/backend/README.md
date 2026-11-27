@@ -14,20 +14,20 @@ resources/backend/
   win32-arm64/callum.exe
 ```
 
-四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `58e6326c540698a06d6d8b5259c019c3ccce434d41e8f59f58c3698099679dd3`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
+四平台程序均由包含 MCP 接入、通用技能加载、附件工具及内置 Python/Node/Git 资源的同一后端工作区构建。源码指纹 SHA-256 为 `c4a40d11f3e3667a89343707aeb835581eeea5a3369657a322c544f87006765e`。计算方式：将 `go.mod`、`go.sum`、`cmd/` 与 `internal/` 下不以 `_test.go` 结尾的 Go 文件及内嵌的 `internal/mcp/oauth_callback.html` 按仓库相对路径排序，依次拼接 UTF-8 路径、NUL、文件字节、NUL 后计算 SHA-256；指纹用于核对构建使用的生产源码与依赖声明。
 
 | 平台                | 构建参数（Go 1.27.3）                                                             | SHA-256                                                            |
 | ------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `96667c15434f76a403a69986a6cb69dbefa0769a9a9f1678534458d712d04d6d` |
-| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `4a9de5f669b4088efa28a5766bd9b4d53135e6bc7cdf5c9f9569819ae76bc986` |
-| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `80e0e619da45a9f4fb0bc817cd515c4369b7266b28d1d9e0dc7e62a0f45d4bae` |
-| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `155081e16a29b87bc07dc435f1f979a83438f16284045b752ba0beb9a7d811a4` |
+| macOS Apple Silicon | `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `e98282dd8e34c5e2aec5cabd923389de3e34f98529dd717b579501b777485d41` |
+| macOS Intel         | `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false`  | `d030570785fb9de25621dfe264744b10b9b2c85d9e559bec318ab8c4b0f846b8` |
+| Windows x64         | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `6c4586c719bf88eff0efabb659b21d1141287040bf75516381f81b16489342c2` |
+| Windows ARM64       | `GOOS=windows GOARCH=arm64 CGO_ENABLED=0 -tags release -trimpath -buildvcs=false` | `ddff2147b62bbb769a73a34d8e1ed2e637a1522cca86a63929fd72eaee33ab51` |
 
 四套程序采用客户端匹配的原生架构，均已验证交叉构建、文件格式及哈希。macOS ARM64 程序用于隔离桌面回归；macOS Intel 和 Windows x64/ARM64 的原生运行及桌面联调仍需对应环境验收。
 
 ## 随附程序兼容说明
 
-当前随附程序已同步后端架构审查修复：自动审核使用已生效用户引导并排除恢复摘要来源；MCP 配置使用独立快照；附件操作按执行隔离，附件输入错误返回 `1013 / attachment_unavailable`；持久化标识统一校验标准 UUIDv7。数据库结构版本仍为 `8`。会话通知职责与沙箱公共规则调整保持现有请求和通知格式。
+当前随附程序已同步后端架构审查修复：自动审核使用已生效用户引导并排除恢复摘要来源；MCP 配置使用独立快照；附件操作按执行隔离，附件输入错误返回 `1013 / attachment_unavailable`；持久化标识统一校验标准 UUIDv7。数据库结构版本仍为 `8`。会话通知职责与沙箱公共规则调整保持现有请求和通知格式。恢复运行内压缩检查点时，摘要保留在上下文前缀，真实用户引导独立恢复；后续压缩保持工具调用与结果配对，不重放已完成操作。macOS 主进程退出后的进程组终止若返回 EPERM，仅用信号 0 有界确认组已消失，仍存在或无法确认时保留失败；真实清理失败提供脱敏的阶段与系统错误码。
 
 主对话、技能目录和补充提问选用 [OpenAI 上游模型指引](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/models-manager/models.json#L76) 的对应段落。主对话使用 Callum 身份，操作前说明在助理正文中发送，审批由服务端校验。技能经 `read_file` 读取 `SKILL.md`，补充提问沿用单问题与字符串选项。主对话模型请求携带该次执行的审批与沙箱设置快照和工作区路径信息，Token 预览使用同一套组装逻辑。手动压缩、自动压缩和运行内检查点要求模型输出简体中文的 UTF-8 纯文本交接摘要。摘要提示主体取自 [OpenAI 上游交接提示](https://github.com/openai/codex/blob/59ac39addbbcd3499319c805a916846ca8ac5fef/codex-rs/prompts/templates/compact/prompt.md)，Copyright 2025 OpenAI，采用 Apache-2.0 许可。
 
