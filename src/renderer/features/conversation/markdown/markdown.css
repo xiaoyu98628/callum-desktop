@@ -59,7 +59,10 @@
   margin-top: 1.15em;
 }
 .markdown-part:has(> :is(h1, h2, h3, h4, h5, h6)) {
-  margin-top: 1.5em;
+  margin-top: 1.6em;
+}
+.markdown-part:has(> :is(h1, h2, h3, h4, h5, h6)) + .markdown-part {
+  margin-top: 0.65em;
 }
 .markdown-part:first-child {
   margin-top: 0;
@@ -70,6 +73,9 @@
   letter-spacing: -0.015em;
   margin-top: 1.5em;
   margin-bottom: 0.7em;
+}
+.markdown-part > :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0;
 }
 .markdown-part:first-child > :first-child {
   margin-top: 0;
@@ -123,13 +129,21 @@
 }
 .message-markdown li {
   padding-left: 0.25em;
-  margin-top: 0.45em;
+}
+.message-markdown li + li {
+  margin-top: 0.55em;
 }
 .message-markdown li::marker {
   color: color-mix(in srgb, var(--foreground) 75%, transparent);
 }
 .message-markdown li > p {
   margin: 0.4em 0;
+}
+.message-markdown li > p:first-child {
+  margin-top: 0;
+}
+.message-markdown li > p:last-child {
+  margin-bottom: 0;
 }
 .message-markdown li :is(ul, ol) {
   margin: 0.4em 0;
@@ -156,14 +170,14 @@
 }
 .message-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.87em;
+  font-size: 0.9em;
 }
 .message-markdown :not(pre) > code {
-  border: 1px solid var(--md-code-border);
-  border-radius: 4px;
-  padding: 0.1em 0.3em;
-  background: var(--md-subtle-background);
-  font-weight: 500;
+  border: 0;
+  border-radius: 0;
+  padding: 0 0.1em;
+  background: transparent;
+  font-weight: inherit;
 }
 .message-markdown .markdown-code-block {
   overflow: hidden;

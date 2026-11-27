@@ -1,12 +1,16 @@
 export const MARKDOWN_CODE_START =
   'const message = "<Callum>";\n' +
   `const endpoint = "https://example.com/${'long-path-segment/'.repeat(16)}";\n`
+export const MARKDOWN_DENSE_PATH =
+  '/workspace/projects/callum/internal/conversation/service/streaming/request_context_validation_and_transcript_recovery_test.go'
 export const MARKDOWN_START = [
   '# Markdown 示例',
   '',
   '这段回答支持 **粗体**、*斜体*、~~删除线~~ 与 `inline code`。',
   '',
   '正文、列表和代码使用一致的阅读节奏，长回答也能保持清晰的层次。',
+  '',
+  `路径检查涉及 \`${MARKDOWN_DENSE_PATH}\`、\`requestParts\`、\`settings_snapshot\` 和 \`context_window\`。长路径应随正文自然换行，连续标识符与中文说明共同组成连贯段落。`,
   '',
   '- 第一项',
   '  - 嵌套内容保持自然缩进',

@@ -12,6 +12,7 @@ import { ChatService } from '../../src/main/backend/chat-service'
 import {
   MARKDOWN_CODE,
   MARKDOWN_CODE_START,
+  MARKDOWN_DENSE_PATH,
   MARKDOWN_END,
   MARKDOWN_START,
   MARKDOWN_UNSAFE,
@@ -7263,6 +7264,11 @@ test.describe('Markdown 回答展示', () => {
     await answer
       .getByRole('heading', { name: 'Markdown 示例', exact: true })
       .scrollIntoViewIfNeeded()
+    const denseParagraph = answer.locator('p').filter({ hasText: MARKDOWN_DENSE_PATH })
+    await expect(denseParagraph).toBeVisible()
+    expect(
+      await denseParagraph.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
     await page.screenshot({ path: '.artifacts/screenshots/markdown-light-prose.png' })
     await answer.getByRole('link', { name: '项目文档', exact: true }).click()
     expect(
@@ -7305,6 +7311,10 @@ test.describe('Markdown 回答展示', () => {
     await answer
       .getByRole('heading', { name: 'Markdown 示例', exact: true })
       .scrollIntoViewIfNeeded()
+    await expect(denseParagraph).toBeVisible()
+    expect(
+      await denseParagraph.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true)
     await page.screenshot({ path: '.artifacts/screenshots/markdown-dark-prose.png' })
     expect(errors).toEqual([])
   })
